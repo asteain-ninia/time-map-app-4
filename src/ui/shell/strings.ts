@@ -563,3 +563,23 @@ export const FIRST_RUN_GUIDE = {
   dismiss: '今後表示しない',
   close: '閉じる',
 } as const;
+
+/** 2026-10 に部品の中の直書きを集めたもの（板の閉じる・メニューバー・ツールバー・ファイル名の代わり）。 */
+export const SHELL_TEXT = {
+  /** 動かせる板の［×］の読み上げ名（`DraggablePanel.tsx`）。 */
+  panelCloseAriaLabel: '閉じる',
+  menubarAriaLabel: 'メニューバー',
+  toolbarAriaLabel: 'ツールバー',
+  toolSelectAriaLabel: 'ツール選択',
+  inspectGroupAriaLabel: '調べる',
+  /** 道具のまとまりの名前（`tools.ts` の `TOOL_GROUPS`）。 */
+  toolGroupSelect: '選ぶ',
+  toolGroupDraw: '描く',
+  toolGroupShape: '形を変える',
+  toolGroupRelate: '関係を変える',
+  /** ファイル名の代わりに出す文字（`status-format.ts`）。 */
+  unsavedNewProject: '（未保存の新規）',
+  destinationUndetermined: '保存先: 未確定',
+  restoredFileLabel: (sourceName: string, savedAt: string): string =>
+    `${sourceName}（${savedAt} の世代から復旧・保存先は未確定）`,
+} as const;

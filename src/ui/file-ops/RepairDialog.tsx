@@ -42,7 +42,7 @@ import {
   type RepairChoices,
 } from './repair-flow';
 import type { RepairNamer } from './repair-names';
-import { REPAIR_STRINGS } from './strings';
+import { REPAIR_DIALOG_TEXT, REPAIR_STRINGS } from './strings';
 
 export interface RepairDialogProps {
   /** The U14 consistency report to present (non-empty when this dialog is shown). */
@@ -75,7 +75,7 @@ function timeScopeOf(inc: Inconsistency): string | null {
   }
   if (inc.timeRange !== undefined) {
     const end = inc.timeRange.end === null ? '—' : String(inc.timeRange.end.year);
-    return `${REPAIR_STRINGS.fieldRange}: ${String(inc.timeRange.start.year)} 〜 ${end}`;
+    return REPAIR_DIALOG_TEXT.rangeScope(REPAIR_STRINGS.fieldRange, String(inc.timeRange.start.year), end);
   }
   return null;
 }

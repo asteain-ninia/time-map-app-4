@@ -264,6 +264,7 @@ import {
   type DeleteImpactView,
   type EndHereImpactView,
 } from './property/index';
+import { PROPERTY_TEXT } from './property/messages';
 import { formatYear } from './timeline/time-display';
 import type { ContextMenuRequest } from './map/live-context-menu-port';
 import {
@@ -2290,9 +2291,9 @@ export function App(): JSX.Element {
         statusMessageStore.success(
           PROPERTY_STRINGS.endHereDone(name, formatYear(at.year)) +
             (trimmed > 0 ? PROPERTY_STRINGS.endHereDoneTrimmed(trimmed) : '') +
-            (laterNames.length > 0 ? PROPERTY_STRINGS.endHereDoneLaterAffiliation(laterNames.join('・')) : '') +
-            (cascadedNames.length > 0 ? PROPERTY_STRINGS.endHereDoneCascaded(cascadedNames.join('・')) : '') +
-            (wholeNames.length > 0 ? PROPERTY_STRINGS.endHereDoneCascadedWhole(wholeNames.join('・')) : ''),
+            (laterNames.length > 0 ? PROPERTY_STRINGS.endHereDoneLaterAffiliation(laterNames.join(PROPERTY_TEXT.nameSeparator)) : '') +
+            (cascadedNames.length > 0 ? PROPERTY_STRINGS.endHereDoneCascaded(cascadedNames.join(PROPERTY_TEXT.nameSeparator)) : '') +
+            (wholeNames.length > 0 ? PROPERTY_STRINGS.endHereDoneCascadedWhole(wholeNames.join(PROPERTY_TEXT.nameSeparator)) : ''),
         );
       } catch (e) {
         statusMessageStore.failure(e instanceof Error ? e.message : String(e));
@@ -3596,7 +3597,7 @@ export function App(): JSX.Element {
           (f) => f.id === intent.featureId,
         );
         if (feature === undefined) {
-          throw new Error('編集対象が現在の時刻に存在しません。');
+          throw new Error(PROPERTY_TEXT.editTargetMissingAtTime);
         }
         const v = intent.attributes;
         const nextFeature = withDetailDocument(
@@ -3644,7 +3645,7 @@ export function App(): JSX.Element {
         }
         // detectSpatial=[] for the edit binding, so a pure attribute edit never reaches
         // ConflictsPending; surface honestly if it somehow does (never a silent success).
-        throw new Error('属性の編集を適用できませんでした。');
+        throw new Error(PROPERTY_TEXT.attributeEditFailed);
       },
     }),
     [store, propertyEditBindings, recordCommit, anchorExistsAt],
@@ -3816,10 +3817,10 @@ export function App(): JSX.Element {
           if (names.length > 0 || wholeNames.length > 0) {
             statusMessageStore.success(
               (names.length > 0
-                ? PROPERTY_STRINGS.intervalCascaded(names.join('・'))
+                ? PROPERTY_STRINGS.intervalCascaded(names.join(PROPERTY_TEXT.nameSeparator))
                 : PROPERTY_STRINGS.intervalChanged) +
                 (wholeNames.length > 0
-                  ? PROPERTY_STRINGS.endHereDoneCascadedWhole(wholeNames.join('・'))
+                  ? PROPERTY_STRINGS.endHereDoneCascadedWhole(wholeNames.join(PROPERTY_TEXT.nameSeparator))
                   : ''),
             );
           }

@@ -79,24 +79,28 @@ export const BUNDLE_PRESETS: readonly BundlePreset[] = [
     id: 'kana-area',
     label: BUNDLE_STRINGS.presetKana1,
     kind: BUNDLE_KIND.Expression,
+    // eslint-disable-next-line no-restricted-syntax -- 名前に当てる正規表現の部品（デーレ界の取り込みが付けた名前の形）
     expression: '付近の領域[0-9]+$',
   },
   {
     id: 'kana-island',
     label: BUNDLE_STRINGS.presetKana2,
     kind: BUNDLE_KIND.Expression,
+    // eslint-disable-next-line no-restricted-syntax -- 名前に当てる正規表現の部品
     expression: 'の島[0-9]+$',
   },
   {
     id: 'kana-unknown',
     label: BUNDLE_STRINGS.presetKana3,
     kind: BUNDLE_KIND.Expression,
+    // eslint-disable-next-line no-restricted-syntax -- 名前に当てる正規表現の部品
     expression: '^（.*不明国',
   },
   {
     id: 'kana-sea',
     label: BUNDLE_STRINGS.presetKana4,
     kind: BUNDLE_KIND.Expression,
+    // eslint-disable-next-line no-restricted-syntax -- 名前に当てる正規表現の部品
     expression: 'の海域[0-9]+$',
   },
   {

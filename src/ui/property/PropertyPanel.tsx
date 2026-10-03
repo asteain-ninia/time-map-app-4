@@ -98,7 +98,7 @@ import {
   EDIT_PLAN_STRINGS,
   type EditPlan,
 } from './edit-plan';
-import { PROPERTY_STRINGS, detailDocumentTooLongMessage, featureKindJaLabel } from './messages';
+import { PROPERTY_STRINGS, PROPERTY_TEXT, detailDocumentTooLongMessage, featureKindJaLabel } from './messages';
 import type { PropertyDraftStatusStore } from './draft-status';
 import type { NameFieldFocusStore } from './name-focus';
 import {
@@ -768,12 +768,12 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   // --- 保存 ------------------------------------------------------------------
   const handleSave = useCallback((): boolean => {
     if (feature === null) {
-      setMessage(`${PROPERTY_STRINGS.saveFailedPrefix}編集対象が解決できません。`);
+      setMessage(`${PROPERTY_STRINGS.saveFailedPrefix}${PROPERTY_TEXT.saveFailedTargetUnresolved}`);
       return false;
     }
     if (editPlan.editTime === null) {
       setMessage(
-        `${PROPERTY_STRINGS.saveFailedPrefix}${editPlan.reason ?? 'この年には保存できません。'}`,
+        `${PROPERTY_STRINGS.saveFailedPrefix}${editPlan.reason ?? PROPERTY_TEXT.saveFailedNotThisYear}`,
       );
       return false;
     }
@@ -955,7 +955,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   const resolveDeleteImpactRef = useCallback(
     (featureId: FeatureId): DeleteImpactView => {
       if (resolveDeleteImpactPort === undefined) {
-        throw new Error('影響の一覧を組み立てる口が繋がっていません。');
+        throw new Error(PROPERTY_TEXT.deleteImpactPortMissing);
       }
       return resolveDeleteImpactPort(featureId);
     },

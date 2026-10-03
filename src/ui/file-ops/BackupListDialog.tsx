@@ -24,7 +24,7 @@ import { formatTimestamp } from '../shell/status-format';
 import { useModalKeydown } from '../a11y/index';
 import { useModalRegistration } from '../a11y/useModalRegistration';
 import type { BackupEntry, BackupListing } from '../../shell/ipc/contract';
-import { BACKUP_LIST_STRINGS } from './strings';
+import { BACKUP_LIST_STRINGS, BACKUP_LIST_TEXT } from './strings';
 
 export interface BackupListDialogProps {
   /** 主プロセスが返した一覧（基準が無ければ `basis: 'none'`。行は新しい順）。 */
@@ -58,7 +58,7 @@ const NO_ENTRIES: readonly BackupEntry[] = [];
  */
 export function formatByteSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return '—';
-  if (bytes < 1024) return `${String(Math.round(bytes))} バイト`;
+  if (bytes < 1024) return BACKUP_LIST_TEXT.bytes(String(Math.round(bytes)));
   const kb = bytes / 1024;
   if (kb < 1024) return `${kb < 10 ? kb.toFixed(1) : String(Math.round(kb))} KB`;
   const mb = kb / 1024;

@@ -146,3 +146,30 @@ export const APP_FIELD_STRINGS = {
   showConflictGuide: '重なり解決画面の使い方を表示する',
   showFirstRunGuide: '起動時にこの画面の使い方を表示する',
 } as const;
+
+/** 設定の値の断り（`validation.ts` の `REJECTION`）。数や一覧は呼ぶ側で整える。 */
+export const SETTINGS_REJECTION_TEXT = {
+  timelineOrder: 'タイムラインの最小年は最大年より小さくしてください。',
+  equatorNonPositive: '赤道長は 0 より大きい値を入力してください。',
+  flatteningRange: '扁平率は 0 以上 1 未満の値を入力してください。',
+  gridVisibleType: 'グリッド表示は ON / OFF のいずれかで指定してください。',
+  gridOpacityRange: 'グリッド不透明度は 0 から 1 の範囲で入力してください。',
+  occupancyRange: '面情報ラベル表示閾値は 0 から 1 の範囲で入力してください。',
+  snapDistanceRange: '共有頂点スナップ距離は 0 以上の数値で入力してください。',
+  vertexMarkerCapRange: '全頂点マーカー表示上限は 0 以上の整数で入力してください。',
+  undoStackSizeRange: 'アンドゥ履歴の上限は 1 以上の整数で入力してください。',
+  notANumber: '数値を入力してください。',
+  timelineYearBound: (max: string): string =>
+    `タイムラインの年は整数かつ ±${max} 年以内で入力してください。`,
+  /** 選べるグリッド間隔を並べるときの区切り。 */
+  gridSpacingSeparator: '・',
+  gridSpacing: (spacings: string): string =>
+    `グリッド間隔は ${spacings} 度のいずれかを選んでください。`,
+  fpsRange: (min: string, max: string): string =>
+    `描画更新頻度は ${min} から ${max} FPS の範囲で入力してください。`,
+} as const;
+
+/** 設定の画面の部品の中の文（`SettingsDialog.tsx`）。 */
+export const SETTINGS_DIALOG_TEXT = {
+  customPaletteColorLabel: (index: string): string => `カスタムパレット色 ${index}`,
+} as const;

@@ -29,7 +29,7 @@ import {
   type SnapSettings,
 } from '../state/session';
 
-import { ADD_STRINGS } from './strings';
+import { ADD_STRINGS, ADD_TEXT } from './strings';
 
 /**
  * 許容値に入れられる範囲を、欄のそばに **目で見える形で** 出す文字列（「1〜50px」）。
@@ -37,7 +37,7 @@ import { ADD_STRINGS } from './strings';
  * 数値は `session.ts` の定数から組み立てる。ここに 1 と 50 を書き写すと、範囲を変えた
  * ときに画面の案内だけ古いまま残る（教訓 5.29 単一真実源）。
  */
-const SNAP_TOLERANCE_RANGE_TEXT = `${SNAP_TOLERANCE_MIN_PX}〜${SNAP_TOLERANCE_MAX_PX}px`;
+const SNAP_TOLERANCE_RANGE_TEXT = ADD_TEXT.snapToleranceRange(SNAP_TOLERANCE_MIN_PX, SNAP_TOLERANCE_MAX_PX);
 
 export interface SnapOptionsProps {
   readonly settings: SnapSettings;

@@ -59,7 +59,7 @@ import { PROCESS_STATUS, type ProcessResult } from '../../domain/consistency/ind
 import type { FeatureId, VertexId } from '../../domain/ids';
 import type { TimePoint } from '../../domain/time/time-point';
 
-import { ADD_STRINGS, shapeRejectionMessage, withReportHint } from './strings';
+import { ADD_STRINGS, ADD_TEXT, shapeRejectionMessage, withReportHint } from './strings';
 
 // --- The U13 adapter (the layer-crossing contract; 教訓 5.33) ----------------
 
@@ -378,7 +378,7 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
       if (inside !== null && !onBoundary && !isNestingInside(current, inside.featureId)) {
         // `where`（上位領域と種別を添えた呼び方）が引ければそれを、無ければ名前だけを出す。
         const where =
-          inside.where ?? (inside.name === null || inside.name === '' ? null : `「${inside.name}」`);
+          inside.where ?? (inside.name === null || inside.name === '' ? null : ADD_TEXT.quotedName(inside.name));
         setMessage(
           where === null || where === ''
             ? ADD_STRINGS.insideTerminalRefusedUnnamed
@@ -616,7 +616,7 @@ function rejectionToMessage(rejection: ShapeRejection): string {
  * ことを先に言う。文言は押したあとの断り文と同じ 1 か所から作る（食い違わせない）。
  */
 function hoverName(hit: AddTerminalHit, nesting: boolean): string {
-  const where = hit.where ?? (hit.name === null || hit.name === '' ? null : `「${hit.name}」`);
+  const where = hit.where ?? (hit.name === null || hit.name === '' ? null : ADD_TEXT.quotedName(hit.name));
   if (nesting) {
     return hit.name === null || hit.name === ''
       ? ADD_STRINGS.insideTerminalNestingUnnamed

@@ -22,6 +22,7 @@ import {
 } from '../../domain/time/time-point';
 import { MAX_YEAR, validate, type TimeValidationError } from '../../domain/time/validate';
 import { toYearLabel } from './time-display';
+import { TIME_DISPLAY_TEXT, YMD_ERROR_TEXT } from './strings';
 
 /**
  * The editable draft held by the input while the user types. Year is always
@@ -98,6 +99,7 @@ function parseIntStrict(text: string): number | null {
   const normalized = text
     // 全角の数字と符号を半角へ。
     .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    // eslint-disable-next-line no-restricted-syntax -- 打たれた全角の符号を見分けるための文字（画面に出さない）
     .replace(/[＋−ー－]/g, (c) => (c === '＋' ? '+' : '-'))
     // 桁区切り（半角・全角のカンマ）と空白は無視する。
     .replace(/[,，\s]/g, '');
@@ -161,21 +163,21 @@ export function parseYmdDraft(draft: YmdDraft, calendar: Calendar): YmdParseResu
 export function ymdErrorMessage(error: YmdDraftError): string {
   switch (error) {
     case 'year-empty':
-      return '年を入力してください。';
+      return YMD_ERROR_TEXT.yearEmpty;
     case 'year-not-integer':
     case 'month-not-integer':
     case 'day-not-integer':
-      return '整数を入力してください。';
+      return YMD_ERROR_TEXT.notInteger;
     case 'year-out-of-range':
-      return `年は±${MAX_YEAR.toLocaleString('en-US')}の範囲で入力してください。`;
+      return YMD_ERROR_TEXT.yearOutOfRange(MAX_YEAR.toLocaleString('en-US'));
     case 'month-empty':
-      return '月を入力してください。';
+      return YMD_ERROR_TEXT.monthEmpty;
     case 'day-empty':
-      return '日を入力してください。';
+      return YMD_ERROR_TEXT.dayEmpty;
     case 'month-out-of-range':
-      return '月は1〜12の範囲で入力してください。';
+      return YMD_ERROR_TEXT.monthOutOfRange;
     case 'day-out-of-range':
-      return 'その月に存在しない日です。';
+      return YMD_ERROR_TEXT.dayOutOfRange;
   }
 }
 
@@ -188,5 +190,5 @@ export function draftYearDisplay(draft: YmdDraft): string {
   const year = parseIntStrict(draft.yearText);
   if (year === null || Number.isNaN(year)) return draft.yearText;
   const label = toYearLabel(year);
-  return label.isBce ? `紀元前${label.magnitude}年` : `${label.magnitude}年`;
+  return label.isBce ? TIME_DISPLAY_TEXT.bceYear(label.magnitude) : TIME_DISPLAY_TEXT.ceYear(label.magnitude);
 }

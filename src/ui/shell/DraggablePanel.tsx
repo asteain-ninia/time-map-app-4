@@ -11,6 +11,7 @@ import { type ReactNode } from 'react';
 
 import { useDrag } from './useDrag';
 import type { Point } from './drag';
+import { SHELL_TEXT } from './strings';
 
 export interface DraggablePanelProps {
   /** Stable id used for z-order / front-most tracking. */
@@ -53,7 +54,7 @@ export function DraggablePanel(props: DraggablePanelProps): JSX.Element {
           <button
             type="button"
             className="draggable-panel__close"
-            aria-label="閉じる"
+            aria-label={SHELL_TEXT.panelCloseAriaLabel}
             onClick={() => onClose(id)}
           >
             ×

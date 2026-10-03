@@ -44,6 +44,7 @@ import {
   BASEMAP_STRINGS,
   PALETTE_STRINGS,
   PROJECT_FIELD_STRINGS,
+  SETTINGS_DIALOG_TEXT,
   SETTINGS_STRINGS,
 } from './strings';
 
@@ -582,7 +583,7 @@ function CustomPaletteEditor(props: {
           <li key={`palette-${String(i)}`} className="settings-palette__item">
             <input
               type="color"
-              aria-label={`カスタムパレット色 ${String(i + 1)}`}
+              aria-label={SETTINGS_DIALOG_TEXT.customPaletteColorLabel(String(i + 1))}
               value={color}
               disabled={readOnly}
               onChange={(e) => setAt(i, e.target.value)}

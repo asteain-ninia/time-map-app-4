@@ -172,3 +172,120 @@ export const FILE_OPS_STRINGS = {
   /** Generic developer-report suffix (FR-115). */
   reportSuffix: '問題が続く場合は開発者へ報告してください。',
 } as const;
+
+/** 件数つきの方法の文（{@link repairOptionText}）。 */
+export const REPAIR_OPTION_TEXT = {
+  dropOrphanHistoryWithCount: (members: number): string =>
+    members === 0
+      ? '持ち主の居ない、中身の無い歴史を読み込みから除外します。'
+      : `持ち主の居ない歴史（中に ${String(members)} 件の地物の記録）を、中身ごと読み込みから除外します（中の地物も消えます）。`,
+} as const;
+
+/** 読み込みの修復の板（`repair-flow.ts`）。対象の呼び方と、細かい理由の組み立て。 */
+export const REPAIR_FLOW_TEXT = {
+  /** 「種類（対象: …）」。 */
+  describe: (label: string, target: string): string => `${label}（対象: ${target}）`,
+  /** 対象の名前を並べるときの区切り。 */
+  listSeparator: '、',
+  historyOf: (label: string): string => `${label}の歴史`,
+  unknownNameTarget: '名前の分からない地物',
+  orphanEmpty: '持ち主の居ない、中身の無い歴史',
+  orphanMore: (rest: string): string => ` ほか ${rest} 件`,
+  orphanWithMembers: (shown: string, more: string): string =>
+    `持ち主の居ない歴史（中の地物: ${shown}${more}）`,
+  unnamedCount: (count: string): string => `名前のない地物 ${count} 件`,
+  unknownCount: (count: string): string => `名前の分からない地物 ${count} 件`,
+  missingVertices: (count: string): string => `存在しない頂点を ${count} 個参照しています。`,
+  vertexDiverges: '同じ頂点の座標が歴史によって違います。',
+  duplicateHistories: (count: string): string => `同じ地物の歴史が ${count} 本あります。`,
+} as const;
+
+/** 不整合の細かい理由（`repair-flow.ts` の `DETAIL_TEXT`。`detail` の固定の符号ごと）。 */
+export const REPAIR_DETAIL_TEXT = {
+  topLevelMismatch: '最上位かどうかの印と、親の有無が食い違っています。',
+  cycle: '親をたどると自分に戻ってきます。',
+  danglingParent: '親として指している地物が見つかりません。',
+  childParentMismatch: '下位領域の一覧と、各地物が指している親が食い違っています。',
+  duplicateId: '同じ地物が複数あります。',
+  leafEmptyShape: '形がありません。',
+  aggregateNoChildren: '下位領域が 1 つもありません。',
+  leafWithChildren: '末端なのに下位領域を持っています。',
+  positiveAreaOverlap: '面積のある重なりがあります。',
+  interChildGap: '下位領域どうしのあいだに隙間があります。',
+  sameTimeSpatialConflict: '同じ時刻に重なっています。',
+  ownerFeatureAbsent: 'この歴史の持ち主の地物が、どの年にも居ません。',
+} as const;
+
+/** 不整合の種類の名前（`repair-flow.ts` の `INCONSISTENCY_LABELS`）。 */
+export const INCONSISTENCY_LABEL_TEXT = {
+  missingVertexReference: '存在しない頂点参照',
+  treeTopology: '階層（ツリー）構造の不整合',
+  shapePreservation: '形状保持規則の違反',
+  ringHierarchyInvalid: 'リング階層（領土と穴の入れ子関係・包含）の不整合',
+  terminalExclusion: '末端地物の重なり',
+  aggregateSumMismatch: '集約と下位領域の和の不一致',
+  timeConflict: '時間（錨列）の矛盾',
+  anchorSpatialOverlap: '同時刻の地物どうしの空間的重なり',
+  orphanHistory: '所有地物が存在しない孤立した歴史',
+  duplicateOwnerHistory: '同一地物を所有する歴史の重複',
+  vertexCoordinateDivergence: '共有頂点の座標が歴史間で食い違っている',
+} as const;
+
+/** 修復方法の文の言い換え（`repair-flow.ts` の `REPAIR_OPTION_TEXT_OVERRIDES`）。 */
+export const REPAIR_OPTION_OVERRIDE_TEXT = {
+  reconcileChildIds: 'まとめ役の下位領域の一覧を、各地物が指している親に合わせて作り直します。',
+} as const;
+
+/** 画面に出す言葉（教訓 5.19）。設計書 §F の G-10 の文に合わせる。 */
+export const BASEMAP_ASPECT_STRINGS = {
+  title: '背景地図の縦横比',
+  question: (ratio: string): string => `この画像は ${ratio} です。2:1 に補正しますか、このまま使いますか。`,
+  explainCorrectable:
+    '地図は横が縦の 2 倍（2:1）で描きます。補正すると、画像の足りない側に余白を足して 2:1 にします（画像そのものは縮めません）。このまま使うと、地図に合わせて引き伸ばされます。',
+  questionUncorrectable: (ratio: string): string =>
+    `この画像は ${ratio} です。2:1 から離れすぎているため補正できません。このまま使いますか。`,
+  explainUncorrectable: '地図は横が縦の 2 倍（2:1）で描くので、このまま使うと大きく歪みます。',
+  /**
+   * 補正すると地図の上で何が起きるか（増分 8E の手直し。反証 2-4）。余白を足すので、絵は
+   * 地図の中で縮んで描かれ、絵に合わせて描いてあった地物とは端へ行くほど合わなくなる。
+   * 地物の座標そのものは動かない。`axis` は絵が縮んで見える向き（横に足りない画像なら横）。
+   */
+  explainCorrectShift: (axis: string): string =>
+    `余白を足すので、絵は${axis}方向に縮んで見え、地図の端の地物と合わなくなることがあります。`,
+  axisHorizontal: '横',
+  axisVertical: '縦',
+  correct: '2:1 に補正する',
+  keep: 'このまま使う',
+  cancel: 'やめる',
+  /** 状態行（何が起きたか）。 */
+  appliedCorrected: '背景地図を差し替えました（余白を足して 2:1 に補正しました）。',
+  appliedKept: (ratio: string): string =>
+    `背景地図を差し替えました（縦横比 ${ratio} のまま。地図に合わせて引き伸ばして描きます）。`,
+  applied: '背景地図を差し替えました。',
+  cancelled: '背景地図の差し替えをやめました。地図は変わっていません。',
+  correctFailed: '画像を 2:1 に補正できませんでした。差し替えを中止しました。地図は変わっていません。',
+} as const;
+
+/** ズームの上限・下限の断り（`zoom-limit.ts` の `ZOOM_LIMIT_REJECTION`）。数は呼ぶ側で整える。 */
+export const ZOOM_LIMIT_TEXT = {
+  notANumber: '数値を入力してください。',
+  outOfRange: (floor: string, ceil: string): string =>
+    `ズーム倍率は ${floor} 倍から ${ceil} 倍の範囲で入力してください。`,
+  order: '最小ズーム倍率は最大ズーム倍率以下にしてください。',
+} as const;
+
+/** 背景地図に使えない画像を選んだとき（`basemap-replace.ts`）。 */
+export const BASEMAP_REPLACE_TEXT = {
+  rejectNotice:
+    '選択した画像をベースマップとして読み込めませんでした（対応形式は PNG / JPEG、寸法・容量の上限内）。差し替えを中止しました。',
+} as const;
+
+/** 以前の保存の一覧（`BackupListDialog.tsx`）。 */
+export const BACKUP_LIST_TEXT = {
+  bytes: (count: string): string => `${count} バイト`,
+} as const;
+
+/** 修復の板の時間の欄（`RepairDialog.tsx`）。 */
+export const REPAIR_DIALOG_TEXT = {
+  rangeScope: (field: string, start: string, end: string): string => `${field}: ${start} 〜 ${end}`,
+} as const;

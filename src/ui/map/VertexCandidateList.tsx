@@ -18,16 +18,10 @@ import type { FeatureId, VertexId } from '../../domain/ids';
 import { useDismissable } from '../shell/use-dismissable';
 
 import { VERTEX_CANDIDATE_MAX_ROWS, type VertexCandidateStore } from './vertex-candidates';
+import { VERTEX_CANDIDATE_STRINGS } from './strings';
 
 /** 画面に出る言葉（教訓 5.64）。 */
-export const VERTEX_CANDIDATE_STRINGS = {
-  heading: 'この位置の頂点',
-  hint: '掴める距離に複数あります。1 つ選んでください。',
-  close: '閉じる',
-  more: (count: number): string => `ほか ${String(count)} 件。拡大すると絞れます。`,
-  /** 残りを出すボタン（増分 8A の手直し・GPT #1。21 件目より先にも選ぶ道を残す）。 */
-  showMore: 'もっと見る',
-} as const;
+export { VERTEX_CANDIDATE_STRINGS };
 
 /** 一覧の大きさ（地図の端で内側へ寄せるときに使う）。CSS と同じ値。 */
 export const VERTEX_CANDIDATE_WIDTH = 280;

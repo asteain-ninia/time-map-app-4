@@ -175,3 +175,9 @@ export const KNIFE_REPORT_HINT = 'お手数ですが開発者へ報告してく�
 export function withReportHint(message: string): string {
   return message.includes('開発者へ報告') ? message : `${message}\n${KNIFE_REPORT_HINT}`;
 }
+
+/** ナイフの道具の断り（`useKnifeTool.ts`）。中核の `SPLIT_REJECT_TEXT` と同じ文だが、画面側の表として別に持つ。 */
+export const KNIFE_TOOL_TEXT = {
+  notTerminal: '集約地物は分割できません。末端地物を選んでください。',
+  shapeUnresolvable: '対象面の形状を取得できませんでした。',
+} as const;

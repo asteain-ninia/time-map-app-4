@@ -37,6 +37,7 @@ import {
 import type { FeatureId } from '../../domain/ids';
 
 import { formatTimePoint } from '../timeline/time-display';
+import { ANCHOR_DIFF_STRINGS } from './messages';
 
 /** 変わったものの種類。分岐識別子は定数を経由する（教訓 5.19）。 */
 export const ANCHOR_CHANGE = {
@@ -244,26 +245,7 @@ export function changesBetween(
 }
 
 /** 画面に出す言葉（1 か所に集める、NFR 5.7）。 */
-export const ANCHOR_DIFF_STRINGS = {
-  /**
-   * 前の錨と何も変わっていない行（最初の錨でも消滅でもない）。**比べる語彙が保存の対象と
-   * 同じ広さになった**（B1）ので、ここに残るのは本当に「値を変えずに作った錨」だけである
-   * （Ctrl+K で「この年から同じ姿が続く」を記録したときの行）。
-   */
-  noChange: 'この年から同じ姿が続くことを記録しました',
-  appeared: (name: string): string => `ここから記録が始まります: ${name}`,
-  disappeared: (name: string): string => `${name} がこの記録から外れました`,
-  name: (before: string, after: string): string => `名前が変わった: ${before} → ${after}`,
-  kindLabel: (before: string | null, after: string | null): string =>
-    `種別が変わった: ${before ?? '（なし）'} → ${after ?? '（なし）'}`,
-  parent: (before: string | null, after: string | null): string =>
-    `親が変わった: ${before ?? 'なし'} → ${after ?? 'なし'}`,
-  shape: '形が変わった',
-  style: '見た目が変わった',
-  detailDocument: '詳細文書が変わった',
-  /** 複数の変化を 1 行に並べるときの区切り。 */
-  separator: '／',
-} as const;
+export { ANCHOR_DIFF_STRINGS };
 
 /** 変化 1 件を日本語にする。 */
 export function changeSentence(change: AnchorChange): string {

@@ -3,6 +3,8 @@
 // 表示の判断（何を出すか・出さないか）だけをここに置き、DOM も React も触らない
 // （教訓 5.41: 実機でしか動かせない範囲を減らし、単体テストで守れる形にする）。
 
+import { SHELL_TEXT } from './strings';
+
 /** ファイルの絶対パスから、画面に出す名前（拡張子込み）を取り出す。 */
 export function fileNameOf(savePath: string | null): string | null {
   if (savePath === null) return null;
@@ -17,13 +19,13 @@ export function fileNameOf(savePath: string | null): string | null {
 export const APP_NAME = 'gimoza';
 
 /** 保存先が決まっていない新規プロジェクトの、ファイル名の代わりに出す文字。 */
-export const UNSAVED_NEW_PROJECT = '（未保存の新規）';
+export const UNSAVED_NEW_PROJECT = SHELL_TEXT.unsavedNewProject;
 
 /**
  * 読み込みは成功したのに保存先の確定に失敗したときに、ファイル名の代わりに出す文字。
  * 「（未保存の新規）」と区別する（読み込んだファイルが無かったことにされて見えるため）。
  */
-export const DESTINATION_UNDETERMINED = '保存先: 未確定';
+export const DESTINATION_UNDETERMINED = SHELL_TEXT.destinationUndetermined;
 
 /** 未保存の印。 */
 export const DIRTY_MARK = '●';
@@ -45,7 +47,7 @@ export interface RestoredFromLabel {
  * 実時間を出す（一覧の日時の列と同じ物差し）。
  */
 export function restoredFileLabel(restored: RestoredFromLabel): string {
-  return `${restored.sourceName}（${formatDateMinute(restored.savedAtMs)} の世代から復旧・保存先は未確定）`;
+  return SHELL_TEXT.restoredFileLabel(restored.sourceName, formatDateMinute(restored.savedAtMs));
 }
 
 export interface WindowTitleInput {

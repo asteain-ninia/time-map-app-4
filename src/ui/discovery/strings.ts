@@ -401,3 +401,16 @@ export const JUMP_STRINGS = {
   noCandidate: '当てはまるものがありません。',
   closeLabel: '閉じる',
 } as const;
+
+/** 診断ログの最初の 1 行（`log-sink.ts`）と、診断の板の部品の中の文（`HelpToolsController.tsx`）。 */
+export const DIAGNOSTICS_TEXT = {
+  sessionStart: 'セッション開始',
+  /** ログの種別の日本語（内部の英語値を画面に出さない）。 */
+  levelInfo: '情報',
+  levelWarning: '警告',
+  levelError: 'エラー',
+  featureCount: '地物数',
+  unsavedChanges: '未保存の変更',
+  unsavedYes: 'あり',
+  unsavedNo: 'なし',
+} as const;

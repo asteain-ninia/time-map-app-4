@@ -16,6 +16,7 @@ import {
   validateImageDescriptor,
   type CorrectedDimensions,
 } from '../../domain/basemap/index';
+import { BASEMAP_ASPECT_STRINGS } from './strings';
 
 /** 利用者の答え。 */
 export const BASEMAP_ASPECT_CHOICE = {
@@ -89,34 +90,7 @@ export function basemapAspectQuestion(dims: {
 }
 
 /** 画面に出す言葉（教訓 5.19）。設計書 §F の G-10 の文に合わせる。 */
-export const BASEMAP_ASPECT_STRINGS = {
-  title: '背景地図の縦横比',
-  question: (ratio: string): string => `この画像は ${ratio} です。2:1 に補正しますか、このまま使いますか。`,
-  explainCorrectable:
-    '地図は横が縦の 2 倍（2:1）で描きます。補正すると、画像の足りない側に余白を足して 2:1 にします（画像そのものは縮めません）。このまま使うと、地図に合わせて引き伸ばされます。',
-  questionUncorrectable: (ratio: string): string =>
-    `この画像は ${ratio} です。2:1 から離れすぎているため補正できません。このまま使いますか。`,
-  explainUncorrectable: '地図は横が縦の 2 倍（2:1）で描くので、このまま使うと大きく歪みます。',
-  /**
-   * 補正すると地図の上で何が起きるか（増分 8E の手直し。反証 2-4）。余白を足すので、絵は
-   * 地図の中で縮んで描かれ、絵に合わせて描いてあった地物とは端へ行くほど合わなくなる。
-   * 地物の座標そのものは動かない。`axis` は絵が縮んで見える向き（横に足りない画像なら横）。
-   */
-  explainCorrectShift: (axis: string): string =>
-    `余白を足すので、絵は${axis}方向に縮んで見え、地図の端の地物と合わなくなることがあります。`,
-  axisHorizontal: '横',
-  axisVertical: '縦',
-  correct: '2:1 に補正する',
-  keep: 'このまま使う',
-  cancel: 'やめる',
-  /** 状態行（何が起きたか）。 */
-  appliedCorrected: '背景地図を差し替えました（余白を足して 2:1 に補正しました）。',
-  appliedKept: (ratio: string): string =>
-    `背景地図を差し替えました（縦横比 ${ratio} のまま。地図に合わせて引き伸ばして描きます）。`,
-  applied: '背景地図を差し替えました。',
-  cancelled: '背景地図の差し替えをやめました。地図は変わっていません。',
-  correctFailed: '画像を 2:1 に補正できませんでした。差し替えを中止しました。地図は変わっていません。',
-} as const;
+export { BASEMAP_ASPECT_STRINGS };
 
 /**
  * 補正したとき、絵が地図の中で縮んで見える向き（増分 8E の手直し）。横が足りない画像

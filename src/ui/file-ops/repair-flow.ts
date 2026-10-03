@@ -35,6 +35,13 @@ import {
   type RepairOption,
   type RepairOptionId,
 } from '../../domain/persistence/index';
+import {
+  INCONSISTENCY_LABEL_TEXT,
+  REPAIR_DETAIL_TEXT,
+  REPAIR_FLOW_TEXT,
+  REPAIR_OPTION_OVERRIDE_TEXT,
+  REPAIR_OPTION_TEXT,
+} from './strings';
 
 // --- view-model: one row per inconsistency ----------------------------------
 
@@ -80,7 +87,7 @@ export function buildRepairRows(report: ConsistencyReport): RepairRow[] {
  */
 export function describeInconsistency(inc: Inconsistency, namer?: RepairNamer): string {
   const target = namer === undefined ? targetNamesFromReport(inc) : targetNamesFromProject(inc, namer);
-  return `${INCONSISTENCY_LABELS[inc.kind]}（対象: ${target}）`;
+  return REPAIR_FLOW_TEXT.describe(INCONSISTENCY_LABELS[inc.kind], target);
 }
 
 /** 歴史を単位にする種類（対象は「〈持ち主〉の歴史」と呼ぶ）。 */
@@ -95,7 +102,7 @@ const ORPHAN_MEMBER_NAMES = 3;
 /** プロジェクトから名前を引いて、対象を 1 件ずつ呼ぶ。 */
 function targetNamesFromProject(inc: Inconsistency, namer: RepairNamer): string {
   if (inc.kind === 'orphan-history') {
-    return inc.featureIds.map((id) => orphanHistoryLabel(id, namer)).join('、');
+    return inc.featureIds.map((id) => orphanHistoryLabel(id, namer)).join(REPAIR_FLOW_TEXT.listSeparator);
   }
   const infos = inc.featureIds.map((id) => namer.featureInfo(id));
   const nameCounts = new Map<string, number>();
@@ -105,18 +112,18 @@ function targetNamesFromProject(inc: Inconsistency, namer: RepairNamer): string 
   const labels = infos.map((info) =>
     repairTargetLabel(info, info.name !== null && (nameCounts.get(info.name) ?? 0) > 1),
   );
-  if (HISTORY_KINDS.has(inc.kind)) return labels.map((label) => `${label}の歴史`).join('、');
-  return labels.length === 0 ? '名前の分からない地物' : labels.join('、');
+  if (HISTORY_KINDS.has(inc.kind)) return labels.map((label) => REPAIR_FLOW_TEXT.historyOf(label)).join(REPAIR_FLOW_TEXT.listSeparator);
+  return labels.length === 0 ? REPAIR_FLOW_TEXT.unknownNameTarget : labels.join(REPAIR_FLOW_TEXT.listSeparator);
 }
 
 /** 孤立した歴史の呼び名（持ち主が居ないので、中に入っている地物の名前で呼ぶ）。 */
 function orphanHistoryLabel(ownerId: FeatureId, namer: RepairNamer): string {
   const members = namer.historyMembers(ownerId) ?? [];
-  if (members.length === 0) return '持ち主の居ない、中身の無い歴史';
+  if (members.length === 0) return REPAIR_FLOW_TEXT.orphanEmpty;
   const shown = members.slice(0, ORPHAN_MEMBER_NAMES).map((id) => repairTargetLabel(namer.featureInfo(id)));
   const rest = members.length - shown.length;
-  const more = rest > 0 ? ` ほか ${String(rest)} 件` : '';
-  return `持ち主の居ない歴史（中の地物: ${shown.join('、')}${more}）`;
+  const more = rest > 0 ? REPAIR_FLOW_TEXT.orphanMore(String(rest)) : '';
+  return REPAIR_FLOW_TEXT.orphanWithMembers(shown.join(REPAIR_FLOW_TEXT.listSeparator), more);
 }
 
 /**
@@ -137,11 +144,11 @@ function targetNamesFromReport(inc: Inconsistency): string {
     else named.push(raw);
   }
   const parts = [...named];
-  if (unnamed > 0) parts.push(`名前のない地物 ${String(unnamed)} 件`);
+  if (unnamed > 0) parts.push(REPAIR_FLOW_TEXT.unnamedCount(String(unnamed)));
   if (unknown > 0 || parts.length === 0) {
-    parts.push(`名前の分からない地物 ${String(Math.max(unknown, 1))} 件`);
+    parts.push(REPAIR_FLOW_TEXT.unknownCount(String(Math.max(unknown, 1))));
   }
-  return parts.join('、');
+  return parts.join(REPAIR_FLOW_TEXT.listSeparator);
 }
 
 /**
@@ -157,28 +164,28 @@ export function describeInconsistencyDetail(inc: Inconsistency): string | null {
   const missing = /^missing:(.*)$/.exec(detail);
   if (missing !== null) {
     const count = missing[1]!.split(',').filter((s) => s.length > 0).length;
-    return `存在しない頂点を ${String(count)} 個参照しています。`;
+    return REPAIR_FLOW_TEXT.missingVertices(String(count));
   }
-  if (detail.startsWith('vertex:')) return '同じ頂点の座標が歴史によって違います。';
+  if (detail.startsWith('vertex:')) return REPAIR_FLOW_TEXT.vertexDiverges;
   const count = /^count:(\d+)$/.exec(detail);
-  if (count !== null) return `同じ地物の歴史が ${count[1]!} 本あります。`;
+  if (count !== null) return REPAIR_FLOW_TEXT.duplicateHistories(count[1]!);
   return null;
 }
 
 /** `detail` の符号 → 画面の言葉（固定の符号だけ。数を含むものは上の関数が組み立てる）。 */
 const DETAIL_TEXT: Readonly<Record<string, string>> = {
-  'top-level-mismatch': '最上位かどうかの印と、親の有無が食い違っています。',
-  cycle: '親をたどると自分に戻ってきます。',
-  'dangling-parent': '親として指している地物が見つかりません。',
-  'child-parent-mismatch': '下位領域の一覧と、各地物が指している親が食い違っています。',
-  'duplicate-id': '同じ地物が複数あります。',
-  'leaf-empty-shape': '形がありません。',
-  'aggregate-no-children': '下位領域が 1 つもありません。',
-  'leaf-with-children': '末端なのに下位領域を持っています。',
-  'positive-area-overlap': '面積のある重なりがあります。',
-  'inter-child-gap': '下位領域どうしのあいだに隙間があります。',
-  'same-time-spatial-conflict': '同じ時刻に重なっています。',
-  'owner-feature-absent': 'この歴史の持ち主の地物が、どの年にも居ません。',
+  'top-level-mismatch': REPAIR_DETAIL_TEXT.topLevelMismatch,
+  cycle: REPAIR_DETAIL_TEXT.cycle,
+  'dangling-parent': REPAIR_DETAIL_TEXT.danglingParent,
+  'child-parent-mismatch': REPAIR_DETAIL_TEXT.childParentMismatch,
+  'duplicate-id': REPAIR_DETAIL_TEXT.duplicateId,
+  'leaf-empty-shape': REPAIR_DETAIL_TEXT.leafEmptyShape,
+  'aggregate-no-children': REPAIR_DETAIL_TEXT.aggregateNoChildren,
+  'leaf-with-children': REPAIR_DETAIL_TEXT.leafWithChildren,
+  'positive-area-overlap': REPAIR_DETAIL_TEXT.positiveAreaOverlap,
+  'inter-child-gap': REPAIR_DETAIL_TEXT.interChildGap,
+  'same-time-spatial-conflict': REPAIR_DETAIL_TEXT.sameTimeSpatialConflict,
+  'owner-feature-absent': REPAIR_DETAIL_TEXT.ownerFeatureAbsent,
 };
 
 /**
@@ -207,16 +214,10 @@ export function repairOptionText(
 }
 
 /** 件数つきの方法の文（{@link repairOptionText}）。 */
-export const REPAIR_OPTION_TEXT = {
-  dropOrphanHistoryWithCount: (members: number): string =>
-    members === 0
-      ? '持ち主の居ない、中身の無い歴史を読み込みから除外します。'
-      : `持ち主の居ない歴史（中に ${String(members)} 件の地物の記録）を、中身ごと読み込みから除外します（中の地物も消えます）。`,
-} as const;
+export { REPAIR_OPTION_TEXT };
 
 const REPAIR_OPTION_TEXT_OVERRIDES: Partial<Record<RepairOptionId, string>> = {
-  [REPAIR_OPTION.ReconcileChildIds]:
-    'まとめ役の下位領域の一覧を、各地物が指している親に合わせて作り直します。',
+  [REPAIR_OPTION.ReconcileChildIds]: REPAIR_OPTION_OVERRIDE_TEXT.reconcileChildIds,
 };
 
 /**
@@ -235,17 +236,17 @@ export function defaultRepairChoices(rows: readonly RepairRow[]): RepairChoices 
 
 /** Japanese label per inconsistency kind (FR-115; all 7 kinds, 省略しない). */
 export const INCONSISTENCY_LABELS = {
-  'missing-vertex-reference': '存在しない頂点参照',
-  'tree-topology': '階層（ツリー）構造の不整合',
-  'shape-preservation': '形状保持規則の違反',
-  'ring-hierarchy-invalid': 'リング階層（領土と穴の入れ子関係・包含）の不整合',
-  'terminal-exclusion': '末端地物の重なり',
-  'aggregate-sum-mismatch': '集約と下位領域の和の不一致',
-  'time-conflict': '時間（錨列）の矛盾',
-  'anchor-spatial-overlap': '同時刻の地物どうしの空間的重なり',
-  'orphan-history': '所有地物が存在しない孤立した歴史',
-  'duplicate-owner-history': '同一地物を所有する歴史の重複',
-  'vertex-coordinate-divergence': '共有頂点の座標が歴史間で食い違っている',
+  'missing-vertex-reference': INCONSISTENCY_LABEL_TEXT.missingVertexReference,
+  'tree-topology': INCONSISTENCY_LABEL_TEXT.treeTopology,
+  'shape-preservation': INCONSISTENCY_LABEL_TEXT.shapePreservation,
+  'ring-hierarchy-invalid': INCONSISTENCY_LABEL_TEXT.ringHierarchyInvalid,
+  'terminal-exclusion': INCONSISTENCY_LABEL_TEXT.terminalExclusion,
+  'aggregate-sum-mismatch': INCONSISTENCY_LABEL_TEXT.aggregateSumMismatch,
+  'time-conflict': INCONSISTENCY_LABEL_TEXT.timeConflict,
+  'anchor-spatial-overlap': INCONSISTENCY_LABEL_TEXT.anchorSpatialOverlap,
+  'orphan-history': INCONSISTENCY_LABEL_TEXT.orphanHistory,
+  'duplicate-owner-history': INCONSISTENCY_LABEL_TEXT.duplicateOwnerHistory,
+  'vertex-coordinate-divergence': INCONSISTENCY_LABEL_TEXT.vertexCoordinateDivergence,
 } as const satisfies Record<Inconsistency['kind'], string>;
 
 // --- user choices (per-inconsistency repair option) -------------------------

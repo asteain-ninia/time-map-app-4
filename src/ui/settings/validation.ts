@@ -42,6 +42,7 @@ import { validateZoomLimits } from '../file-ops/zoom-limit';
 // rejects is saved and makes the .gimoza un-loadable on reopen (教訓 6.4.15 片側 shim).
 // Both sides share the ONE predicate + bound below (単一の真実源).
 import { MAX_YEAR, isPersistedYear } from '../../domain/time/validate';
+import { SETTINGS_REJECTION_TEXT } from './strings';
 
 // --- Defaults factory (新規プロジェクト初期化の入口, 受け入れ基準 5) ----------
 
@@ -107,21 +108,21 @@ function isFiniteNumber(n: number): boolean {
 
 /** Japanese rejection messages, produced from a single source (FR-115). */
 export const REJECTION = {
-  timelineOrder: 'タイムラインの最小年は最大年より小さくしてください。',
-  timelineYearBound: `タイムラインの年は整数かつ ±${String(MAX_YEAR)} 年以内で入力してください。`,
-  equatorNonPositive: '赤道長は 0 より大きい値を入力してください。',
-  flatteningRange: '扁平率は 0 以上 1 未満の値を入力してください。',
+  timelineOrder: SETTINGS_REJECTION_TEXT.timelineOrder,
+  timelineYearBound: SETTINGS_REJECTION_TEXT.timelineYearBound(String(MAX_YEAR)),
+  equatorNonPositive: SETTINGS_REJECTION_TEXT.equatorNonPositive,
+  flatteningRange: SETTINGS_REJECTION_TEXT.flatteningRange,
   // Derived from the single GRID_SPACINGS_DEG list (HB3-23) so the message can never
   // drift from the actual allowed spacings when the list changes.
-  gridSpacing: `グリッド間隔は ${GRID_SPACINGS_DEG.join('・')} 度のいずれかを選んでください。`,
-  gridVisibleType: 'グリッド表示は ON / OFF のいずれかで指定してください。',
-  gridOpacityRange: 'グリッド不透明度は 0 から 1 の範囲で入力してください。',
-  occupancyRange: '面情報ラベル表示閾値は 0 から 1 の範囲で入力してください。',
-  fpsRange: `描画更新頻度は ${String(MIN_RENDER_FPS)} から ${String(MAX_RENDER_FPS)} FPS の範囲で入力してください。`,
-  snapDistanceRange: '共有頂点スナップ距離は 0 以上の数値で入力してください。',
-  vertexMarkerCapRange: '全頂点マーカー表示上限は 0 以上の整数で入力してください。',
-  undoStackSizeRange: 'アンドゥ履歴の上限は 1 以上の整数で入力してください。',
-  notANumber: '数値を入力してください。',
+  gridSpacing: SETTINGS_REJECTION_TEXT.gridSpacing(GRID_SPACINGS_DEG.join(SETTINGS_REJECTION_TEXT.gridSpacingSeparator)),
+  gridVisibleType: SETTINGS_REJECTION_TEXT.gridVisibleType,
+  gridOpacityRange: SETTINGS_REJECTION_TEXT.gridOpacityRange,
+  occupancyRange: SETTINGS_REJECTION_TEXT.occupancyRange,
+  fpsRange: SETTINGS_REJECTION_TEXT.fpsRange(String(MIN_RENDER_FPS), String(MAX_RENDER_FPS)),
+  snapDistanceRange: SETTINGS_REJECTION_TEXT.snapDistanceRange,
+  vertexMarkerCapRange: SETTINGS_REJECTION_TEXT.vertexMarkerCapRange,
+  undoStackSizeRange: SETTINGS_REJECTION_TEXT.undoStackSizeRange,
+  notANumber: SETTINGS_REJECTION_TEXT.notANumber,
 } as const;
 
 // --- Project-settings validation --------------------------------------------

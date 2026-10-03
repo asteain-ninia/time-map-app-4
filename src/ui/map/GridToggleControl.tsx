@@ -32,19 +32,10 @@ import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
 import type { SessionStore } from '../state/store';
+import { GRID_TOGGLE_STRINGS } from './strings';
 
 /** All user-visible text for the grid toggle (教訓 5.19 表示文言は定数を経由する). */
-export const GRID_TOGGLE_STRINGS = {
-  /** Button label — short + constant width for the topBar fixed-occupancy invariant. */
-  label: 'グリッド',
-  /** Accessible name / tooltip (FR-13 グリッド(グラティキュール)表示の ON/OFF). */
-  ariaLabel: 'グリッド表示切替',
-  /**
-   * K-6: 「読むだけ」で無効になっている理由（tooltip）。無効の理由を言わない無効ボタンは
-   * 「壊れている」と読まれる（教訓 5.7 の死んだボタンと見分けがつかない）ので必ず出す。
-   */
-  viewOnlyTitle: 'グリッド表示切替（「読むだけ」の間は変更できません。この設定は保存ファイルに入ります）',
-} as const;
+export { GRID_TOGGLE_STRINGS };
 
 export interface GridToggleControlProps<S> {
   readonly store: StoreApi<SessionStore<S>>;

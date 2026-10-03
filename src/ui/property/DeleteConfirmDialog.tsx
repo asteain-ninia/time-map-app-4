@@ -18,6 +18,8 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useModalKeydown, useModalRegistration } from '../a11y/index';
 import { MSG_DELETE_CONFIRM_BODY, MSG_DELETE_CONFIRM_TITLE } from '../../domain/deletion/index';
 
+import { PROPERTY_TEXT } from './messages';
+
 export interface DeleteConfirmDialogProps {
   /**
    * 消す対象の名前（分かるときだけ）。null / 未指定なら名前の行を出さない。
@@ -62,15 +64,15 @@ export function DeleteConfirmDialog(props: DeleteConfirmDialogProps): JSX.Elemen
       <p>{MSG_DELETE_CONFIRM_BODY}</p>
       {featureName !== null && featureName !== '' && (
         <p className="delete-confirm__target" data-testid="delete-confirm-target">
-          対象: {featureName}
+          {PROPERTY_TEXT.deleteConfirmTargetPrefix}{featureName}
         </p>
       )}
       <div className="delete-confirm-actions">
-        <button type="button" aria-label="削除を確定" onClick={onConfirm}>
-          削除
+        <button type="button" aria-label={PROPERTY_TEXT.deleteConfirmAriaLabel} onClick={onConfirm}>
+          {PROPERTY_TEXT.deleteConfirmButton}
         </button>
-        <button type="button" aria-label="削除をキャンセル" onClick={cancel}>
-          キャンセル
+        <button type="button" aria-label={PROPERTY_TEXT.deleteCancelAriaLabel} onClick={cancel}>
+          {PROPERTY_TEXT.deleteCancelButton}
         </button>
       </div>
     </div>

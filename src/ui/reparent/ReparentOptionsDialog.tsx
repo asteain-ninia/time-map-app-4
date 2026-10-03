@@ -35,7 +35,7 @@ import { buildForest, directChildIds } from '../../domain/hierarchy/forest';
 import type { FeatureId } from '../../domain/ids';
 
 import { ParentTreePicker } from './ParentTreePicker';
-import { REPARENT_STRINGS } from './strings';
+import { REPARENT_STRINGS, REPARENT_TEXT } from './strings';
 
 /** 板が出す 3 択（設計書 §C.6 の親欄の 3 ボタンと 1 対 1）。 */
 export const REPARENT_CHOICE = {
@@ -203,7 +203,7 @@ export function ReparentOptionsDialog(props: ReparentOptionsDialogProps): JSX.El
     if (choice === REPARENT_CHOICE.None) {
       lines.push(REPARENT_STRINGS.previewNone(count));
     } else if (choice === REPARENT_CHOICE.Create) {
-      lines.push(REPARENT_STRINGS.previewCreate(count, newName.trim() || '（名前未入力）'));
+      lines.push(REPARENT_STRINGS.previewCreate(count, newName.trim() || REPARENT_TEXT.newNameMissing));
     } else {
       const parentName = nameOf(existingParentId);
       if (parentName !== null) lines.push(REPARENT_STRINGS.previewInto(count, parentName));
@@ -224,7 +224,7 @@ export function ReparentOptionsDialog(props: ReparentOptionsDialogProps): JSX.El
     }
     // 子を全部失って自動で消えるまとめ役（解体の主経路。反証 2-4）。
     if (autoRemovedNames.length > 0) {
-      lines.push(REPARENT_STRINGS.previewAutoRemoved(autoRemovedNames.join('・')));
+      lines.push(REPARENT_STRINGS.previewAutoRemoved(autoRemovedNames.join(REPARENT_TEXT.nameSeparator)));
     }
     // 分け残し（直轄領）が生まれる枝（反証 2-5）。
     if (directDomain !== null) {

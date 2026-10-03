@@ -22,6 +22,8 @@ import {
   type ProjectSettings,
 } from '../state/settings';
 
+import { ZOOM_LIMIT_TEXT } from './strings';
+
 /**
  * The render-layer clamp shape (`render/camera#ZoomRange`) reproduced here as a
  * pure value type so this ui module does not import the render layer just for a
@@ -52,11 +54,9 @@ export type ZoomLimitValidation =
 // --- Japanese rejection messages (single map, FR-115) -----------------------
 
 export const ZOOM_LIMIT_REJECTION = {
-  notANumber: '数値を入力してください。',
-  outOfRange: `ズーム倍率は ${String(ZOOM_LIMIT_FLOOR)} 倍から ${String(
-    ZOOM_LIMIT_CEIL,
-  )} 倍の範囲で入力してください。`,
-  order: '最小ズーム倍率は最大ズーム倍率以下にしてください。',
+  notANumber: ZOOM_LIMIT_TEXT.notANumber,
+  outOfRange: ZOOM_LIMIT_TEXT.outOfRange(String(ZOOM_LIMIT_FLOOR), String(ZOOM_LIMIT_CEIL)),
+  order: ZOOM_LIMIT_TEXT.order,
 } as const;
 
 function isFiniteNumber(n: number): boolean {

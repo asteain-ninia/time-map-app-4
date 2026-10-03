@@ -23,31 +23,24 @@ import { idToString, type FeatureId } from '../../domain/ids';
 import type { FeatureHistory } from '../../domain/persistence/index';
 import { stripInvisibleThenTrim } from '../../domain/text';
 import { formatTimePoint } from '../timeline/time-display';
+import { PARTICIPANT_KIND_TEXT, PARTICIPANT_NAME_STRINGS } from './strings';
 
 /**
  * 名前が空のときに呼ぶ「何であるか」の語。**まとめ役も「面」と呼ぶ**（地図の上では面に
  * 見える。設計書 §H.1 の例は「名前のない面（1500年に作成）」の 1 通り）。
  */
 export const UNNAMED_KIND_WORD: Readonly<Record<FeatureKind, string>> = {
-  [FEATURE_KIND.Point]: '点',
-  [FEATURE_KIND.Line]: '線',
-  [FEATURE_KIND.Leaf]: '面',
-  [FEATURE_KIND.Aggregate]: '面',
+  [FEATURE_KIND.Point]: PARTICIPANT_KIND_TEXT.kindPoint,
+  [FEATURE_KIND.Line]: PARTICIPANT_KIND_TEXT.kindLine,
+  [FEATURE_KIND.Leaf]: PARTICIPANT_KIND_TEXT.kindLeaf,
+  [FEATURE_KIND.Aggregate]: PARTICIPANT_KIND_TEXT.kindAggregate,
 };
 
 /** 種類の分からない地物（どこにも見つからない）を呼ぶ語。 */
-export const UNKNOWN_KIND_WORD = '地物';
+export const UNKNOWN_KIND_WORD = PARTICIPANT_KIND_TEXT.unknownKind;
 
 /** 画面に出す言葉（教訓 5.19: 文言は定数を経由する）。 */
-export const PARTICIPANT_NAME_STRINGS = {
-  /** 「名前のない面（1500年に作成）」。 */
-  unnamedWithYear: (kindWord: string, createdLabel: string): string =>
-    `名前のない${kindWord}（${createdLabel}に作成）`,
-  /** 作成の年が分からないとき（履歴に見つからない＝通常は起きない）。 */
-  unnamed: (kindWord: string): string => `名前のない${kindWord}`,
-  /** 同じ名前の地物を見分けるために作成の年を添える「州（900年に作成）」。 */
-  namedWithYear: (name: string, createdLabel: string): string => `${name}（${createdLabel}に作成）`,
-} as const;
+export { PARTICIPANT_NAME_STRINGS };
 
 /**
  * 地物の名前の欄から、画面で呼べる名前を取り出す。見えない文字を落として空になる・

@@ -187,3 +187,13 @@ export const REPARENT_STRINGS = {
 export const REPARENT_STEP_COUNT = 3;
 
 export type ReparentStringKey = keyof typeof REPARENT_STRINGS;
+
+/** 所属を変える板の部品の中の文（`ParentTreePicker.tsx` / `ReparentOptionsDialog.tsx`）。 */
+export const REPARENT_TEXT = {
+  collapseAriaLabel: '畳む',
+  expandAriaLabel: '開く',
+  /** 新しい上位領域の名前がまだ空のとき、予告の文に入れる言葉。 */
+  newNameMissing: '（名前未入力）',
+  /** 名前を並べるときの区切り。 */
+  nameSeparator: '・',
+} as const;

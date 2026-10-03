@@ -16,6 +16,8 @@
 
 import type { ZoomDirection } from './keyboard-zoom';
 
+import { ZOOM_LIMIT_NOTICE_TEXT } from './strings';
+
 /** 判定に使う範囲（`render/camera` の `ZoomRange` と同じ形）。 */
 export interface ZoomLimitRange {
   readonly minZoom: number;
@@ -43,12 +45,12 @@ function formatTimes(value: number): string {
 
 /** 画面に出る言葉（教訓 5.19: 文言は定数を経由する）。 */
 export const ZOOM_LIMIT_NOTICE_STRINGS = {
-  sideMax: (max: number): string => `拡大の上限（${formatTimes(max)}倍）です`,
-  sideMin: (min: number): string => `縮小の下限（${formatTimes(min)}倍）です`,
+  sideMax: (max: number): string => ZOOM_LIMIT_NOTICE_TEXT.sideMax(formatTimes(max)),
+  sideMin: (min: number): string => ZOOM_LIMIT_NOTICE_TEXT.sideMin(formatTimes(min)),
   statusMax: (max: number): string =>
-    `これ以上は拡大できません。拡大の上限（${formatTimes(max)}倍）に達しています。上限は設定の「最大ズーム倍率」で変えられます。`,
+    ZOOM_LIMIT_NOTICE_TEXT.statusMax(formatTimes(max)),
   statusMin: (min: number): string =>
-    `これ以上は縮小できません。縮小の下限（${formatTimes(min)}倍）に達しています。下限は設定の「最小ズーム倍率」で変えられます。`,
+    ZOOM_LIMIT_NOTICE_TEXT.statusMin(formatTimes(min)),
 } as const;
 
 /**

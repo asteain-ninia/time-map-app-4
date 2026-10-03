@@ -57,9 +57,9 @@ import {
  * `LOG_LEVEL` の英語識別子で持つが、画面へはここを通してから出す（教訓 5.19）。
  */
 const LOG_LEVEL_LABELS: Readonly<Record<LogLevel, string>> = {
-  [LOG_LEVEL.Info]: '情報',
-  [LOG_LEVEL.Warning]: '警告',
-  [LOG_LEVEL.Error]: 'エラー',
+  [LOG_LEVEL.Info]: DIAGNOSTICS_TEXT.levelInfo,
+  [LOG_LEVEL.Warning]: DIAGNOSTICS_TEXT.levelWarning,
+  [LOG_LEVEL.Error]: DIAGNOSTICS_TEXT.levelError,
 };
 // 作中時刻を文字にする整形は U21 の `formatTimePoint` が単一の真実源（紀元前の表記と、
 // 未指定の月日を捏造しない規約がここに集約されている）。診断情報の概況が持っていた
@@ -68,6 +68,7 @@ const LOG_LEVEL_LABELS: Readonly<Record<LogLevel, string>> = {
 import { formatTimePoint } from '../timeline/time-display';
 import { featuresAt } from '../live-lookup';
 import type { DomainProject } from '../../domain/persistence/index';
+import { DIAGNOSTICS_TEXT } from '../discovery/strings';
 
 /** Which help/tools view is currently open (only one at a time). */
 // **`Search` は増分 4 で消えた。** 「地物を検索」は独立したモーダルをやめ、
@@ -469,12 +470,12 @@ function DiagnosticsView(props: {
       <section className="diagnostics-panel__overview">
         <h3>{DIAGNOSTICS_STRINGS.summarySectionTitle}</h3>
         <dl>
-          <dt>地物数</dt>
+          <dt>{DIAGNOSTICS_TEXT.featureCount}</dt>
           <dd data-testid="diagnostics-feature-count">{featureCount}</dd>
           <dt>{DIAGNOSTICS_STRINGS.fieldContextTime}</dt>
           <dd data-testid="diagnostics-current-time">{formatTimePoint(currentTime)}</dd>
-          <dt>未保存の変更</dt>
-          <dd data-testid="diagnostics-unsaved">{hasUnsavedChanges ? 'あり' : 'なし'}</dd>
+          <dt>{DIAGNOSTICS_TEXT.unsavedChanges}</dt>
+          <dd data-testid="diagnostics-unsaved">{hasUnsavedChanges ? DIAGNOSTICS_TEXT.unsavedYes : DIAGNOSTICS_TEXT.unsavedNo}</dd>
         </dl>
       </section>
 

@@ -36,7 +36,7 @@ import { OptionPopover } from '../shell/OptionPopover';
 import type { SessionStore } from '../state/store';
 
 import { DEFAULT_SURVEY_STYLE, currentMeasurement } from './survey-batch';
-import { SURVEY_STRINGS, formatDistanceKm } from './strings';
+import { SURVEY_STRINGS, SURVEY_TEXT, formatDistanceKm } from './strings';
 
 /** Which coordinate form(s) the readout shows (FR-16 切替; UI-local). */
 type CoordFormat = 'both' | 'dms' | 'decimal';
@@ -134,7 +134,7 @@ export function SurveyMeasurementPanel<S>(
         data-testid="survey-clear"
         onClick={() => store.getState().surveyClear()}
       >
-        {SURVEY_STRINGS.clearLabel}（{survey.lines.length}）
+        {SURVEY_STRINGS.clearLabel}{SURVEY_TEXT.countOpen}{survey.lines.length}{SURVEY_TEXT.countClose}
       </button>
 
       {/* **案内の文はオプションバーの「次の一手」が出す**（増分 5 の手直し C3 /

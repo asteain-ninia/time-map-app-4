@@ -17,7 +17,7 @@ import { DELETE_VERDICT, deleteCautionMessage } from '../../domain/deletion/inde
 import type { FeatureId } from '../../domain/ids';
 import type { ImpactGroup } from '../shell/ImpactConfirmDialog';
 
-import { PROPERTY_STRINGS } from './messages';
+import { PROPERTY_STRINGS, PROPERTY_TEXT } from './messages';
 
 /**
  * 影響ダイアログへ渡す一式（見出し・群・断りの理由・ボタンの文言）。
@@ -44,8 +44,8 @@ export function summarizeNames(
   const shown = names.slice(0, head);
   const rest = names.length - shown.length;
   return rest === 0
-    ? shown.join('・')
-    : PROPERTY_STRINGS.impactNamesWithRest(shown.join('・'), rest);
+    ? shown.join(PROPERTY_TEXT.nameSeparator)
+    : PROPERTY_STRINGS.impactNamesWithRest(shown.join(PROPERTY_TEXT.nameSeparator), rest);
 }
 
 /**
