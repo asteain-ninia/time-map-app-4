@@ -24,6 +24,7 @@
 import type { Calendar } from '../../domain/time/calendar';
 import { idToString } from '../../domain/ids';
 import {
+  REPAIR_OPTION,
   applyRepairChecked,
   repairOptionsFor,
   type ConsistencyReport,
@@ -63,12 +64,98 @@ export function buildRepairRows(report: ConsistencyReport): RepairRow[] {
 /**
  * A short Japanese summary line for one inconsistency (FR-115). Names the related
  * features; the kind-specific label lives in {@link INCONSISTENCY_LABELS}. Pure.
+ *
+ * **内部の ID（`f-5-4` など）は出さない**（増分 8D / N-22・N-18、設計書 §H.1 の U-1）。
+ * 名前が空の地物と、名前の代わりに ID が入っている地物（時間の矛盾は歴史の ID を名前の欄へ
+ * 入れてくる）は「名前のない地物」と数で言う。
  */
 export function describeInconsistency(inc: Inconsistency): string {
-  const names = inc.featureNames.length > 0
-    ? inc.featureNames.join('、')
-    : inc.featureIds.map(idToString).join('、');
-  return `${INCONSISTENCY_LABELS[inc.kind]}（対象: ${names}）`;
+  return `${INCONSISTENCY_LABELS[inc.kind]}（対象: ${targetNamesOf(inc)}）`;
+}
+
+/** 対象の地物の呼び名（名前があるものは名前、無いものは「名前のない地物 N 件」）。 */
+function targetNamesOf(inc: Inconsistency): string {
+  const idTexts = new Set(inc.featureIds.map(idToString));
+  const named: string[] = [];
+  for (const raw of inc.featureNames) {
+    const name = raw.trim();
+    if (name.length === 0 || idTexts.has(name)) continue;
+    if (!named.includes(name)) named.push(name);
+  }
+  const unnamed = Math.max(0, Math.max(inc.featureIds.length, inc.featureNames.length) - named.length);
+  const parts = [...named];
+  if (unnamed > 0 || parts.length === 0) {
+    parts.push(`名前のない地物 ${String(Math.max(unnamed, 1))} 件`);
+  }
+  return parts.join('、');
+}
+
+/**
+ * 不整合の **細かい理由**（`detail` は機械向けの符号）を画面の言葉にする（増分 8D / N-22）。
+ * 知らない符号は **出さない**（`null`）―― 英語の符号をそのまま見せるより、種類の名前だけの
+ * ほうが読める。
+ */
+export function describeInconsistencyDetail(inc: Inconsistency): string | null {
+  const detail = inc.detail;
+  if (detail === undefined) return null;
+  const known = DETAIL_TEXT[detail];
+  if (known !== undefined) return known;
+  const missing = /^missing:(.*)$/.exec(detail);
+  if (missing !== null) {
+    const count = missing[1]!.split(',').filter((s) => s.length > 0).length;
+    return `存在しない頂点を ${String(count)} 個参照しています。`;
+  }
+  if (detail.startsWith('vertex:')) return '同じ頂点の座標が歴史によって違います。';
+  const count = /^count:(\d+)$/.exec(detail);
+  if (count !== null) return `同じ地物の歴史が ${count[1]!} 本あります。`;
+  return null;
+}
+
+/** `detail` の符号 → 画面の言葉（固定の符号だけ。数を含むものは上の関数が組み立てる）。 */
+const DETAIL_TEXT: Readonly<Record<string, string>> = {
+  'top-level-mismatch': '最上位かどうかの印と、親の有無が食い違っています。',
+  cycle: '親をたどると自分に戻ってきます。',
+  'dangling-parent': '親として指している地物が見つかりません。',
+  'child-parent-mismatch': '下位領域の一覧と、各地物が指している親が食い違っています。',
+  'duplicate-id': '同じ地物が複数あります。',
+  'leaf-empty-shape': '形がありません。',
+  'aggregate-no-children': '下位領域が 1 つもありません。',
+  'leaf-with-children': '末端なのに下位領域を持っています。',
+  'positive-area-overlap': '面積のある重なりがあります。',
+  'inter-child-gap': '下位領域どうしのあいだに隙間があります。',
+  'same-time-spatial-conflict': '同じ時刻に重なっています。',
+  'owner-feature-absent': 'この歴史の持ち主の地物が、どの年にも居ません。',
+};
+
+/**
+ * 修復方法の **画面の文**（増分 8D / N-22）。ふだんは U14 の文（`option.label`）をそのまま
+ * 使う。**内部の項目名（`childIds` / `parentId`）を含む文だけを画面側で言い換える**。
+ *
+ * 全部の方法の写像を UI に持たない（`Record<RepairOptionId, string>` にしない）のは、
+ * 修復方法の一覧が U14 の側で増えたり並び替わったりしても、画面が型で壊れないようにする
+ * ため ―― 言い換えが要るものだけを部分的に持つ。
+ */
+export function repairOptionText(option: RepairOption): string {
+  return REPAIR_OPTION_TEXT_OVERRIDES[option.id] ?? option.label;
+}
+
+const REPAIR_OPTION_TEXT_OVERRIDES: Partial<Record<RepairOptionId, string>> = {
+  [REPAIR_OPTION.ReconcileChildIds]:
+    'まとめ役の下位領域の一覧を、各地物が指している親に合わせて作り直します。',
+};
+
+/**
+ * どの行も **最初の方法を選んだ状態**から始める（増分 8D / 設計書 §E.1 の V14 の手順 (b)）。
+ * 修復方法の並びは「おすすめ順で、先頭が既定」（U14 の `repairOptionsFor`）。方法が 1 つしか
+ * 無い行はラジオを出さないので、ここで選んでおかないと［修復して読み込む］が押せない。
+ */
+export function defaultRepairChoices(rows: readonly RepairRow[]): RepairChoices {
+  let choices = EMPTY_REPAIR_CHOICES;
+  for (const row of rows) {
+    const first = row.options[0];
+    if (first !== undefined) choices = setRepairChoice(choices, row.index, first.id);
+  }
+  return choices;
 }
 
 /** Japanese label per inconsistency kind (FR-115; all 7 kinds, 省略しない). */

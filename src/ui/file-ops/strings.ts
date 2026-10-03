@@ -71,8 +71,18 @@ export const OVERWRITE_STRINGS = {
 /** The load-time consistency auto-repair UI (FR-106). */
 export const REPAIR_STRINGS = {
   title: '読み込みデータの不整合',
-  /** Intro shown above the per-inconsistency list. */
-  intro: '読み込んだデータに次の不整合が見つかりました。各項目の修復方法を選んでください。',
+  /**
+   * Intro shown above the per-inconsistency list.
+   *
+   * 増分 8D: 直し方が 1 つしか無い行はラジオを出さなくなったので、「各項目の修復方法を
+   * 選んでください」は事実と合わなくなった（選ぶ行は一部だけ）。挙動に合わせて直した
+   * （言い回しの総点検は増分 8E）。
+   */
+  intro: '読み込んだデータに次の不整合が見つかりました。それぞれの直し方を確かめてください。',
+  /** 直し方が 1 つしか無い行の頭（増分 8D / N-22）。 */
+  fixLabel: 'こう直します: ',
+  /** 直し方が 2 つ以上ある行の見出し（増分 8D。行ごとに冒頭の説明文を繰り返さない）。 */
+  chooseLegend: '直し方を選んでください',
   /** Apply the chosen repairs and continue loading. */
   apply: '修復して読み込む',
   /** Abort: do not load (修復せず読み込まない). */

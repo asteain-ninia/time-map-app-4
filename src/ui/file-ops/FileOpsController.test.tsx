@@ -569,9 +569,9 @@ describe('自動修復オプション UI (FR-106 / 受け入れ基準 3)', () =>
 
   /** Pick the first repair option in every row, then click 修復して読み込む. */
   async function chooseAllAndApply(): Promise<void> {
-    const radios = screen.getAllByRole('radio');
-    for (const radio of radios) {
-      // One option per row in the brokenLoad report; selecting each completes the form.
+    // 増分 8D: どの行も最初の方法が選ばれた状態で始まり、直し方が 1 つしか無い行には
+    // ラジオが無い（N-22）。ラジオがあれば押してもよい（同じ選択になる）。
+    for (const radio of screen.queryAllByRole('radio')) {
       fireEvent.click(radio);
     }
     await act(async () => {
@@ -1171,7 +1171,8 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
 
   /** Pick the first repair option in every row, then click 修復して読み込む. */
   async function chooseAllAndApply(): Promise<void> {
-    for (const radio of screen.getAllByRole('radio')) fireEvent.click(radio);
+    // 増分 8D: 直し方が 1 つしか無い行にはラジオが無い（最初から選ばれている）。
+    for (const radio of screen.queryAllByRole('radio')) fireEvent.click(radio);
     await act(async () => {
       fireEvent.click(screen.getByTestId('repair-apply'));
     });
