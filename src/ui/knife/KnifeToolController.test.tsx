@@ -1523,7 +1523,7 @@ function uLeaf(): { feature: Feature; store: VertexStore } {
 }
 
 describe('増分 8B の手直し — 延ばした先でも切れたら、保存の前に言う（B65 の残り）', () => {
-  it('飛び地の東を延長が割ると、継承先の板と素性欄の両方に注記が出る', () => {
+  it('飛び地の東を延長が割ると、継承先の板と、名前を入れる段の次の一手の両方で言う', () => {
     const fixture = exclaveLeaf();
     const h = mountKnife(committed, fixture, undefined, {
       resolveLeafShape: () => fixture.shape,
@@ -1538,8 +1538,8 @@ describe('増分 8B の手直し — 延ばした先でも切れたら、保存�
       KNIFE_STRINGS.beyondLineNote,
     );
     fireEvent.click(screen.getByTestId('knife-confirm-inheritor'));
-    expect(screen.getByTestId('add-draft-note').textContent).toContain(
-      KNIFE_STRINGS.beyondLineNote,
+    expect(nextStepText()).toBe(
+      `${KNIFE_STRINGS.beyondLineShort}${KNIFE_STRINGS.nextStepEnterProperties}`,
     );
     h.unmount();
   });
@@ -1564,7 +1564,7 @@ describe('増分 8B の手直し — 延ばした先でも切れたら、保存�
 });
 
 describe('増分 8B の手直し — 名前が何片に付くか（設計適合 2-1）と既定の継承先（設計適合 1-7）', () => {
-  it('3 片に分けると、素性欄に「この名前と種別は 2 片すべてに付きます」が出る', () => {
+  it('3 片に分けると、名前を入れる段の次の一手の先頭に「この名前と種別は 2 片すべてに付きます」が出る', () => {
     const h = mountKnife(committed, uLeaf());
     activateKnife(h.store);
     clickInput(1, 1);
@@ -1573,8 +1573,9 @@ describe('増分 8B の手直し — 名前が何片に付くか（設計適合 
     fireEvent.click(screen.getByTestId('knife-confirm-cut'));
     expect(screen.getByTestId('knife-choose-2')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('knife-confirm-inheritor'));
-    expect(screen.getByTestId('add-draft-note').textContent).toBe(
-      KNIFE_STRINGS.sharedNameNote(2),
+    // 帯は 1 行で末尾が切れるので、何片に付くかを行き先の案内より前に置く。
+    expect(nextStepText()).toBe(
+      `${KNIFE_STRINGS.sharedNameNote(2)}${KNIFE_STRINGS.nextStepEnterProperties}`,
     );
     h.unmount();
   });
@@ -1588,7 +1589,7 @@ describe('増分 8B の手直し — 名前が何片に付くか（設計適合 
     fireEvent.click(screen.getByTestId('knife-confirm-cut'));
     fireEvent.click(screen.getByTestId('knife-confirm-inheritor'));
     expect(screen.getByTestId('add-property-form')).toBeInTheDocument();
-    expect(screen.queryByTestId('add-draft-note')).not.toBeInTheDocument();
+    expect(nextStepText()).toBe(KNIFE_STRINGS.nextStepEnterProperties);
     h.unmount();
   });
 
@@ -1669,6 +1670,23 @@ describe('増分 8B の手直し — 素性入力の段の Escape は、打ち�
     expect(screen.queryByTestId('knife-draft-discard-confirm')).not.toBeInTheDocument();
     expect(screen.queryByTestId('add-property-form')).not.toBeInTheDocument();
     expect(screen.getByTestId('knife-tool')).toHaveAttribute('data-flow', 'selecting-target');
+    h.unmount();
+  });
+});
+
+describe('増分 8B の手直し — 3 片でも［保存］で確定が走る', () => {
+  it('3 片に分けて名前を入れずに［保存］すると、U13 の確定が 1 回走る', () => {
+    const h = mountKnife(committed, uLeaf());
+    activateKnife(h.store);
+    clickInput(1, 1);
+    clickInput(-1, 5);
+    clickInput(11, 5);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    fireEvent.click(screen.getByTestId('knife-choose-0'));
+    fireEvent.click(screen.getByTestId('knife-confirm-inheritor'));
+    expect(nextStepText().startsWith(KNIFE_STRINGS.sharedNameNote(2))).toBe(true);
+    fireEvent.click(screen.getByTestId('add-save'));
+    expect(h.startProcess).toHaveBeenCalledTimes(1);
     h.unmount();
   });
 });
