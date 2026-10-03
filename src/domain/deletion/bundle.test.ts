@@ -200,3 +200,68 @@ describe('削除は「その時刻の全系列の束」で掃除する', () => {
     expect(judgeDeletion(state, fid('P')).kind).toBe(DELETE_VERDICT.Allowed);
   });
 });
+
+describe('まとめ役の剪定は、その錨の区間のどの時点でも子が居ないときだけ（増分 7 の手直し 2 回目）', () => {
+  /**
+   * 連邦 F の錨は 1100 年から（開始年を前へ直した形）。子 a・b は 1200 年から F の子
+   * （自分の系列）。関係の無い Z と W を置く。F の錨の始まりの時刻（1100 年）には子が居ない。
+   */
+  function federationStartedEarly(): DomainProject {
+    const a = leafTile('a', 0, 0, 10, 10);
+    const b = leafTile('b', 10, 0, 10, 10);
+    const z = leafTile('Z', 200, 0, 10, 10);
+    const own = (id: string, feature: Feature, vertices: Vertex[]): FeatureHistory => ({
+      featureId: fid(id),
+      series: {
+        entries: [
+          { anchor: anchorOf(`anchor-${id}-1000`, [feature], vertices), start: timePointYear(1000), end: null },
+          {
+            anchor: anchorOf(`anchor-${id}-1200`, [{ ...feature, parentId: fid('F') } as Feature], vertices),
+            start: timePointYear(1200),
+            end: null,
+          },
+        ],
+      },
+    });
+    const histories: FeatureHistory[] = [
+      {
+        featureId: fid('F'),
+        series: {
+          entries: [
+            { anchor: anchorOf('anchor-F-1100', [aggregate('F', ['a', 'b'])], []), start: timePointYear(1100), end: null },
+          ],
+        },
+      },
+      own('a', a.feature, a.vertices),
+      own('b', b.feature, b.vertices),
+      {
+        featureId: fid('Z'),
+        series: {
+          entries: [
+            { anchor: anchorOf('anchor-Z', [z.feature], z.vertices), start: timePointYear(1000), end: null },
+          ],
+        },
+      },
+    ];
+    return { histories, settings: DEFAULT_SETTINGS, baseMap: DEFAULT_BASEMAP };
+  }
+
+  it('区間の途中から子が居る連邦は、関係の無い地物を消しても消えない（反証 #3 H1b）', () => {
+    const root = federationStartedEarly();
+    const after = deleteOrThrow(root, fid('Z'));
+    expect(after.histories.some((h) => h.featureId === fid('F'))).toBe(true);
+    expect(parentAt(after.histories, fid('a'), 1200)).toBe(fid('F'));
+    expect(parentAt(after.histories, fid('b'), 1300)).toBe(fid('F'));
+    // 影響の一覧も「自動で消える」と言わず、判定も通す（削除の前からある形を削除のせいにしない）。
+    const { state } = deletionStateFromHistories(root.histories, calendar);
+    expect(describeDeletionImpact(state, fid('Z')).autoRemovedIds).not.toContain(fid('F'));
+    expect(judgeDeletion(state, fid('Z')).kind).toBe(DELETE_VERDICT.Allowed);
+  });
+
+  it('区間の途中から子が居る連邦の、途中から入った子を消すと、もう子の居ない連邦は消える', () => {
+    const afterA = deleteOrThrow(federationStartedEarly(), fid('a'));
+    expect(afterA.histories.some((h) => h.featureId === fid('F'))).toBe(true);
+    const afterB = deleteOrThrow(afterA, fid('b'));
+    expect(afterB.histories.some((h) => h.featureId === fid('F'))).toBe(false);
+  });
+});
