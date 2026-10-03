@@ -86,8 +86,8 @@ async function nested(page: Page, children: number, years: readonly number[], ye
 }
 
 /** 子 0・1 に印を付け、新しい上位領域「第一連邦」の下に入れる（連邦化）。 */
-async function federate(page: Page): Promise<void> {
-  for (const i of [0, 1]) {
+async function federate(page: Page, indices: readonly number[] = [0, 1]): Promise<void> {
+  for (const i of indices) {
     await revealRow(page, childName(i), childId(i));
     await page.getByTestId(`ledger-mark-${childId(i)}`).check();
   }
@@ -298,6 +298,83 @@ test.describe('自動保存 — 年をまたぐ食い違いを聞かずに書い
       expect(await countListed(page, 1100, FED)).toBe(1);
       await jumpToYear(page, 1100);
       expect(await parentOf(page, childName(0), childId(0))).toBe(FED);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 手直し 4 回目: どの年にも下位領域が居なくなる連邦・後ろの別の所属
+// ---------------------------------------------------------------------------
+
+test.describe('4 回目 #1 — 連邦を作った年のうちに州を全部終わらせると、連邦は記録ごと無くなる', () => {
+  test('押す前の板がそう言い、手で保存 → 開き直しで修復の板が出ない。取り消しで戻る', async () => {
+    await withSavePath(async ({ page }, savePath) => {
+      await nested(page, 3, [1000], 1200);
+      await federate(page);
+      // 作った年（1200 年）のまま、州 2 件を終わらせる。
+      await selectRow(page, childName(0), childId(0));
+      await page.getByTestId('sidebar-tab-properties').click();
+      await page.getByTestId('end-here').click();
+      await expect(page.getByTestId('end-here-impact')).toHaveCount(0);
+      await selectRow(page, childName(1), childId(1));
+      await page.getByTestId('sidebar-tab-properties').click();
+      await page.getByTestId('end-here').click();
+      await expect(page.getByTestId('end-here-impact-cascaded')).toContainText(FED);
+      await expect(page.getByTestId('end-here-impact-cascaded')).toContainText('記録ごと無くなります');
+      await page.getByTestId('end-here-impact-confirm').click();
+      await expect(page.getByTestId('end-here-impact')).toHaveCount(0);
+      expect(await countListed(page, 1300, FED)).toBe(0);
+
+      // 取り消すと連邦は戻る。やり直すとまた無くなる。
+      await blurToLedger(page);
+      await page.keyboard.press('Control+z');
+      await expect(page.getByTestId('app-can-redo')).toHaveText('1');
+      expect(await countListed(page, 1300, FED)).toBe(1);
+      await blurToLedger(page);
+      await page.keyboard.press('Control+y');
+      await expect(page.getByTestId('app-can-redo')).toHaveText('0');
+      expect(await countListed(page, 1300, FED)).toBe(0);
+
+      await saveWithCtrlS(page);
+      await expect(page.getByTestId('pre-save-dialog')).toHaveCount(0);
+      expect(await reopenWithoutBoards(page, savePath)).toBe('loaded');
+      await enterEditMode(page);
+      expect(await countListed(page, 1300, FED)).toBe(0);
+      expect(await countListed(page, 1100, childName(0))).toBe(1);
+    });
+  });
+});
+
+test.describe('4 回目 #1・#2 — 1 人だけの連邦の州を、連邦入りより前の年で終わらせる', () => {
+  test('押す前の板が「連邦への所属も終わる」「連邦は記録ごと無くなる」と言い、自動保存 → 開き直しで修復の板が出ない', async () => {
+    await withSavePath(async ({ app, page }, savePath) => {
+      await nested(page, 3, [1000], 1700);
+      await federate(page, [0]);
+      await saveWithCtrlS(page);
+      const firstWrite = statSync(savePath).mtimeMs;
+
+      await jumpToYear(page, 1400);
+      await selectRow(page, childName(0), childId(0));
+      await page.getByTestId('sidebar-tab-properties').click();
+      await page.getByTestId('end-here').click();
+      // 末端を終わらせるだけでも、別の地物（連邦）の下位領域が変わるので板が出る（締め D / 4 回目 #2）。
+      await expect(page.getByTestId('end-here-impact-ends')).toContainText(FED);
+      await expect(page.getByTestId('end-here-impact-ends')).toContainText('1700年');
+      await expect(page.getByTestId('end-here-impact-cascaded')).toContainText('記録ごと無くなります');
+      await page.getByTestId('end-here-impact-confirm').click();
+      await expect(page.getByTestId('end-here-impact')).toHaveCount(0);
+      await expect(page.getByTestId('statusbar-result')).toContainText(FED);
+
+      // 自動保存の一刻み → 開き直しで修復の板が出ない。
+      await app.evaluate(({ BrowserWindow }) => {
+        BrowserWindow.getAllWindows()[0]?.webContents.send('tmap:auto-save-tick');
+      });
+      await expect.poll(() => statSync(savePath).mtimeMs, { timeout: 20_000 }).toBeGreaterThan(firstWrite);
+      expect(await reopenWithoutBoards(page, savePath)).toBe('loaded');
+      await enterEditMode(page);
+      expect(await countListed(page, 1800, FED)).toBe(0);
+      expect(await countListed(page, 1300, childName(0))).toBe(1);
+      expect(await countListed(page, 1500, childName(0))).toBe(0);
     });
   });
 });
