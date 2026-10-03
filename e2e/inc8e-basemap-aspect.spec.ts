@@ -7,56 +7,34 @@
 // 画像の選択はネイティブのダイアログなので、main 側の `dialog.showOpenDialog` をこの
 // テストの間だけ差し替えて、書き出した PNG を選ばせる（アプリのコードは変えない）。
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { test, expect, type ElectronApplication, type Page } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import { unzipSync } from 'fflate';
 
-import { launchApp, leaveViewMode } from './helpers';
+import { openSettingsAndReplace, samplePng, stubImagePicker, writePng } from './basemap-image-helpers';
+import { loadProject, launchApp } from './helpers';
 
-/** 画面の canvas で width×height の PNG を作り、ファイルへ書き出す。 */
-async function writePng(page: Page, dir: string, width: number, height: number): Promise<string> {
-  const b64 = await page.evaluate(
-    ([w, h]) => {
-      const c = document.createElement('canvas');
-      c.width = w!;
-      c.height = h!;
-      const g = c.getContext('2d')!;
-      g.fillStyle = '#3366aa';
-      g.fillRect(0, 0, w!, h!);
-      return c.toDataURL('image/png').split(',')[1]!;
-    },
-    [width, height],
-  );
-  const path = join(dir, `image-${String(width)}x${String(height)}.png`);
-  writeFileSync(path, Buffer.from(b64, 'base64'));
-  return path;
+/** 保存したファイルの中の、背景地図の参照（`baseMap`）を JSON の中から探す。 */
+function baseMapOf(entries: Record<string, Uint8Array>): unknown {
+  for (const [name, bytes] of Object.entries(entries)) {
+    if (!name.endsWith('.json')) continue;
+    const found = findKey(JSON.parse(new TextDecoder().decode(bytes)) as unknown, 'baseMap');
+    if (found !== undefined) return found;
+  }
+  return undefined;
 }
 
-/** main 側の画像選択を、このテストの間だけ「このファイルを選んだ」にする。 */
-async function stubImagePicker(app: ElectronApplication, path: string): Promise<void> {
-  await app.evaluate(({ dialog }, p) => {
-    (dialog as unknown as { showOpenDialog: unknown }).showOpenDialog = async () => ({
-      canceled: false,
-      filePaths: [p],
-    });
-  }, path);
-}
-
-async function openSettingsAndReplace(page: Page): Promise<void> {
-  await leaveViewMode(page);
-  await page.getByTestId('menu-tools').click();
-  await page.getByTestId('menu-items-tools').locator('[data-command="tools.settings"]').click();
-  await expect(page.getByTestId('settings-dialog')).toBeVisible();
-  await page.getByTestId('settings-basemap-replace').click();
-}
-
-/** PNG の IHDR から寸法を読む。 */
-function pngSize(bytes: Uint8Array): { width: number; height: number } {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  return { width: view.getUint32(16), height: view.getUint32(20) };
+function findKey(value: unknown, key: string): unknown {
+  if (typeof value !== 'object' || value === null) return undefined;
+  if (key in value) return (value as Record<string, unknown>)[key];
+  for (const v of Object.values(value)) {
+    const found = findKey(v, key);
+    if (found !== undefined) return found;
+  }
+  return undefined;
 }
 
 test.describe('増分 8E — G-10: 背景地図の縦横比', () => {
@@ -76,6 +54,10 @@ test.describe('増分 8E — G-10: 背景地図の縦横比', () => {
         'この画像は 3:2 です。2:1 に補正しますか、このまま使いますか。',
       );
       await expect(page.getByTestId('basemap-aspect-keep')).toBeVisible();
+      // 補正すると地図の上で絵がずれることを言う（増分 8E の手直し。反証 2-4）。
+      await expect(page.getByTestId('basemap-aspect-shift')).toHaveText(
+        '余白を足すので、絵は横方向に縮んで見え、地図の端の地物と合わなくなることがあります。',
+      );
       await page.getByTestId('basemap-aspect-correct').click();
       await expect(dialog).toHaveCount(0);
       await expect(page.getByTestId('statusbar-result')).toContainText('2:1 に補正しました');
@@ -85,10 +67,41 @@ test.describe('増分 8E — G-10: 背景地図の縦横比', () => {
       await expect(page.getByTestId('settings-dialog')).toHaveCount(0);
       await page.keyboard.press('Control+s');
       await expect(page.getByTestId('statusbar-result')).toContainText('保存しました');
-      const entries = unzipSync(new Uint8Array(readFileSync(target)));
-      const image = entries['assets/basemap.img'];
+      const first = unzipSync(new Uint8Array(readFileSync(target)));
+      const image = first['assets/basemap.img'];
       expect(image).toBeDefined();
-      expect(pngSize(image!)).toEqual({ width: 400, height: 200 });
+
+      // **画像の中身** を見る（増分 8E の手直し。GPT 重 2）: 元の絵は横の真ん中（左右 50px ずつ
+      // ずらした位置）にそのまま載り、左上の赤い印も向きも保たれ、足した余白は透明。
+      const RED = [255, 0, 0, 255];
+      const BLUE = [0x33, 0x66, 0xaa, 255];
+      const sample = await samplePng(page, image!, [
+        [60, 10], // 元の (10,10)＝左上の赤い印
+        [95, 45], // 元の (45,45)＝印の内側の右下の角あたり
+        [250, 100], // 元の (200,100)＝地
+        [340, 190], // 元の (290,190)＝右下の地
+        [10, 100], // 左の余白
+        [45, 10], // 印のすぐ左（余白）
+        [390, 100], // 右の余白
+      ]);
+      expect({ width: sample.width, height: sample.height }).toEqual({ width: 400, height: 200 });
+      expect(sample.pixels[0]).toEqual(RED);
+      expect(sample.pixels[1]).toEqual(RED);
+      expect(sample.pixels[2]).toEqual(BLUE);
+      expect(sample.pixels[3]).toEqual(BLUE);
+      for (const i of [4, 5, 6]) expect(sample.pixels[i]![3], `余白 ${String(i)} は透明`).toBe(0);
+
+      // **開き直し**: 保存したファイルを開き、もう一度保存しても、背景の画像と範囲は同じ。
+      const baseMapFirst = baseMapOf(first);
+      expect(baseMapFirst).toBeDefined();
+      expect(await loadProject(page, target)).toBe('loaded');
+      rmSync(target);
+      await page.keyboard.press('Control+s');
+      await expect.poll(() => existsSync(target), { timeout: 15_000 }).toBe(true);
+      await expect(page.getByTestId('statusbar-result')).toContainText('保存しました');
+      const second = unzipSync(new Uint8Array(readFileSync(target)));
+      expect(Buffer.from(second['assets/basemap.img']!).equals(Buffer.from(image!))).toBe(true);
+      expect(baseMapOf(second)).toEqual(baseMapFirst);
     } finally {
       await app.close();
       rmSync(workDir, { recursive: true, force: true });

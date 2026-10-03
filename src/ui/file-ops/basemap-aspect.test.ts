@@ -10,6 +10,7 @@ import {
   BasemapAspectPromptStore,
   aspectRatioLabel,
   basemapAspectQuestion,
+  correctShiftAxis,
   type BasemapAspectChoice,
 } from './basemap-aspect';
 import {
@@ -50,6 +51,22 @@ describe('basemapAspectQuestion（判定は decideBasemapReplacement の 1 本�
       correctable: false,
       corrected: null,
     });
+  });
+});
+
+// 増分 8E の手直し（反証 2-4）: 補正で絵が地図の中で縮んで見える向きを板が言う。
+describe('correctShiftAxis', () => {
+  it('縦長すぎる画像（3:2）は横に余白を足すので、横方向に縮んで見える', () => {
+    const q = basemapAspectQuestion({ widthPx: 300, heightPx: 200 })!;
+    expect(correctShiftAxis(q)).toBe('横');
+    expect(BASEMAP_ASPECT_STRINGS.explainCorrectShift(correctShiftAxis(q))).toBe(
+      '余白を足すので、絵は横方向に縮んで見え、地図の端の地物と合わなくなることがあります。',
+    );
+  });
+  it('横長すぎる画像（5:2）は縦に余白を足すので、縦方向に縮んで見える', () => {
+    const q = basemapAspectQuestion({ widthPx: 500, heightPx: 200 })!;
+    expect(q.correctable).toBe(true);
+    expect(correctShiftAxis(q)).toBe('縦');
   });
 });
 
