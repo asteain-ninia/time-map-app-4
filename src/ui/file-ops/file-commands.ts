@@ -117,6 +117,11 @@ export interface FileCommandPorts {
   readonly reflectProject: (project: DomainProject, path: string) => void;
   /** Show a Japanese rejection / failure notice (FR-115). */
   readonly notify: (message: string) => void;
+  /**
+   * 修復で捨てた記録があれば、反映のあとで件数を知らせる（増分 7 の手直し 2 回目。
+   * 「中身のある記録を黙って捨てない」）。省略可（知らせる先を持たない試験の宿主）。
+   */
+  readonly reportRepairDiscards?: (count: number) => void;
 }
 
 /** The save (with 名前を付けて保存 委譲) outcome. */
@@ -178,6 +183,7 @@ async function completeLoad(ports: FileCommandPorts, transport: LoadTransport): 
   // 教訓 5.22: reflect ONLY when the repaired project is fully consistent.
   if (applied.outcome === REPAIR_OUTCOME.Applied) {
     ports.reflectProject(applied.project, transport.ok ? transport.path : '');
+    if (applied.discardedRecords > 0) ports.reportRepairDiscards?.(applied.discardedRecords);
     return;
   }
   if (applied.outcome === REPAIR_OUTCOME.Unresolved) {
@@ -196,6 +202,8 @@ async function completeLoad(ports: FileCommandPorts, transport: LoadTransport): 
     const retried = applyChosenRepairs(applied.project, retryRows, retry, ports.calendar);
     if (retried.outcome === REPAIR_OUTCOME.Applied) {
       ports.reflectProject(retried.project, transport.ok ? transport.path : '');
+      const discarded = applied.discardedRecords + retried.discardedRecords;
+      if (discarded > 0) ports.reportRepairDiscards?.(discarded);
       return;
     }
     // BUG #5: the SECOND attempt is ALSO Unresolved (or Incomplete, which cannot

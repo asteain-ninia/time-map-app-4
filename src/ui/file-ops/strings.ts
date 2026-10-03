@@ -101,6 +101,12 @@ export const REPAIR_STRINGS = {
    */
   abortedUnresolved:
     '不整合を解消できなかったため、読み込みを中止しました。データは変更されていません。',
+  /**
+   * 修復で捨てた記録の件数（「各地物に自分の年表を作って残す」で、同じ年に自分の年表の記録と
+   * 食い違っていた古い記録）。状態行に出す（黙って捨てない）。
+   */
+  discarded: (count: number): string =>
+    `修復して読み込みました。同じ年に別の記録があった古い記録 ${String(count)} 件は、地物自身の年表の記録を残して捨てました。`,
   /** Field labels for one inconsistency row. */
   fieldTime: '作中時刻',
   fieldRange: '時間範囲',

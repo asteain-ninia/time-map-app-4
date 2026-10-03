@@ -860,6 +860,10 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         // shell's toast unit can replace this without touching the flow.
         if (typeof globalThis.alert === 'function') globalThis.alert(message);
       },
+      // 修復で捨てた記録の件数は、反映（状態行を消す）のあとで状態行に出す。
+      reportRepairDiscards: (count: number) => {
+        statusMessagesRef.current?.notice(REPAIR_STRINGS.discarded(count));
+      },
       // A3: 未保存警告の「保存して続行」も上書き確認を通す。実体は下の runGuardedSave
       // （ports から作るので参照の輪を ref で切る）。ここへ来る時点で既に破壊的置換の
       // ラッチを握っているので、確認はラッチを取り直さない。

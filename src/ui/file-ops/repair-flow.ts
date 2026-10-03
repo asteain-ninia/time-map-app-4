@@ -3,7 +3,7 @@
 // PURE & framework-free (受け入れ基準 7 / NFR 5.8 / 教訓 5.41): turns U14's
 // load-time consistency report into a view-model, tracks the user's per-
 // inconsistency repair choice, decides whether the selection is complete, and
-// applies the chosen repairs through U14's RE-VALIDATED apply (`applyRepairChecked`).
+// applies the chosen repairs through U14 and re-validates the result ONCE at the end.
 // No React / Canvas / Electron here; the modal renders this and Vitest drives
 // every branch without a DOM.
 //
@@ -24,7 +24,8 @@
 import type { Calendar } from '../../domain/time/calendar';
 import { idToString } from '../../domain/ids';
 import {
-  applyRepairChecked,
+  applyRepairWithReport,
+  checkConsistency,
   repairOptionsFor,
   type ConsistencyReport,
   type DomainProject,
@@ -137,7 +138,15 @@ export type RepairOutcomeKind = (typeof REPAIR_OUTCOME)[keyof typeof REPAIR_OUTC
 
 /** Result of applying the chosen repairs (discriminated; 教訓 5.26 戻り値で扱う). */
 export type RepairApplyResult =
-  | { readonly outcome: typeof REPAIR_OUTCOME.Applied; readonly project: DomainProject }
+  | {
+      readonly outcome: typeof REPAIR_OUTCOME.Applied;
+      readonly project: DomainProject;
+      /**
+       * 修復で捨てた記録の件数（「各地物に自分の年表を作って残す」で、同じ年に自分の年表の
+       * 記録と食い違っていた孤立した歴史の記録）。0 なら何も捨てていない。
+       */
+      readonly discardedRecords: number;
+    }
   | { readonly outcome: typeof REPAIR_OUTCOME.Incomplete }
   | {
       readonly outcome: typeof REPAIR_OUTCOME.Unresolved;
@@ -145,14 +154,20 @@ export type RepairApplyResult =
       readonly project: DomainProject;
       /** The remaining report so the modal can re-present the still-broken rows. */
       readonly remaining: ConsistencyReport;
+      /** ここまでに捨てた記録の件数（やり直しが通ったときに合わせて知らせる）。 */
+      readonly discardedRecords: number;
     };
 
 /**
  * Apply the user's chosen repairs to a NEW project instance and re-validate via
  * U14 (受け入れ基準 3 / 教訓 5.22). Each chosen option is applied in report order
- * through U14's `applyRepairChecked`, which re-runs the full consistency check on
- * a fresh instance — so the input project is never mutated and the final report
- * decides success. Returns:
+ * through U14's `applyRepairWithReport` (pure — the input project is never mutated),
+ * and the FINAL report decides success.
+ *
+ * **整合検査は最後に 1 回だけ回す**（増分 7 の手直し 2 回目 / バグ狩り 2-2）。以前は 1 行ごとに
+ * `applyRepairChecked` を通し、行ごとに全体の整合検査を前後 2 回ずつ回していた（実データの
+ * 76 行で 99.5 秒、画面が止まる）。行ごとの `resolved` はここでは使っておらず、受け入れの
+ * 判断は最後の検査だけで決まるので、結果は変わらない。Returns:
  *   - Applied   when all chosen AND the final re-check is clean,
  *   - Incomplete when a row has no chosen option (the caller collects more),
  *   - Unresolved when repairs ran but the project is still inconsistent (the
@@ -172,20 +187,26 @@ export function applyChosenRepairs(
   }
 
   let current = project;
-  let lastRemaining: ConsistencyReport = { ok: true, inconsistencies: [] };
+  let discardedRecords = 0;
   for (const row of rows) {
     const optionId = choices.get(row.index);
     // allChoicesMade guarantees presence; the guard keeps the type total.
     if (optionId === undefined) return { outcome: REPAIR_OUTCOME.Incomplete };
-    const applied = applyRepairChecked(current, row.inconsistency, optionId, calendar);
+    const applied = applyRepairWithReport(current, row.inconsistency, optionId, calendar);
     current = applied.project;
-    lastRemaining = applied.remaining;
+    discardedRecords += applied.discardedRecords;
   }
+  const lastRemaining: ConsistencyReport = checkConsistency(current, calendar);
 
   // The project is acceptable ONLY if the FINAL re-check is fully consistent
   // (教訓 5.18: emptiness decided by the report's flag/length, not a short-circuit).
   if (lastRemaining.ok && lastRemaining.inconsistencies.length === 0) {
-    return { outcome: REPAIR_OUTCOME.Applied, project: current };
+    return { outcome: REPAIR_OUTCOME.Applied, project: current, discardedRecords };
   }
-  return { outcome: REPAIR_OUTCOME.Unresolved, project: current, remaining: lastRemaining };
+  return {
+    outcome: REPAIR_OUTCOME.Unresolved,
+    project: current,
+    remaining: lastRemaining,
+    discardedRecords,
+  };
 }
