@@ -58,6 +58,12 @@ export interface AddDraftPrompt {
   readonly onSave: (properties: AddProperties) => void;
   /** やめる（下書きを丸ごと捨てる。教訓 5.2）。 */
   readonly onCancel: () => void;
+  /**
+   * **保存が走っている間の文**（増分 8B の中身 3）。null・省略なら走っていない。
+   * 分割の［保存］は編集案の組み立てと整合の検査で数秒かかるので、押した直後に
+   * ［保存］をこの文に変えて押せなくする（所属変更の板と同じ進行表示）。
+   */
+  readonly busyLabel?: string | null;
 }
 
 export type AddDraftListener = (prompt: AddDraftPrompt | null) => void;
@@ -101,6 +107,7 @@ function samePrompt(a: AddDraftPrompt | null, b: AddDraftPrompt | null): boolean
     a.parentCandidates === b.parentCandidates &&
     a.onChooseParent === b.onChooseParent &&
     a.onSave === b.onSave &&
-    a.onCancel === b.onCancel
+    a.onCancel === b.onCancel &&
+    (a.busyLabel ?? null) === (b.busyLabel ?? null)
   );
 }

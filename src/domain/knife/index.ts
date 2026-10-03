@@ -32,7 +32,15 @@ export {
   executeSplit,
   smallerSide,
   smallestPieceIndex,
+  splitsIntoManyPieces,
 } from './split-geometry';
+
+export {
+  PIECE_DIRECTION,
+  type PieceDirection,
+  type PieceSummary,
+  summarizePieces,
+} from './piece-summary';
 
 export {
   INHERITANCE_SIDE,

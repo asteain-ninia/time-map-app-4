@@ -28,6 +28,11 @@
   touch-action: none;
   background: transparent;
 }
+/* 素性を入れている最終段階（N-13）。同じ橋を「幕」として残し、地図の地物を触れなくする
+   （ホイールと中ボタンの移動は通す）。押せないことが指先で分かるよう矢印を変える。 */
+.knife-tool__input[data-locked='true'] {
+  cursor: not-allowed;
+}
 
 /* The per-phase guide + message float over the map (FR-92). */
 .knife-tool__guide,
@@ -94,6 +99,22 @@
   color: #555;
   font-size: 13px;
 }
+/* 選んでいる片が何を引き継ぐかの 1 文（V10 ①）と、2 つにまとまる面の注記（V10 ③④）。 */
+.knife-dialog__inherit {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+.knife-dialog__note {
+  margin: 0 0 12px;
+  padding: 6px 8px;
+  border-left: 3px solid #ff8f00;
+  background: #fff8e1;
+  font-size: 13px;
+}
+.knife-preview__tag {
+  font-weight: 700;
+  pointer-events: none;
+}
 .knife-preview {
   display: block;
   margin: 0 auto 16px;
@@ -103,11 +124,14 @@
 }
 .knife-dialog__choices {
   display: flex;
+  /* 片は 3〜7 になることがある（V10: まっすぐな線が凹んだ国を何度も横切る）。
+     呼び名に方角と面積が入って長くなったので、横に溢れさせず折り返す。 */
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 16px;
 }
 .knife-choice {
-  flex: 1;
+  flex: 1 1 160px;
   padding: 10px;
   border: 2px solid #cfd8dc;
   border-radius: 8px;

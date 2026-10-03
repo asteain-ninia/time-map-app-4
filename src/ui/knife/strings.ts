@@ -5,17 +5,11 @@
 // で共有). The per-phase ガイド文 itself comes from the domain (`knifeGuideText`);
 // these are the BUTTON labels / titles / status text the React chrome shows.
 
+import { PIECE_DIRECTION, type PieceDirection } from '../../domain/knife/index';
+
 export const KNIFE_STRINGS = {
   /** 継承先選択モーダル title (FR-93). */
   inheritorTitle: '継承先を選択',
-  /**
-   * Per-piece継承先 button label prefix (HB3-5/19 n-way). The modal appends the
-   * piece number (面 1 / 面 2 / …) so it scales to any k+1 pieces, replacing the
-   * fixed 2-way A/B labels.
-   */
-  chooseAsInheritor: 'こちらを継承先にする',
-  /** The smaller-side preview caption (FR-93 小さい方プレビュー). */
-  smallerHint: '小さい方を囲って表示しています。',
   /** Confirm the chosen継承先 (advance to非継承側プロパティ入力). */
   confirmInheritor: '継承先を確定',
   /**
@@ -64,7 +58,74 @@ export const KNIFE_STRINGS = {
    * 出す数は実物に合わせる ―― 段数が実物と違うと「あと何段あるか」が読めない。
    */
   stage: (step: number): string => `手順 ${String(step)}/${String(KNIFE_STEP_COUNT)}`,
+  /**
+   * 片の呼び名（V10 / N-09）。「面 1 / 面 2」では、どれが地図のどこの片か分からなかった。
+   * **番号札・方角・面積**で呼ぶ ―― 番号は地図の下見と板の下見に描いた札と同じ数字。
+   * 面積は素性欄と同じ丸め方（`formatAreaKm2`）で、測れないときは省く。
+   */
+  pieceLabel: (
+    number: number,
+    direction: string,
+    area: string | null,
+  ): string =>
+    area === null
+      ? `${String(number)}（${direction}）`
+      : `${String(number)}（${direction}・${area}）`,
+  /**
+   * 選んでいる片が何を引き継ぐかを 1 文で言う（V10 ①「どちらが元の素性を引き継ぐか読める」）。
+   * 引き継ぐのは地物そのもの（同じ id のまま形だけが変わる）なので、名前・色・年表が残る。
+   */
+  inheritSentence: (label: string, name: string, others: number): string =>
+    `${label} が「${name}」として残り、名前・色・年表を引き継ぎます。ほかの ${String(others)} 片は新しい地物になります。`,
+  /** 板の見出しの下に置く、選び方の案内（旧「小さい方を囲って表示しています。」の後継）。 */
+  chooseHint:
+    '元の地物として残す片を選んでください。小さい方を赤い枠で囲っています。',
+  /**
+   * 穴・飛び地のある面は n 分割にならず 2 つにまとまる（現状分析 §11-14 / V10 ③④）。
+   * **確定の前に**言う ―― 分断線を引いている間の「次の一手」と、継承先の板の両方に出す。
+   */
+  twoPiecesNote: (reason: string): string =>
+    `この面は${reason}を持つので、分断線が境界を何度横切っても 2 つにしか分かれません（同じ側の部分は 1 つの地物にまとまります）。`,
+  /**
+   * 同じ注記の短い形（「次の一手」用）。帯の欄は 1 行で、長いと末尾が「…」で切れる ――
+   * 大事なのは「2 つにしか分かれない」なので、**案内文より前に**置く短い形を別に持つ。
+   */
+  twoPiecesShort: (reason: string): string =>
+    `${reason}があるので 2 つにしか分かれません。`,
+  twoPiecesReasonHole: '穴',
+  twoPiecesReasonExclave: '飛び地',
+  twoPiecesReasonBoth: '穴と飛び地',
+  /** 分断線を閉じたとき（N-10「閉じても画面が何も変わらない」）。 */
+  nextStepClosed:
+    '分断線を閉じました。［分断線を確定］で囲みの内側と外側に分けます。',
+  /**
+   * 分断線の点が足りず確定を押せないときの理由（N-10。確定ボタンを無効にした脇＝「次の一手」の
+   * **先頭**に出す。帯の欄は 1 行で末尾が切れるので、理由を案内文より前に置く）。
+   */
+  cutNeedsPoints: (placed: number): string =>
+    placed === 0
+      ? 'まだ点がありません（確定は 2 点目から）。'
+      : 'あと 1 点で確定できます。',
+  /**
+   * 素性を入れている間に地図を押したとき（N-13「最終段階だけ幕が無い」）。背後の地図は
+   * 見えるが、地物を選んだり動かしたりはできない ―― 切りかけの形が変わらないようにする。
+   */
+  mapLockedWhileNaming:
+    '分割を確定するまで地図の地物は触れません。右のパネルで名前を入れて［保存］を押してください',
 } as const;
+
+/** 方角の語（`PIECE_DIRECTION` の値 → 画面の語）。 */
+export const KNIFE_DIRECTION_LABEL: Readonly<Record<PieceDirection, string>> = {
+  [PIECE_DIRECTION.North]: '北',
+  [PIECE_DIRECTION.NorthEast]: '北東',
+  [PIECE_DIRECTION.East]: '東',
+  [PIECE_DIRECTION.SouthEast]: '南東',
+  [PIECE_DIRECTION.South]: '南',
+  [PIECE_DIRECTION.SouthWest]: '南西',
+  [PIECE_DIRECTION.West]: '西',
+  [PIECE_DIRECTION.NorthWest]: '北西',
+  [PIECE_DIRECTION.Center]: '中央',
+};
 
 /**
  * 分ける道具の段数（設計書 §C.4 の「手順 n/m」の m）。
