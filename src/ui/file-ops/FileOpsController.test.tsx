@@ -63,6 +63,8 @@ import { PRESET_BASEMAP_ID } from '../../domain/basemap/index';
 import { buildEmptyProject } from './save-context';
 import { REPAIR_OUTCOME } from './repair-flow';
 import { REPAIR_STRINGS } from './strings';
+import { aggregate, anchorOf, fid, leafTile } from '../../domain/deletion/fixtures';
+import { timePointYear } from '../../domain/time/time-point';
 
 const CAL = getCalendar('gregorian');
 
@@ -2201,5 +2203,71 @@ describe('増分 8D: 以前の保存から開く — 世代は保存先になら
     await openFirstBackup(registry);
     await waitFor(() => expect(api.commitLoadedPath).toHaveBeenCalledWith('tok-backup'));
     expect(store.getState().projectDirty).toBe(false);
+  });
+});
+
+// 統合ブランチの継ぎ目の検証 1-1: 保存の前の確認の板（台帳 #27）が答えを待っている間に来た自動保存の
+// ティックは落とす。板を待つ手動の保存は排他の鍵を取らないので、以前はティックが保存の列の後ろへ並び、
+// 利用者が［やめる］を選んだ直後に聞かずに書いていた（状態行は「やめました」のまま）。
+describe('保存の前の確認の板が出ている間の自動保存', () => {
+  /** 親 agg が 1200 年から、子 a は 1000 年から agg を指す（年をまたぐ食い違い＝止めずに聞く形）。 */
+  function crossYearDomain(): DomainProject {
+    const a = leafTile('a', 0, 0, 10, 10, 'agg');
+    const agg = aggregate('agg', ['a']);
+    return {
+      ...buildEmptyProject(),
+      histories: [
+        {
+          featureId: fid('agg'),
+          series: {
+            entries: [
+              { anchor: anchorOf('anchor-agg-1200', [agg], []), start: timePointYear(1200), end: null },
+            ],
+          },
+        },
+        {
+          featureId: fid('a'),
+          series: {
+            entries: [
+              { anchor: anchorOf('anchor-a', [a.feature], a.vertices), start: timePointYear(1000), end: null },
+            ],
+          },
+        },
+      ],
+    };
+  }
+
+  it('板で［やめる］を選んでも、板が出ている間に来たティックはあとから書かない', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    let fireTick: (() => void) | null = null;
+    const api = makeApi({
+      onAutoSaveTick: vi.fn((l: () => void) => {
+        fireTick = l;
+        return () => {};
+      }),
+    });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+    // 行き先を確かめる（名前を付けて保存）→ 自動保存が動き出せる状態にする。
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSaveAs); });
+    await waitFor(() => expect(api.saveAs).toHaveBeenCalledTimes(1));
+
+    // 年をまたぐ食い違いのある企画にして（未保存になる）、手動で保存 → 板が出て待つ。
+    await act(async () => { store.getState().setDomainState(crossYearDomain()); });
+    expect(store.getState().projectDirty).toBe(true);
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(screen.getByTestId('pre-save-dialog')).toBeInTheDocument());
+
+    // 板が出ている間にティックが来る。
+    await act(async () => { fireTick!(); });
+    // ［やめる］→ 手動の保存はやめる。並んだ自動保存が後から書いてはいけない。
+    await act(async () => { fireEvent.click(screen.getByTestId('pre-save-cancel')); });
+    await waitFor(() => expect(screen.queryByTestId('pre-save-dialog')).not.toBeInTheDocument());
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(api.save).not.toHaveBeenCalled();
+
+    // 板が閉じたあとのティックは、いつもどおり書く（自動保存は年をまたぐ食い違いを聞かない）。
+    await act(async () => { fireTick!(); });
+    await waitFor(() => expect(api.save).toHaveBeenCalledTimes(1));
   });
 });

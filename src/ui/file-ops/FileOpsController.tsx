@@ -604,6 +604,10 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   const backupListGenRef = useRef(0);
   const [pendingOverwrite, setPendingOverwrite] = useState<PendingOverwrite | null>(null);
   const [pendingPreSave, setPendingPreSave] = useState<PendingPreSave | null>(null);
+  // 保存の前の確認の板が答えを待っている間は、自動保存のティックを落とす（統合ブランチの継ぎ目の
+  // 検証 1-1）。板を待つ手動の保存は排他の鍵を取らないので、その間のティックは保存の列の後ろへ
+  // 並び、利用者が［やめる］を選んだ直後に聞かずに書いていた（状態行は「やめました」のまま）。
+  const preSaveWaitingRef = useRef(false);
   const [repairUnresolved, setRepairUnresolved] = useState(false);
 
   /**
@@ -728,10 +732,12 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
           (id, at) => nameOfFeatureIn(domain, id, at, calendar),
           (at) => formatYear(at.year),
         );
+        preSaveWaitingRef.current = true;
         const confirmed = await new Promise<boolean>((resolve) => {
           setPendingPreSave({
             lines,
             resolve: (ok) => {
+              preSaveWaitingRef.current = false;
               setPendingPreSave(null);
               resolve(ok);
             },
@@ -1235,6 +1241,8 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     // ordering (incl. tick-vs-manual) is handled by the bridge's saveChain queue.
     return api.onAutoSaveTick(() => {
       if (opInFlightRef.current) return;
+      // 保存の前の確認の板が答えを待っている間は書かない（板の答えより先に並ばせない）。
+      if (preSaveWaitingRef.current) return;
       // A4-a: **確認していない先には 1 バイトも書かない**。読み込んだファイルは、利用者が
       // 一度も行き先を確かめていなくても自動保存でディスクへ書かれていた（取り違えた
       // 正準ファイルが、確認ダイアログを見る前に上書き済みになる）。保存先が未確定なら
