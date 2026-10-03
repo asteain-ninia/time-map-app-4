@@ -15,7 +15,7 @@
 // 保存ボタンは `data-testid="add-save"` のまま **素性欄の保存ボタン**になる（T-1 の
 // 付け替え 2 件のうちの 1 件。役割「追加した地物の値を確定する」は変わらない）。
 
-import { useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 
 import {
   createBasicAttributes,
@@ -70,6 +70,10 @@ export interface AddPropertyFormProps {
    * 普段どおり。出ている間は［保存］がこの文になって押せなくなり、読み上げにも流す。
    */
   readonly busyLabel?: string | null;
+  /** 欄の上に添える注記（`AddDraftPrompt.note`）。null・省略なら出さない。 */
+  readonly note?: string | null;
+  /** 打ちかけの有無が変わったら呼ぶ（`AddDraftPrompt.onDirtyChange`）。 */
+  readonly onDirtyChange?: (dirty: boolean) => void;
 }
 
 export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
@@ -85,6 +89,13 @@ export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
   const busyLabel = props.busyLabel ?? null;
   const [name, setName] = useState('');
   const [kindLabel, setKindLabel] = useState('');
+  // 打ちかけ（名前か種別に何か打たれている）の有無を、変わったときだけ押し込む側へ知らせる
+  // （増分 8B の手直し / 反証 2-2）。1 文字ごとには知らせない。
+  const dirty = name.length > 0 || kindLabel.length > 0;
+  const onDirtyChange = props.onDirtyChange;
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
   // **上位領域の欄は「選ばれている値」を持つ**（増分 3 の手直し B2）。`defaultValue` だと
   // 部品が載った瞬間の値しか効かない ―― 候補の絞り込みは形を確定した直後の 1 拍あとに
   // 決まるので、既定が届いたときには欄はもう空のままだった（画面と実際の保存値が割れる）。
@@ -122,6 +133,11 @@ export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
       }}
     >
       <h2 className="add-property-form__title">{ADD_STRINGS.formTitle}</h2>
+      {props.note !== undefined && props.note !== null && (
+        <p className="add-property-form__note" data-testid="add-draft-note">
+          {props.note}
+        </p>
+      )}
 
       {/* **欄が「まだ何も打っていない」と自分で名乗る**（`data-pristine`。増分 5 の手直し
           A2）。焦点がこの欄にあるあいだ、Escape は道具が受けて「やめる」になるが、
@@ -252,5 +268,7 @@ export function addPromptToFormProps(prompt: AddDraftPrompt): AddPropertyFormPro
     onSave: prompt.onSave,
     onCancel: prompt.onCancel,
     busyLabel: prompt.busyLabel ?? null,
+    note: prompt.note ?? null,
+    ...(prompt.onDirtyChange !== undefined ? { onDirtyChange: prompt.onDirtyChange } : {}),
   };
 }

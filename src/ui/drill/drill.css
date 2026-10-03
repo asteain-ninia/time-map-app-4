@@ -20,6 +20,11 @@
   touch-action: none;
   background: transparent;
 }
+/* 素性を入れている最終段階（N-13 の穴あけの半分。増分 8B の手直し）。同じ橋を「幕」として
+   残し、地図の地物を触れなくする（ホイールと中ボタンの移動は通す）。分ける道具と同じ形。 */
+.drill-tool__input[data-locked='true'] {
+  cursor: not-allowed;
+}
 
 /* The guide + message float over the map (FR-92). */
 .drill-tool__guide,

@@ -64,6 +64,18 @@ export interface AddDraftPrompt {
    * ［保存］をこの文に変えて押せなくする（所属変更の板と同じ進行表示）。
    */
   readonly busyLabel?: string | null;
+  /**
+   * **欄の上に添える注記**（増分 8B の手直し）。null・省略なら出さない。分割の非継承側は
+   * 1 つの素性欄を何片かで共有するので「この名前と種別は 3 片すべてに付きます」と言う。
+   */
+  readonly note?: string | null;
+  /**
+   * **打ちかけがあるかの知らせ**（増分 8B の手直し / 反証 2-2）。名前か種別に何か打たれて
+   * いれば真。変わったときだけ呼ばれる。道具は Escape で「聞かずにやめてよいか」を
+   * **焦点のある欄ではなく中身で**決めるのに使う ―― 名前を打ってから地図を押すと焦点が
+   * 欄から外れ、焦点だけを見ていると打ちかけが確認なしに捨てられていた。
+   */
+  readonly onDirtyChange?: (dirty: boolean) => void;
 }
 
 export type AddDraftListener = (prompt: AddDraftPrompt | null) => void;
@@ -108,6 +120,8 @@ function samePrompt(a: AddDraftPrompt | null, b: AddDraftPrompt | null): boolean
     a.onChooseParent === b.onChooseParent &&
     a.onSave === b.onSave &&
     a.onCancel === b.onCancel &&
-    (a.busyLabel ?? null) === (b.busyLabel ?? null)
+    (a.busyLabel ?? null) === (b.busyLabel ?? null) &&
+    (a.note ?? null) === (b.note ?? null) &&
+    a.onDirtyChange === b.onDirtyChange
   );
 }

@@ -43,6 +43,7 @@ import { multiPolygonAreaKm2 } from '../../domain/geo/geodesy';
 import {
   KNIFE_LINE_KIND,
   KNIFE_PHASE,
+  largestPieceIndex,
   smallestPieceIndex,
   shouldCloseOnCircleClick,
   splitsIntoManyPieces,
@@ -385,21 +386,22 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     liveDisplayControl,
   ]);
 
-  // --- V10 ③④（現状分析 §11-14）: 穴・飛び地のある面は、分断線が何度横切っても 2 つに
-  // まとまる。**確定の前に**言う ―― 分断線を引いている間の「次の一手」と継承先の板の
-  // 両方に出す。判定はドメインの分割と同じ 1 本（`splitsIntoManyPieces`）を見る
+  // --- V10 ④（現状分析 §11-14）: 飛び地のある面（と外周が自分に接する面）は、分断線が
+  // 何度横切っても 2 つにまとまる。**確定の前に**言う ―― 分断線を引いている間の「次の一手」と
+  // 継承先の板の両方に出す。判定はドメインの分割と同じ 1 本（`splitsIntoManyPieces`）を見る
   // （教訓 5.29。分割がどの経路を通るかと、画面が言うことを食い違わせない）。
+  //
+  // **穴のある面はもう 2 つにまとまらない**（増分 8B の手直し / B65）。外周を切片で分けて
+  // 穴を差し引くので、穴だけを持つ面には注記を出さない。`splitsIntoManyPieces` は保存された
+  // ままの経度を受けても経度をつないでから判定する（反証 2-4）。
   const twoPiecesReason = useMemo((): string | null => {
     if (targetShape === undefined || targetShape.length === 0) return null;
     if (splitsIntoManyPieces(targetShape)) return null;
-    const exclave = targetShape.length > 1;
-    const hole = targetShape.some((poly) => poly.length > 1);
-    // 1 リングでも外周が自分に接している（くびれで囲んだ入り江）面は「穴」と呼ぶ。
-    return exclave && hole
-      ? KNIFE_STRINGS.twoPiecesReasonBoth
-      : exclave
-        ? KNIFE_STRINGS.twoPiecesReasonExclave
-        : KNIFE_STRINGS.twoPiecesReasonHole;
+    // 1 多角形で 2 つにまとまるのは、外周が自分に接している（くびれで囲んだ入り江）面だけ。
+    // これを「穴」と呼ぶのは今までどおり（言い換えは 8E の文言の総点検で）。
+    return targetShape.length > 1
+      ? KNIFE_STRINGS.twoPiecesReasonExclave
+      : KNIFE_STRINGS.twoPiecesReasonHole;
   }, [targetShape]);
   const twoPiecesNote =
     twoPiecesReason === null
@@ -563,9 +565,23 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
         // 規則にする ―― 欄が「打ちかけ無し」を名乗っていれば 1 回でやめ、打ちかけが
         // あれば 1 度聞く。**やめた先は「対象を離す」段**（§D.4.1 の階段）で、道具は
         // 持ったままである（旧版の `knife.cancel()` は道具ごと降りていた）。
+        //
+        // **打ちかけは中身で見る**（増分 8B の手直し / 反証 2-2）。旧版は焦点のある欄の
+        // `pristine` だけを見ていたので、名前を打ってから地図（幕）を押して焦点が欄から外れると、
+        // 次の Escape で **打ちかけの名前・引いた分断線・選んだ継承先が確認なしに** まとめて
+        // 消えた。幕は「右のパネルで…」と案内する作りなので、案内を消すつもりで Escape を押す
+        // のは自然である。いまは「名前か種別に何か打った」「継承先を既定から選び直した」の
+        // どちらかがあれば、焦点がどこにあっても 1 度聞く。
         if (knife.flow === KNIFE_FLOW.EnteringProperties) {
           e.preventDefault();
-          if (inEditable && target?.pristine === false) {
+          const inheritChosen =
+            knife.state.phase === KNIFE_PHASE.EnteringProperties &&
+            knife.state.inheritIndex !== largestPieceIndex(knife.state.result);
+          if (
+            propertiesDirtyRef.current ||
+            inheritChosen ||
+            (inEditable && target?.pristine === false)
+          ) {
             knifeGuard.askOnEscape();
             return;
           }
@@ -699,6 +715,29 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     [knifeSaveDeferred, knifeSave],
   );
   const saveBusy = knifeSaveDeferred.busy;
+  // **素性欄の打ちかけ**（増分 8B の手直し / 反証 2-2）。欄が変わったときだけ知らせて
+  // もらい、Escape で「聞かずにやめてよいか」を焦点ではなく中身で決める。局面を離れたら
+  // 忘れる（次の分割へ持ち越さない）。
+  const propertiesDirtyRef = useRef(false);
+  const onPropertiesDirtyChange = useCallback((dirty: boolean) => {
+    propertiesDirtyRef.current = dirty;
+  }, []);
+  useEffect(() => {
+    if (!enteringProperties) propertiesDirtyRef.current = false;
+  }, [enteringProperties]);
+  // **素性欄の注記**（増分 8B の手直し）: 新しい片が 2 つ以上なら「この名前と種別は n 片
+  // すべてに付きます」（設計適合 2-1）、延ばした先でも切れていればそれも（B65 の残り）。
+  const enteringResult =
+    knife.state.phase === KNIFE_PHASE.EnteringProperties ? knife.state.result : undefined;
+  const enteringNote = useMemo((): string | null => {
+    if (enteringResult === undefined) return null;
+    const newPieces =
+      (enteringResult.pieces ?? [enteringResult.sideA, enteringResult.sideB]).length - 1;
+    const parts: string[] = [];
+    if (newPieces >= 2) parts.push(KNIFE_STRINGS.sharedNameNote(newPieces));
+    if (enteringResult.cutsBeyondLine === true) parts.push(KNIFE_STRINGS.beyondLineNote);
+    return parts.length === 0 ? null : parts.join('');
+  }, [enteringResult]);
   useEffect(() => {
     if (addDraft === undefined || !enteringProperties) return;
     const mine: AddDraftPrompt = {
@@ -715,6 +754,8 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
       onSave: runKnifeSave,
       onCancel: knifeCancel,
       busyLabel: saveBusy ? KNIFE_STRINGS.committing : null,
+      note: enteringNote,
+      onDirtyChange: onPropertiesDirtyChange,
     };
     addDraft.set(mine);
     // 局面を離れる・道具を降りる・アンマウントの全経路で必ず閉じる（教訓 5.2）。
@@ -728,6 +769,8 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     runKnifeSave,
     knifeCancel,
     saveBusy,
+    enteringNote,
+    onPropertiesDirtyChange,
   ]);
 
   // **モーダルは別に報せる**（増分 5 の手直し A4）。継承先の選択板（`InheritorModal`）と
@@ -1243,7 +1286,14 @@ function KnifeToolChrome<S>(props: KnifeToolChromeProps<S>): JSX.Element | null 
           selectedIndex={knife.state.selectedIndex}
           areas={props.pieceAreas}
           targetName={props.targetName}
-          note={props.twoPiecesNote}
+          // 「2 つにしか分かれません」は **開いた線のときだけ**（閉じた線はどの面でも囲みの
+          // 内と外の 2 つなので的外れ。設計適合 1-1。次の一手の側と同じ条件）。
+          note={
+            knife.state.line.kind === KNIFE_LINE_KIND.Open ? props.twoPiecesNote : null
+          }
+          beyondNote={
+            knife.state.result.cutsBeyondLine === true ? KNIFE_STRINGS.beyondLineNote : null
+          }
           onSelect={(index) => knife.selectInheritor(index)}
           onConfirm={() => knife.confirmInheritor()}
           onCancel={() => knife.cancel()}

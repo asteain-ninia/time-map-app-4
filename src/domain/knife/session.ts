@@ -63,7 +63,8 @@ export interface ChoosingInheritorState {
   readonly result: SplitResult;
   /**
    * The currently-highlighted piece, as an INDEX into `result.pieces` (HB3-5/19
-   * n-way). Seeded to the SMALLEST piece (`smallestPieceIndex`; FR-93 / 教訓5.4).
+   * n-way). Seeded by the caller — the UI seeds the LARGEST piece (`largestPieceIndex`;
+   * 増分 8B の手直し). FR-93 boxes the smallest piece in the preview independently.
    */
   readonly selectedIndex: number;
 }
@@ -181,8 +182,8 @@ export function clickInsideCircle(
 
 /**
  * 分割成立 (検証通過) — advance to継承先選択 with the computed result. `smallestIndex` is
- * the SMALLEST piece's index (`smallestPieceIndex`), seeded as the highlighted choice
- * (FR-93 小さい方 / 教訓5.4 UI 文脈優先 — HB3-5/19 generalized to n-way). Confirming the
+ * the piece seeded as the highlighted choice (the parameter name is historical: the UI now
+ * passes `largestPieceIndex` — 増分 8B の手直し; HB3-5/19 generalized to n-way). Confirming the
  * cut is the完了トリガー the UI must call (教訓5.7). No-op unless in DrawingCut.
  */
 export function confirmCut(

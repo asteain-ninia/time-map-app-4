@@ -31,6 +31,7 @@ export {
   checkSplittable,
   executeSplit,
   smallerSide,
+  largestPieceIndex,
   smallestPieceIndex,
   splitsIntoManyPieces,
 } from './split-geometry';

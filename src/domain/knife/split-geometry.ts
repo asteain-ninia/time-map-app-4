@@ -1471,6 +1471,24 @@ export function smallestPieceIndex(result: SplitResult): number {
 }
 
 /**
+ * The index of the LARGEST piece by area — the 既定の継承先 (増分 8B の手直し / 設計適合の
+ * 重 1). The piece that keeps the original feature (its id, name, colour and timeline)
+ * defaults to the biggest remainder: cutting a strip off a country should make the STRIP
+ * new, not rename the bulk. With 3〜7 pieces the old default (the smallest) handed the
+ * original identity to a sliver. FR-93 still boxes the SMALLEST piece in the preview
+ * ({@link smallestPieceIndex}); only the seeded selection moved. Ties resolve to the LOWEST
+ * index deterministically. Pure.
+ */
+export function largestPieceIndex(result: SplitResult): number {
+  const pieces = result.pieces ?? [result.sideA, result.sideB];
+  let best = 0;
+  for (let i = 1; i < pieces.length; i += 1) {
+    if (pieces[i]!.areaKm2 > pieces[best]!.areaKm2) best = i;
+  }
+  return best;
+}
+
+/**
  * @deprecated 2-way preview hint (kept while consumers migrate to {@link smallestPieceIndex}).
  * Returns 'a' when `pieces[0]` is the smaller of the FIRST TWO pieces, else 'b'.
  */

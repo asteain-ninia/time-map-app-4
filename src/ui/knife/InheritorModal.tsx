@@ -7,7 +7,8 @@
 //     プレビュー). The smallest piece is computed in the domain (`smallestPieceIndex`)
 //     and passed in as `smallestIndex` so the UI and geometry agree (教訓 5.30).
 //   - offers a継承先 button per piece with selection HIGHLIGHT (FR-93 ボタン選択時
-//     ハイライト) — seeded to the小さい方 by the domain (教訓 5.4 UI 文脈優先). The k-1
+//     ハイライト) — seeded to the LARGEST piece (増分 8B の手直し: 元の地物は既定でいちばん
+//     大きい片に残る。赤い枠は FR-93 のとおり小さい方を囲んだまま). The k-1
 //     non-chosen pieces all share the ONE U23 default authored next (the domain
 //     assembler does this; the modal just picks WHICH piece inherits).
 //   - confirms via the確定 button (the完了トリガー the controller wires; 教訓 5.7).
@@ -33,7 +34,7 @@ export interface InheritorModalProps {
   readonly pieces: readonly GeoMultiPolygon[];
   /** Which piece is the small方 (domain-computed; FR-93). It is boxed in the preview. */
   readonly smallestIndex: number;
-  /** The currently-highlighted piece index (seeded to the小さい方; FR-93). */
+  /** The currently-highlighted piece index (seeded to the LARGEST piece; 増分 8B の手直し). */
   readonly selectedIndex: number;
   /** Highlight a継承先 piece by index (FR-93). */
   readonly onSelect: (index: number) => void;
@@ -51,8 +52,13 @@ export interface InheritorModalProps {
    * 「どちらが元の素性を引き継ぐか読める」）。
    */
   readonly targetName?: string | undefined;
-  /** 穴・飛び地で 2 つにまとまったことの注記（V10 ③④）。null なら出さない。 */
+  /** 飛び地などで 2 つにまとまったことの注記（V10 ④）。null なら出さない。 */
   readonly note?: string | null | undefined;
+  /**
+   * 分断線を延ばした先でも切れたことの注記（増分 8B の手直し / B65 の残り。ドメインの
+   * `cutsBeyondLine`）。null なら出さない。
+   */
+  readonly beyondNote?: string | null | undefined;
 }
 
 /** Bounding box across all pieces (for a shared preview viewBox). */
@@ -262,6 +268,11 @@ export function InheritorModal(props: InheritorModalProps): JSX.Element {
         {props.note !== undefined && props.note !== null && (
           <p className="knife-dialog__note" data-testid="knife-two-pieces-note">
             {props.note}
+          </p>
+        )}
+        {props.beyondNote !== undefined && props.beyondNote !== null && (
+          <p className="knife-dialog__note" data-testid="knife-beyond-line-note">
+            {props.beyondNote}
           </p>
         )}
 
