@@ -925,11 +925,10 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   const chooseParent = add.chooseParent;
   const save = add.save;
   /**
-   * **保存に進行表示を掛ける**（B39 の直し）。面の中に子を描いて保存すると、親の面を
-   * まとめ役に変えて分け残しを作る（または分け残しを削る）ところまでが同じ確定に入るので、
-   * 実データでは押してから 3 秒ほど画面が動かない（増分 7 の所属変更と同じ重さ）。分割の
-   * ［保存］と同じ器（`useDeferredCommit`）を通し、押した直後に 1 コマ描いて［保存］を
-   * 「保存しています…」に変え、2 回目は走らせない。
+   * **保存に進行表示を掛ける**（2026-10-04、B39 の手直しで入れ、後始末を戻したあとも残した）。
+   * 確定は整合の検査を通すので、実データでは押してから画面が止まって見えることがある（初回の
+   * 実測で 3 秒台）。分割の［保存］と同じ器（`useDeferredCommit`）を通し、押した直後に 1 コマ
+   * 描いて［保存］を「保存しています…」に変え、2 回目は走らせない。
    */
   const saveDeferred = useDeferredCommit(
     props.commitScheduler === undefined ? undefined : { schedule: props.commitScheduler },

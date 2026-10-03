@@ -195,10 +195,10 @@ export function buildDirectDomainShape(
 ): BuiltDirectDomainShape | undefined {
   const vertices: Vertex[] = [];
   const byCoord = new Map<string, VertexId>();
-  // **同じ座標に居た頂点の id を使い回す**（B39 の直し: 分け残しを削るとき）。削っても
-  // 動かない外周は元の頂点のまま残るので、あとから隣がその頂点へ吸着して共有していても
-  // 共有が切れない。新しく生まれる角だけを採番する。生成（所属変更・細分・修復）は
-  // 渡さない ―― いままでどおり全部を新しく採番する。
+  // **同じ座標に居た頂点の id を使い回す**（B39 の手直しで入れた）。分け残しを作るとき
+  // （所属変更・細分・読み込みの修復。`promote.ts` の `buildDirectDomainForLeaf`）は元の面の
+  // 頂点を渡すので、分け残しの外周は元の頂点 id のまま残り、元の面と境を共有していた隣との
+  // 共有が切れない。新しく生まれる角だけを採番する。渡さなければ全部を新しく採番する。
   const reusable = new Map<string, VertexId>();
   for (const v of reuseVertices) reusable.set(coordKey(v.coordinate), v.id);
 

@@ -236,19 +236,13 @@ import { HandleCapNotice } from './map/HandleCapNotice';
 import './map/grid-toggle.css';
 import { buildForest } from '../domain/hierarchy/forest';
 // 増分 7: 所属変更の対象展開（FR-48 後半）と、削除の影響の説明（設計書 §A.3）。
-import {
-  AFFILIATION_STATUS,
-  buildAffiliationProposalForTargets,
-  parentExisting,
-  planAffiliationTargets,
-} from '../domain/affiliation/index';
+import { planAffiliationTargets } from '../domain/affiliation/index';
 import { hasOwnSeries } from '../domain/affiliation/materialize';
 import { planEnding } from '../domain/affiliation/interval-edit';
 import { deletionStateFromHistories, describeDeletionImpact } from '../domain/deletion/index';
 import { maxDerivedDepth } from '../domain/hierarchy/depth';
 import { FEATURE_KIND, featureDisplayName } from '../domain/feature';
-import { findHistoryContaining, toAffiliationEditProposal } from '../domain/editing/apply-proposal';
-import { ADD_FOLLOW_UP, followUpFrom } from '../domain/editing/add-follow-up';
+import { findHistoryContaining } from '../domain/editing/apply-proposal';
 import { compare as compareTimePoints } from '../domain/time/normalized';
 import { toYearPoint } from '../domain/time/time-point';
 import {
@@ -2783,90 +2777,37 @@ export function App(): JSX.Element {
   // (全コミット経路の確認). The property / interval / edit-drag paths, whose commit
   // time CAN differ from the view time, thread their own explicit times instead.
   /**
-   * **B39 の根治**（`docs/ui-redesign/進捗/申し送り-2026-10-04.md` §3 / FR-35 / FR-37）。
+   * **B39 は根治を試して、いったん戻した**（`docs/現状.md` の B39。増分 7）。
    *
-   * **何が起きていたか**: 面（自分の形を持つ末端）を上位領域に選んで子を保存すると、
-   * その面は「形を持ったまま子を持つ」状態（`leaf-with-children`）になり、保存形式の
-   * 形状保持規則に触れるので、**入れ子を作るたびに、次に開いたときに修復を聞かれて**いた。
+   * **試したこと**: 追加の確定のあとに、所属変更と同じ経路（直轄領の生成 → 末端→集約の
+   * 遷移）を 1 度だけ通し、追加と遷移を 1 つの取り消し単位に畳む ―― 実装計画が
+   * 「筋としては正しい」と書いていた形である。実装は動き、`leaf-with-children` は
+   * 消え、開き直しの修復も出なくなった。
    *
-   * **直し方は「子を確定した時点で親を集約化する」**（FR-35 の末端→集約の遷移を確定に
-   * 含める）。変換はドメインに既にある ―― 所属変更が「形を持つ末端が子を得た」ときに
-   * 走らせている **同じ経路**（直轄領＝分け残しの生成 → 末端→集約の遷移）で、追加のあとに
-   * 1 度だけ通す。分け残しは元の面と一緒に終わる（`applyAffiliationProposal`）。
+   * **それでも戻した理由**: **2 人目以降の入れ子が 1 段ずつ深くなる。** 1 人目を確定した
+   * 時点で親は集約になり、親の「分け残し（直轄領）」という **新しい面**が生まれる。その
+   * あと同じ親の中に 2 人目を描くと、いちばん内側にある面は **その分け残し**なので、
+   * B33 の入れ子の既定は分け残しを指す ―― 確定するとまた分け残しが生まれ、
+   * 「親 直轄領 直轄領」の鎖ができる。実アプリで確認した（`snap-share-fixes.spec.ts` の
+   * B2 が、2 人目の既定が親ではなく新しく生まれた面になることで落ちた）。
    *
-   * **2 人目以降は、まとめ役の下に平らに並べる**。増分 7 でこの根治を一度戻したのは、
-   * 2 人目の入れ子の既定が 1 人目で生まれた分け残しを指して「親 直轄領 直轄領」の鎖が
-   * できたからだった。いまは分け残しを新しい面の上位領域の候補から外している
-   * （`domain/add/parent-candidates.ts`）ので、既定はその上位領域（まとめ役）になる。
-   * そのとき分け残しと新しい子が兄弟の末端どうしで重なるので、**分け残しのほうを削り**、
-   * まとめ役の子の並びを揃える（`createAddUnderAggregateCommandForRoot`）。結果は
-   * 読み込み時の修復が 1 回で作る形（親 →［子1, 子2, 子3, 分け残し］）と同じになる。
+   * **いまの挙動（修復で受ける）のほうが結果は正しい。** 読み込み時の修復は **子を全部
+   * 足し終えたあと 1 回だけ**遷移させるので、親 →［子1, 子2, 子3, 直轄領］という平らな
+   * 形になる。毎回の確定で遷移させると、その「1 回だけ」が「N 回」になる。
    *
-   * **1 つの取り消し単位にする**（FR-73 / FR-94）。追加と後始末を別々の取り消しにすると、
-   * 1 回目の Ctrl+Z で「親だけが末端に戻り、子は残る」という **保存できない中間状態**が
-   * 画面に出てしまう。複合コマンドに畳んで 1 手で戻す。
+   * **残っている問いは「2 人目以降をどう扱うか」**である（分け残しの下に入れ子にするのか、
+   * 分け残しを分けるのか）。分け残しを分けるのは実質「分ける（ナイフ）」の操作なので、
+   * **分割の UI を作り直す増分 8B** で決めるのが筋である。`docs/現状.md` の B39 に
+   * この分析を書いた。
    *
-   * 後始末が断られた・何も変わらないときは **追加だけを通す**（追加そのものを巻き添えで
-   * 失わせない）。修復ダイアログは受け皿として残っている。
-   */
-  const composeAddWithParentFollowUp = useCallback(
-    (
-      addCommand: Command<DomainRoot>,
-      newFeatureId: FeatureId,
-      at: TimePoint,
-    ): { readonly command: Command<DomainRoot>; readonly deferred: boolean } => {
-      const afterAdd = addCommand.execute(store.getState().domain).state;
-      const features = featuresAt(afterAdd, at);
-      // **後始末の決め方は 1 本**（`domain/editing/add-follow-up.ts`）。重なりの検出から
-      // 分け残しとの組を外すかどうかも同じ答えを読む（B39 の手直し 2 回目 / 検証 3-1）。
-      const kind = followUpFrom(features, afterAdd, newFeatureId, at, calendar);
-      const only = { command: addCommand, deferred: false };
-      if (kind === ADD_FOLLOW_UP.Defer) return { command: addCommand, deferred: true };
-      if (kind === ADD_FOLLOW_UP.Settle) {
-        // 2 人目以降（または既存のまとめ役の下）: 分け残しを削り、子の並びを揃える。
-        const followUp = createAddUnderAggregateCommandForRoot(afterAdd, newFeatureId, at, {
-          idState: createIdGeneratorState(),
-          now: () => Date.now(),
-        });
-        return followUp === null
-          ? only
-          : {
-              command: createCompositeCommand(UI_COMMAND_LABEL.Add, [addCommand, followUp]),
-              deferred: false,
-            };
-      }
-      if (kind !== ADD_FOLLOW_UP.Promote) return only;
-      // 1 人目: 形を持つ末端の親を集約化する（所属変更と同じ経路）。
-      const parentId = features.find((f) => f.id === newFeatureId)?.parentId;
-      if (parentId === undefined) return only;
-      const built = buildAffiliationProposalForTargets(
-        features,
-        [newFeatureId],
-        parentExisting(parentId),
-        {
-          idState: createIdGeneratorState(),
-          now: () => Date.now(),
-          vertexStore: verticesAt(afterAdd, at),
-        },
-      );
-      if (built.status === AFFILIATION_STATUS.Rejected) return only;
-      const binding = createLiveAffiliationBinding({ getRoot: () => afterAdd });
-      const processed = binding.startProcess(toAffiliationEditProposal(built.proposal, at));
-      if (processed.status !== PROCESS_STATUS.Committed) return only;
-      return {
-        command: createCompositeCommand(UI_COMMAND_LABEL.Add, [addCommand, processed.command]),
-        deferred: false,
-      };
-    },
-    [store, calendar],
-  );
-
-  /**
-   * **追加の確定の入口は 1 つ**（B39 の手直し 2 回目 / 検証 3-1）。直接の確定（`onAddCommitted`）と
-   * 重なりの板を通った確定（`onConflictCommitted`）の両方がここを通り、同じ後始末を同じ
-   * 取り消し単位に畳む。以前は板を通った確定が後始末を通らず、分け残しとの重なりを検出から
-   * 外したのに削らない、ができていた（子がまるごと分け残しに重なって残った）。
-   * 確定できた（後始末まで記録した）なら true。
+   * **2026-10-04 にもう一度入れ、再検証で戻した**（`docs/ui-redesign/審査/B39-手直し2-再検証Opus.md`）。
+   * 分け残しを親の候補から外して 2 人目以降を削る形まで作ったが、年を変えて子を描く・
+   * さかのぼって描く・親の後ろの記録の先に描く形で、開き直しの修復が利用者の描いた子を
+   * 消す道ができた。追加の確定の後始末（集約化・削り）はやめ、読み込み時の修復で受ける。
+   *
+   * **残したのは子の並びを揃えることだけ**（{@link recordAddCommit}）。まとめ役の下に面を
+   * 足したとき、まとめ役の `childIds` を実際の所属に揃える（居候のまとめ役は先に自分の系列へ
+   * 起こす）。形も所属も変えない。揃えないと開き直しで「子の並びの食い違い」を聞かれる。
    */
   const recordAddCommit = useCallback(
     (
@@ -2874,17 +2815,22 @@ export function App(): JSX.Element {
       newFeatureId: FeatureId,
       preference: NextTargetPreference | undefined,
       at: TimePoint,
-    ): boolean => {
+    ): void => {
       if (result.status !== PROCESS_STATUS.Committed) {
         recordCommit(result, preference, at);
-        return false;
+        return;
       }
-      const composed = composeAddWithParentFollowUp(result.command, newFeatureId, at);
-      recordCommand(composed.command, preference, at);
-      if (composed.deferred) announceResult(APP_STRINGS.addedShapeDeferred);
-      return true;
+      const afterAdd = result.command.execute(store.getState().domain).state;
+      const sync = createChildIdsSyncAfterAddCommandForRoot(afterAdd, newFeatureId, at);
+      recordCommand(
+        sync === null
+          ? result.command
+          : createCompositeCommand(UI_COMMAND_LABEL.Add, [result.command, sync]),
+        preference,
+        at,
+      );
     },
-    [recordCommit, recordCommand, composeAddWithParentFollowUp, announceResult],
+    [recordCommit, recordCommand, store],
   );
 
   const onAddCommitted = useCallback(
@@ -2893,8 +2839,6 @@ export function App(): JSX.Element {
       newFeatureId: FeatureId,
       committed?: { readonly sharedVertexCount: number },
     ) => {
-      // B39: 親が形を持つ末端なら集約化を、まとめ役なら分け残しの削りを **同じ取り消し
-      // 単位**に畳む（入口は `recordAddCommit` の 1 つ）。
       recordAddCommit(result, newFeatureId, { featureId: newFeatureId }, store.getState().currentTime);
       // 増分 3: **吸着して境界を共有したことを、状態行の「直前の結果」に日本語で出す**
       // （設計書 §H.5。成功を一度も知らせない＝ C6 への手当ての 1 件）。`recordCommit` が
@@ -3329,7 +3273,7 @@ export function App(): JSX.Element {
         anchorTime: proposal.anchorTime,
         // 教訓 5.11: promote the added feature once the conflict commit lands.
         preference: { featureId: proposal.featureId },
-        // B39 の手直し 2 回目: 板を通った確定も、追加の後始末の入口を通す。
+        // 板を通った確定も、追加の確定と同じ入口（子の並びを揃える）を通す。
         addedFeatureId: proposal.featureId,
       });
     },
@@ -3423,8 +3367,7 @@ export function App(): JSX.Element {
       // fr100: recolor at the PAUSED proposal's anchor time (stashed on the conflict
       // state) — the fallback current time covers only a legacy-shaped state.
       const conflictAt = conflictState?.anchorTime ?? store.getState().currentTime;
-      // 止まっていたのが **追加** なら、直接の確定と同じ入口で後始末まで通す（B39 の手直し
-      // 2 回目 / 検証 3-1）。ほかの道具は今までどおり。
+      // 止まっていたのが **追加** なら、直接の確定と同じ入口（子の並びを揃える）を通す。
       const addedId = conflictState?.addedFeatureId;
       if (addedId !== undefined) {
         recordAddCommit(result, addedId, conflictState?.preference, conflictAt);
@@ -5139,9 +5082,8 @@ interface ConflictPending {
    */
   readonly clearVertexOwner?: FeatureId;
   /**
-   * 止まっていたのが **面・線・点の追加** なら、その新しい地物の id（B39 の手直し 2 回目）。
-   * 板を通った確定でも、直接の確定と同じ後始末（親の集約化・分け残しの削り・子の並び）を
-   * 同じ取り消し単位で通すために使う。ほかの道具では無い。
+   * 止まっていたのが **面・線・点の追加** なら、その新しい地物の id。板を通った確定でも、
+   * 直接の確定と同じ入口（まとめ役の子の並びを揃える）を通すために使う。ほかの道具では無い。
    */
   readonly addedFeatureId?: FeatureId;
 }
@@ -5283,7 +5225,7 @@ import {
   createAnchorIntervalCommandForRoot,
   anchorIntervalRecolorTime,
   createBulkKindLabelCommandForRoot,
-  createAddUnderAggregateCommandForRoot,
+  createChildIdsSyncAfterAddCommandForRoot,
 } from './consistency-binding';
 import type { AddIdPorts } from '../domain/add/index';
 import type { StartAddProcess } from './add/useAddTool';
