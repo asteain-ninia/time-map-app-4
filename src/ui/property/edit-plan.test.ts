@@ -20,6 +20,7 @@ import { createVertexStore } from '../../domain/vertex';
 
 import {
   EDIT_PLAN_KIND,
+  EDIT_PLAN_STRINGS,
   decideEditPlan,
   estimateAnchorBytes,
   estimateAnchorFileBytes,
@@ -141,6 +142,21 @@ describe('保存の行き先 — 設計書 §D.3 の 4 状態', () => {
     expect(p.editTime).toBeNull();
     expect(p.reason).not.toBeNull();
     expect(p.reason).toContain('1200年');
+    expect(p.badgeNote).toBe(EDIT_PLAN_STRINGS.noteFeatureAbsent);
+  });
+
+  it('③-b もう終わっている年は「まだ」ではなく「もう」と言う（手直し 2 回目 / 決定 (12)）', () => {
+    const p = decideEditPlan({
+      currentTime: timePointYear(1500),
+      series: seriesAt(0),
+      featurePresent: false,
+      featureEnded: true,
+      calendar: cal,
+      snapshotSize: null,
+    });
+    expect(p.kind).toBe(EDIT_PLAN_KIND.FeatureAbsent);
+    expect(p.badgeNote).toBe(EDIT_PLAN_STRINGS.noteFeatureEnded);
+    expect(p.reason).toBe(EDIT_PLAN_STRINGS.reasonFeatureEnded('1500年'));
   });
 
   it('④年ちょうどでない ⇒ 押せない。理由と、丸めた先が出る', () => {
