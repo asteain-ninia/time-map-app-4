@@ -33,3 +33,9 @@ export {
   emptiedAggregateIds,
   syncAggregateChildIds,
 } from './promote';
+
+export {
+  type DirectDomainCarve,
+  type PlanDirectDomainCarveOptions,
+  planDirectDomainCarves,
+} from './carve';

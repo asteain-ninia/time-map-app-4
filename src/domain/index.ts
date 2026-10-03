@@ -940,6 +940,8 @@ export {
   promoteFeature,
   emptiedAggregateIds as emptiedAggregateIdsForPromotion,
   syncAggregateChildIds as syncAggregateChildIdsForPromotion,
+  type DirectDomainCarve,
+  planDirectDomainCarves,
 } from './promotion/index';
 
 // U27: 穴あけによる新地物生成 (FR-45)。末端地物内部の指定領域を新しい独立した末端地物

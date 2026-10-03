@@ -65,6 +65,7 @@ import { SnapOptions } from './SnapOptions';
 import { ADD_STRINGS } from './strings';
 import { addToolKindFor } from './tool-kind';
 import { ADD_PHASE, useAddTool, type StartAddProcess } from './useAddTool';
+import { useDeferredCommit, type CommitScheduler } from '../shell/useDeferredCommit';
 
 /**
  * 打ちかけを捨ててよいかを聞いている最中の状態（増分 3 の手直し / D1）。
@@ -193,6 +194,11 @@ export interface AddToolControllerProps<S> {
    * 引けなければ内部 id は**出さない**（U-1）。
    */
   readonly featureNameOf?: ((featureId: FeatureId) => string | null) | undefined;
+  /**
+   * 保存を遅らせる口（進行表示のため。B39 の直し）。検査は同期の実装を差し込む
+   * （`useDeferredCommit` の注記）。省略時は 1 コマ描いてから走る。
+   */
+  readonly commitScheduler?: CommitScheduler | undefined;
   /**
    * オプションバー（設計書 §C.4）。道具名・対象・次の一手・設定・確定をここへ押し込む。
    * **確定ボタンは地図の中に置かない**（K-2 の事故が構造的に起こり得ない ―― U-10 の
@@ -918,6 +924,24 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   // 地図の真ん中に浮くフォームをやめる。**いま描いた形を覆わない**のが要点である。
   const chooseParent = add.chooseParent;
   const save = add.save;
+  /**
+   * **保存に進行表示を掛ける**（B39 の直し）。面の中に子を描いて保存すると、親の面を
+   * まとめ役に変えて分け残しを作る（または分け残しを削る）ところまでが同じ確定に入るので、
+   * 実データでは押してから 3 秒ほど画面が動かない（増分 7 の所属変更と同じ重さ）。分割の
+   * ［保存］と同じ器（`useDeferredCommit`）を通し、押した直後に 1 コマ描いて［保存］を
+   * 「保存しています…」に変え、2 回目は走らせない。
+   */
+  const saveDeferred = useDeferredCommit(
+    props.commitScheduler === undefined ? undefined : { schedule: props.commitScheduler },
+  );
+  const runSaveDeferred = saveDeferred.run;
+  const runSave = useCallback(
+    (properties: AddProperties) => {
+      runSaveDeferred(() => save(properties));
+    },
+    [runSaveDeferred, save],
+  );
+  const saveBusy = saveDeferred.busy;
   const phase = add.phase;
   const sessionTool = add.session?.tool;
   const draft = add.draft;
@@ -976,8 +1000,9 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
       currentYear: currentTime.year,
       onChooseParent: (featureId: FeatureId | null) =>
         chooseParent(featureId === null ? PARENT_TOP_LEVEL : parentSelection(featureId)),
-      onSave: (properties: AddProperties) => save(properties),
+      onSave: runSave,
       onCancel: cancel,
+      busyLabel: saveBusy ? ADD_STRINGS.saving : null,
     });
     // 道具が外れる・下書きが消える全経路で必ず閉じる（教訓 5.2）。
     return () => addDraft.set(null);
@@ -989,7 +1014,8 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     defaultParentId,
     currentTime,
     chooseParent,
-    save,
+    runSave,
+    saveBusy,
     cancel,
   ]);
 

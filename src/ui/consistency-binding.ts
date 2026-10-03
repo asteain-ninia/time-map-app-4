@@ -48,6 +48,7 @@ import type { MergeSnapshot } from '../domain/merge/index';
 import type { FeatureSnapshot } from '../domain/editing/index';
 import {
   applyAddProposal,
+  applyAddUnderAggregate,
   applyAffiliationProposal,
   applyDrillProposal,
   applyEditProposal,
@@ -90,7 +91,11 @@ import { resolveLeafShape } from '../domain/hierarchy/resolve-shape';
 import { difference, isOk } from '../domain/geometry/index';
 import { isMultiPolygonEmpty, type GeoMultiPolygon } from '../domain/geometry/types';
 import { alignMultiPolygon, referenceLonForMultiPolygon } from '../domain/geo/index';
+import { planDirectDomainCarves } from '../domain/promotion/index';
+import type { IdGeneratorState } from '../domain/id-generator';
 import {
+  FEATURE_KIND,
+  isDirectDomainLeaf,
   pruneVertexStore,
   referencedVertexIds,
   withKindLabel,
@@ -295,6 +300,40 @@ function displayNamesAt(root: DomainRoot, time: TimePoint): (id: FeatureId) => s
 }
 
 /**
+ * 重なりの検出から外してよい組か（`detectSpatialAt` の差し込み口）。
+ */
+type OverlapExemption = (
+  a: FeatureId,
+  b: FeatureId,
+  features: readonly Feature[],
+  proposalFeatureId: FeatureId,
+) => boolean;
+
+/**
+ * **新しく足した面と、同じまとめ役の分け残しとの重なりは聞かない**（B39 の直し）。
+ *
+ * 面の中に 2 人目以降の子を描くと、親（まとめ役）の分け残しの中に描くことになるので、
+ * 追加の試し当ての段階では必ず重なる。この重なりは確定のすぐ後で **分け残しのほうを
+ * 削って**解く（`createAddUnderAggregateCommandForRoot`。追加と同じ取り消し単位）ので、
+ * ここで「どちらを残すか」を聞くと、聞く必要の無い質問を子を描くたびに出すことになる。
+ * 外すのは「足した面 × 同じ親の分け残し（印のある末端）」の組だけで、隣の国との重なり
+ * などは今までどおり聞く。追加の束ねだけが使う（編集・分ける等で分け残しに重ねたときは
+ * 削らないので、聞くのが正しい）。
+ */
+const exemptNewChildOverDirectDomain: OverlapExemption = (a, b, features, newId) => {
+  if (a !== newId && b !== newId) return false;
+  const otherId = a === newId ? b : a;
+  const added = features.find((f) => f.id === newId);
+  const other = features.find((f) => f.id === otherId);
+  if (added === undefined || other === undefined) return false;
+  if (!isDirectDomainLeaf(other)) return false;
+  const parentId = added.parentId;
+  if (parentId === undefined || other.parentId !== parentId) return false;
+  const parent = features.find((f) => f.id === parentId);
+  return parent?.kind === FEATURE_KIND.Aggregate;
+};
+
+/**
  * U10 — terminal-vs-terminal spatial overlap detection over the trial result
  * state at the proposal's anchor time. Builds the forest from the features
  * effective at that time, extracts terminal shapes (aggregates excluded by
@@ -304,6 +343,7 @@ function displayNamesAt(root: DomainRoot, time: TimePoint): (id: FeatureId) => s
 function detectSpatialAt<Snapshot>(
   proposal: EditProposal<Snapshot>,
   cache?: TerminalShapeCache,
+  exemptPair?: OverlapExemption,
 ): (resultState: DomainRoot) => SpatialCheckResult {
   return (resultState) => {
     const time = proposal.anchorTime;
@@ -314,7 +354,11 @@ function detectSpatialAt<Snapshot>(
     // ONLY the touched terminal(s); the other 5,000-scale terminals reuse their prior
     // shape (immutable features/vertices ⇒ reference identity proves no change).
     const terminals = extractTerminalShapes(forest, vertices, cache);
-    const pairs = detectTerminalOverlaps(terminals);
+    const detected = detectTerminalOverlaps(terminals);
+    const pairs =
+      exemptPair === undefined
+        ? detected
+        : detected.filter((pair) => !exemptPair(pair.a, pair.b, features, proposal.featureId));
     const names = displayNamesAt(resultState, time);
     return conflictsFromOverlapPairs(pairs, names, () => ({ kind: 'point', at: time }));
   };
@@ -727,10 +771,11 @@ function bindPortsToProposal<Snapshot>(
   base: ConsistencyPorts<DomainRoot, Snapshot>,
   proposal: EditProposal<Snapshot>,
   spatialCache?: TerminalShapeCache,
+  exemptPair?: OverlapExemption,
 ): ConsistencyPorts<DomainRoot, Snapshot> {
   return {
     ...base,
-    detectSpatial: detectSpatialAt(proposal, spatialCache),
+    detectSpatial: detectSpatialAt(proposal, spatialCache, exemptPair),
     applyResolution: applyResolutionAt(access, proposal.anchorTime),
   };
 }
@@ -746,13 +791,14 @@ function runResolutionsGuarded<Snapshot>(
   proposal: EditProposal<Snapshot>,
   resolutions: readonly Resolution[],
   spatialCache?: TerminalShapeCache,
+  exemptPair?: OverlapExemption,
 ): ProcessResult<DomainRoot> {
   try {
     return orchestratorApplyResolutions(
       access.getRoot(),
       proposal,
       resolutions,
-      bindPortsToProposal(access, base, proposal, spatialCache),
+      bindPortsToProposal(access, base, proposal, spatialCache, exemptPair),
     );
   } catch (error) {
     const rejection: RejectedResult = {
@@ -790,11 +836,19 @@ function createAccumulatingApply<Snapshot>(
   ports: ConsistencyPorts<DomainRoot, Snapshot>,
   proposal: EditProposal<Snapshot>,
   spatialCache?: TerminalShapeCache,
+  exemptPair?: OverlapExemption,
 ): (resolutions: readonly Resolution[]) => ProcessResult<DomainRoot> {
   const accumulated = new Map<string, Resolution>();
   return (resolutions) => {
     for (const r of resolutions) accumulated.set(r.conflictId, r);
-    return runResolutionsGuarded(access, ports, proposal, [...accumulated.values()], spatialCache);
+    return runResolutionsGuarded(
+      access,
+      ports,
+      proposal,
+      [...accumulated.values()],
+      spatialCache,
+      exemptPair,
+    );
   };
 }
 
@@ -828,10 +882,22 @@ export const createLiveAddBinding: CreateLiveAddBinding = (access) => {
       runGuarded(
         access.getRoot(),
         proposal,
-        bindPortsToProposal(access, ports, proposal, spatialCache),
+        bindPortsToProposal(
+          access,
+          ports,
+          proposal,
+          spatialCache,
+          exemptNewChildOverDirectDomain,
+        ),
       ),
     applyResolutionsFor: (proposal) =>
-      createAccumulatingApply(access, ports, proposal, spatialCache),
+      createAccumulatingApply(
+        access,
+        ports,
+        proposal,
+        spatialCache,
+        exemptNewChildOverDirectDomain,
+      ),
   };
 };
 
@@ -1031,6 +1097,39 @@ export const createLiveAffiliationBinding: CreateLiveAffiliationBinding = (acces
       createAccumulatingApply(access, ports, proposal, spatialCache),
   };
 };
+
+/**
+ * **まとめ役の下に面を足した後始末の命令**（B39 の直し）。`root` は追加を当てた後の状態で、
+ * `newFeatureId` はいま足した面。その面の上位領域が `at` の年にまとめ役なら、
+ * 重なった分け残しを削り、まとめ役の子の並びを揃える（`applyAddUnderAggregate`）。
+ * まとめ役の下でない・何も変わらないなら null（呼び出し側は追加だけを記録する）。
+ *
+ * 追加と同じ取り消し単位に畳むのは呼び出し側（`createCompositeCommand`）。ここは
+ * 全状態の差し替えの命令を 1 つ作るだけである（`makeCommand`。作られた・消えた地物は
+ * 系列の差から数える）。
+ */
+export function createAddUnderAggregateCommandForRoot(
+  root: DomainRoot,
+  newFeatureId: FeatureId,
+  at: TimePoint,
+  ids: { readonly idState: IdGeneratorState; readonly now: () => number },
+): Command<DomainRoot> | null {
+  const features = featuresAt(root, at);
+  const added = features.find((f) => f.id === newFeatureId);
+  const parentId = added?.parentId;
+  if (parentId === undefined) return null;
+  const parent = features.find((f) => f.id === parentId);
+  if (parent === undefined || parent.kind !== FEATURE_KIND.Aggregate) return null;
+  const carves = planDirectDomainCarves(features, verticesAt(root, at), newFeatureId, ids);
+  const next = applyAddUnderAggregate(root, parentId, carves, at, calendar);
+  if (next === root) return null;
+  return makeCommand(
+    root,
+    next,
+    [parentId, ...carves.map((c) => c.directDomainId)],
+    UI_COMMAND_LABEL.Add,
+  );
+}
 
 // --- U31 全錨削除 → DomainRoot whole-state-swap (FR-41 / FR-73 / FR-85) -------
 //

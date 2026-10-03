@@ -191,9 +191,16 @@ function reparentByContainment(raws: readonly RawRing[]): Ring[] {
 export function buildDirectDomainShape(
   difference: GeoMultiPolygon,
   ids: DirectDomainIdPorts,
+  reuseVertices: readonly Vertex[] = [],
 ): BuiltDirectDomainShape | undefined {
   const vertices: Vertex[] = [];
   const byCoord = new Map<string, VertexId>();
+  // **同じ座標に居た頂点の id を使い回す**（B39 の直し: 分け残しを削るとき）。削っても
+  // 動かない外周は元の頂点のまま残るので、あとから隣がその頂点へ吸着して共有していても
+  // 共有が切れない。新しく生まれる角だけを採番する。生成（所属変更・細分・修復）は
+  // 渡さない ―― いままでどおり全部を新しく採番する。
+  const reusable = new Map<string, VertexId>();
+  for (const v of reuseVertices) reusable.set(coordKey(v.coordinate), v.id);
 
   const mintRingVertices = (ring: GeoRing): { ids: VertexId[]; coords: GeoRing } => {
     const out: VertexId[] = [];
@@ -202,7 +209,7 @@ export function buildDirectDomainShape(
       const key = coordKey(c);
       let vid = byCoord.get(key);
       if (vid === undefined) {
-        vid = ids.nextVertexId();
+        vid = reusable.get(key) ?? ids.nextVertexId();
         byCoord.set(key, vid);
         vertices.push(createVertex(vid, quantizeCoordinate(c)));
       }

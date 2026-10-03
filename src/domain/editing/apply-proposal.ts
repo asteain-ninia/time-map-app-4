@@ -79,6 +79,8 @@ import type { AddSnapshot } from '../add/proposal';
 import type { MergeSnapshot } from '../merge/proposal';
 import type { AffiliationProposal } from '../affiliation/proposal';
 import { materializeOwnSeries, residentFeatureIds } from '../affiliation/materialize';
+import { syncAggregateChildIds as syncAggregateChildIdsInHistories } from '../affiliation/interval-edit';
+import type { DirectDomainCarve } from '../promotion/carve';
 import type { SplitSharedEdgeCut, SplitSnapshot } from '../knife/proposal';
 import type { DrillSnapshot } from '../drill/proposal';
 import type { VertexRemap } from '../shared-vertex';
@@ -205,6 +207,25 @@ function findHistoryContainingIn(
   // Tier 3: defensive fallback to the first own-keyed history (feature absent at the
   // time everywhere — gated upstream; keeps a defined insertion target without throwing).
   return own;
+}
+
+/**
+ * `featureId` を載せている錨のうち、`anchorTime` に効いているものの **終わり**（無ければ null）。
+ * 終わりが `anchorTime` 以前なら（壊れたデータへの防御）null を返す。純粋。
+ */
+function effectiveEndAt(
+  histories: readonly FeatureHistory[],
+  featureId: FeatureId,
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): TimePoint | null {
+  const found = findHistoryContainingIn(histories, featureId, anchorTime, calendar);
+  if (found === undefined) return null;
+  const effective = resolveAt(found.history.series, anchorTime, calendar);
+  if (effective.kind !== 'present') return null;
+  const end = effective.entry.end;
+  if (end === null || compareTime(end, anchorTime, calendar) <= 0) return null;
+  return end;
 }
 
 function withHistories(
@@ -1593,9 +1614,18 @@ export function applyAffiliationProposal(
     if (created === undefined) continue;
     const vertexStore = pruneVertexStore(createVertexStore(snapshot.newVertices), [created]);
     const anchor = anchorFor([created], vertexStore, createdId, anchorTime);
+    // **分け残しは元の面と一緒に終わる**（B39 の直し。B77 のうち分け残しの分だけ）。
+    // 分け残しは元の面の土地の残りなので、元の面が 1500 年で終わるなら分け残しも
+    // 1500 年で終わるのが自然である（終わらせないと、元の面が消えた後の年にも土地だけが
+    // 居残る）。元の面（＝まとめ役になった上位領域）の、この年に効いている錨の終わりを
+    // 写す。新しく作るまとめ役のほうは子と同じとは限らないので触らない（B77 の残り）。
+    const end =
+      created.directDomain === true && created.parentId !== undefined
+        ? effectiveEndAt(root.histories, created.parentId, anchorTime, calendar)
+        : null;
     const newHistory: FeatureHistory = {
       featureId: createdId,
-      series: singleAnchorSeries(anchor, anchorTime),
+      series: { entries: [createAnchorEntry(anchor, anchorTime, end)] },
     };
     const existing = histories.findIndex((h) => h.featureId === createdId);
     histories =
@@ -1605,6 +1635,43 @@ export function applyAffiliationProposal(
   }
 
   return withHistories(root, histories);
+}
+
+/**
+ * **まとめ役の下に面を足した後始末**（B39 の直し）。追加の確定と同じ取り消し単位に畳む。
+ *
+ *   1. 分け残しの削り（{@link DirectDomainCarve}）: 新しい子と重なった分け残しを
+ *      「分け残し − 子」に書き換える。覆い尽くされた分け残しはその年から消す。
+ *      頂点は書き換えた地物が引くものだけに剪定する（古い外周を残骸として残さない）。
+ *   2. 子の並び（`childIds`）を、その年からの実際の所属に揃える。追加は新しい系列を
+ *      足すだけで親の子の並びを書き換えないので、揃えないと次に開いたときに
+ *      「子の並びの食い違い」で修復を聞かれる。揃える向きは常に `parentId` から（U08）。
+ *
+ * 純粋。何も変わらなければ `root` をそのまま返す。
+ */
+export function applyAddUnderAggregate(
+  root: DomainProject,
+  parentId: FeatureId,
+  carves: readonly DirectDomainCarve[],
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): DomainProject {
+  let histories = root.histories;
+  for (const carve of carves) {
+    histories =
+      carve.after === null
+        ? removeFeatureAtTime(histories, carve.directDomainId, anchorTime, calendar)
+        : rewriteFeatureSnapshotAtTime(
+            histories,
+            carve.directDomainId,
+            carve.after,
+            carve.newVertices,
+            anchorTime,
+            calendar,
+          );
+  }
+  histories = syncAggregateChildIdsInHistories(histories, [parentId], calendar);
+  return histories === root.histories ? root : withHistories(root, histories);
 }
 
 // --- edit slice (U24 FeatureSnapshot → in-place anchor rewrite / deletion) ---
