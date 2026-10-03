@@ -3845,7 +3845,7 @@ export function App(): JSX.Element {
             {/* 設計書 §B.5 の台帳 #10・#11（増分 6。増分 5 から送られた 3 部品のうち 2 つ）。
                 層は `pointer-events: none` で、ボタンの矩形だけが押下を受ける（K-2）。 */}
             <MapViewControls<DomainRoot> store={store} registry={registry} />
-            {/* 増分 8E（G-21 / §B.5 の台帳 #13）: ズームの上下限で断った理由を脇に出す。押せない。 */}
+            {/* 増分 8E（G-21 / §B.5 の台帳 #27）: ズームの上下限で断った理由を脇に出す。押せない。 */}
             <ZoomLimitNoteView<DomainRoot> store={store} noteStore={zoomLimitNoteStore} />
             {/* 同 #12。押した位置の掴める距離に頂点が 2 つ以上あるときだけ出る一時部品。 */}
             <VertexCandidateList
