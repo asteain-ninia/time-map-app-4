@@ -71,7 +71,8 @@ import { DELETE_TARGET_KIND } from '../../domain/deletion';
 import { anchorRowsOf, existenceRunsOf, type AnchorRow } from './anchor-diff';
 import { useModalChannels } from '../a11y/index';
 
-import { AnchorSection } from './AnchorSection';
+import { AnchorSection, type StartEditorSignal } from './AnchorSection';
+import type { AnchorStartEditStore } from './anchor-start-edit';
 import { BasicInfoForm } from './BasicInfoForm';
 import { DeleteFeatureButton } from './DeleteFeatureButton';
 import type { DeleteImpactView } from './delete-impact';
@@ -205,6 +206,11 @@ export interface PropertyPanelProps<S> {
    * （結合点 #3 の反省。`property/name-focus.ts` の注記）。
    */
   readonly nameFieldFocus?: NameFieldFocusStore;
+  /**
+   * 「この錨の開始年の欄を開いて焦点を置いて」の要求の口（時刻レールの右クリック。
+   * 増分 7 の手直し 項目 6）。名前欄の口と同じ形。
+   */
+  readonly anchorStartEdit?: AnchorStartEditStore;
   /**
    * 「いま打ちかけを抱えている地物」を外へ知らせる口（増分 4 の手直し B11）。
    * 一覧のその場編集がこれを見て、打ちかけを黙って上書きしないようにする。
@@ -470,6 +476,32 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     },
     [store],
   );
+
+  // 時刻レールの右クリック「この錨の開始年を変える」（項目 6）。錨表の行を選んだのと
+  // 同じ 1 本（`handleSelectAnchor`）でその錨を編集の対象にし、存続期間の欄を開く合図を
+  // 出す。行は要求の瞬間の最新を読む（購読は 1 回だけ張る）。
+  const anchorStartEdit = props.anchorStartEdit;
+  const anchorRowsRef = useRef(anchorRows);
+  anchorRowsRef.current = anchorRows;
+  // 合図は **どの地物に対するものか**も持つ（地物を替えたあとに古い合図で節が開かない）。
+  const [startEditorSignal, setStartEditorSignal] = useState<
+    (StartEditorSignal & { readonly featureId: FeatureId | null }) | null
+  >(null);
+  const targetFeatureIdRef = useRef(targetFeatureId);
+  targetFeatureIdRef.current = targetFeatureId;
+  useEffect(() => {
+    if (anchorStartEdit === undefined) return;
+    return anchorStartEdit.subscribe((anchorId) => {
+      const row = anchorRowsRef.current.find((r) => r.entry.anchor.id === anchorId);
+      if (row === undefined) return;
+      handleSelectAnchor(row.entry);
+      setStartEditorSignal((prev) => ({
+        anchorId,
+        n: (prev?.n ?? 0) + 1,
+        featureId: targetFeatureIdRef.current,
+      }));
+    });
+  }, [anchorStartEdit, handleSelectAnchor]);
 
   // --- 保存の行き先（設計書 §D.3 の表） -------------------------------------
   const editPlan: EditPlan = useMemo(
@@ -1086,6 +1118,11 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
                   : {})}
                 onModalChange={propertyModals.channel('anchor-delete-impact')}
                 resolveParentName={resolveParentName}
+                openStartEditor={
+                  startEditorSignal !== null && startEditorSignal.featureId === targetFeatureId
+                    ? startEditorSignal
+                    : null
+                }
               />
             )}
 

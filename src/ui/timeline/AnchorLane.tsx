@@ -17,6 +17,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 
@@ -85,7 +86,31 @@ export interface AnchorLaneProps {
   readonly closeKey: string;
   /** 束の吹き出しの開閉を報せる（`focusOwner` の `popover` の導出。作法 5）。 */
   readonly onPopoverOpenChange?: ((open: boolean) => void) | undefined;
+  /** 右クリック（設計書 §I.3）。渡さなければ既定のメニューも出さない（何もしない）。 */
+  readonly onContextMenuAt?: ((request: LaneContextRequest) => void) | undefined;
 }
+
+/**
+ * レールの右クリックで分かったこと（設計書 §I.3）。印の上なら錨、それ以外は押した年。
+ * **2 本以上が重なった列は空白として扱う**（どの 1 本を指したのかが決まらないので、
+ * 錨を直す項目は出さない。個別の錨へはクリックの拡大・束の吹き出しから届く）。
+ */
+export type LaneContextRequest =
+  | {
+      readonly kind: 'anchor';
+      readonly clientX: number;
+      readonly clientY: number;
+      readonly entry: AnchorEntry;
+    }
+  | {
+      readonly kind: 'empty';
+      readonly clientX: number;
+      readonly clientY: number;
+      /** 押した年（`yearAtPixel`）。 */
+      readonly time: TimePoint;
+      /** 押した位置（レーンの左端からの px）。左端にする操作が使う。 */
+      readonly px: number;
+    };
 
 /** 描く色。CSS のカスタムプロパティから読む（配色の真実源を CSS 側に置く）。 */
 interface LaneColors {
@@ -123,6 +148,7 @@ export function AnchorLane(props: AnchorLaneProps): JSX.Element {
     onLaneHeight,
     closeKey,
     onPopoverOpenChange,
+    onContextMenuAt,
   } = props;
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -274,6 +300,9 @@ export function AnchorLane(props: AnchorLaneProps): JSX.Element {
 
   const handlePointerDown = useCallback(
     (e: ReactPointerEvent<HTMLCanvasElement>) => {
+      // **主ボタンだけ**（増分 7 の手直し 項目 6）。旧版は右ボタンの押下でも「その年へ
+      // 移動」が走っていた ―― 右クリックはメニューを開く操作で、年を動かしてはいけない。
+      if (e.button !== 0) return;
       const canvas = e.currentTarget;
       const rect = canvas.getBoundingClientRect();
       const px = e.clientX - rect.left;
@@ -309,6 +338,29 @@ export function AnchorLane(props: AnchorLaneProps): JSX.Element {
     [source, view, entries, calendar, onJumpTo, onView, onHitTestMs],
   );
 
+  const handleContextMenu = useCallback(
+    (e: ReactMouseEvent<HTMLCanvasElement>) => {
+      e.preventDefault();
+      if (onContextMenuAt === undefined) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const hit = laneHitTest(source, view, px);
+      const entry = hit.kind === LANE_HIT.Single ? entries[hit.firstIndex] : undefined;
+      if (entry !== undefined) {
+        onContextMenuAt({ kind: 'anchor', clientX: e.clientX, clientY: e.clientY, entry });
+        return;
+      }
+      onContextMenuAt({
+        kind: 'empty',
+        clientX: e.clientX,
+        clientY: e.clientY,
+        time: yearAtPixel(px, view, calendar),
+        px,
+      });
+    },
+    [onContextMenuAt, source, view, entries, calendar],
+  );
+
   const laneTitle = useMemo(() => {
     if (!hasSelection) return RAIL_STRINGS.laneEmptyNoSelection;
     if (ownerName !== null) {
@@ -327,6 +379,7 @@ export function AnchorLane(props: AnchorLaneProps): JSX.Element {
         aria-label={laneTitle}
         title={laneTitle}
         onPointerDown={handlePointerDown}
+        onContextMenu={handleContextMenu}
       />
       {emptyText !== null && (
         <p className="rail__lane-empty" data-testid="anchor-lane-empty" data-kind={emptyKind}>

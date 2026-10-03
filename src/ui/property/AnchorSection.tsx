@@ -12,6 +12,8 @@
 // 部品（`AnchorTimeBar` / `timebar.ts`）は **増分 6 で流用するので残してある**。
 // バーの右端を「次の錨の始まり」で切る誤りだけはこの手直しで直した（AnchorTimeBar.tsx）。
 
+import { useEffect, useRef } from 'react';
+
 import type { AnchorEntry } from '../../domain/anchor-series';
 import type { AnchorId, FeatureId } from '../../domain/ids';
 import type { Calendar } from '../../domain/time/calendar';
@@ -47,6 +49,17 @@ export interface AnchorSectionProps {
   readonly onModalChange?: (open: boolean) => void;
   /** 上位領域の表示名を根から引く落とし先（バグ狩り #5）。 */
   readonly resolveParentName?: (featureId: FeatureId) => string | null;
+  /**
+   * 「この錨の開始年の欄を開いて焦点を置いて」の合図（時刻レールの右クリック。項目 6）。
+   * 番号が変わるたびに節を開き、下の錨表へそのまま渡す。
+   */
+  readonly openStartEditor?: StartEditorSignal | null;
+}
+
+/** 開始年の欄を開く合図（`n` は押されるたびに増える）。 */
+export interface StartEditorSignal {
+  readonly anchorId: AnchorId;
+  readonly n: number;
 }
 
 export function AnchorSection(props: AnchorSectionProps): JSX.Element {
@@ -61,10 +74,18 @@ export function AnchorSection(props: AnchorSectionProps): JSX.Element {
     onEditInterval,
   } = props;
 
+  // 合図が来たら節を開く（初期は畳んである）。
+  const detailsRef = useRef<HTMLDetailsElement | null>(null);
+  const signalN = props.openStartEditor?.n ?? 0;
+  useEffect(() => {
+    if (signalN === 0) return;
+    if (detailsRef.current !== null) detailsRef.current.open = true;
+  }, [signalN]);
+
   return (
     /* 増分 2 の手直し D2 / 設計書 §C.6: 節は畳める。初期は折りたたみ。畳んだままでも
        本数が読めるように、見出しに本数を添える（「▸ 歴史の錨 1 本」）。 */
-    <details className="anchor-section" data-testid="anchor-section">
+    <details className="anchor-section" data-testid="anchor-section" ref={detailsRef}>
       <summary data-testid="anchor-section-summary">
         {PROPERTY_STRINGS.anchorSectionTitle} {PROPERTY_STRINGS.anchorCount(rows.length)}
       </summary>
@@ -81,6 +102,7 @@ export function AnchorSection(props: AnchorSectionProps): JSX.Element {
           : {})}
         {...(props.onModalChange ? { onModalChange: props.onModalChange } : {})}
         {...(props.resolveParentName ? { resolveParentName: props.resolveParentName } : {})}
+        {...(props.openStartEditor ? { openStartEditor: props.openStartEditor } : {})}
       />
     </details>
   );

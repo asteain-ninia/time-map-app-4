@@ -241,6 +241,19 @@ export const PROPERTY_STRINGS = {
   endHereState: (year: string): string => `この地物は${year}で終わっています。`,
   /** 入口 A が通ったときの結果の文。 */
   endHereDone: (name: string, year: string): string => `「${name}」は${year}で終わったことにしました。`,
+  /**
+   * **まとめ役を終わらせる前の影響の板**（司令塔の決定 (2)）。子を黙って道連れにしない
+   * ことを、押す前に削除と同じ器で見せる。
+   */
+  endHereImpactTitle: (name: string, year: string): string => `「${name}」を${year}で終わらせます`,
+  endHereImpactLineEnds: (year: string): string =>
+    `この地物は${year}で終わります（削除ではありません。${year}より前の記録はそのまま残ります）`,
+  endHereImpactPromoted: (count: number, names: string): string =>
+    names === ''
+      ? `下位領域 ${String(count)} 件は、この年から最上位になります`
+      : `下位領域 ${String(count)} 件（${names}）は、この年から最上位になります`,
+  endHereImpactHeadingEnds: '終わるもの',
+  endHereImpactHeadingPromoted: '最上位になるもの',
   /** **入口 B** を畳んでおく節の見出し（設計書 §C.6 の「取り返しのつかないこと」）。 */
   dangerZoneTitle: '取り返しのつかないこと',
   /** 入口 B のボタン。 */

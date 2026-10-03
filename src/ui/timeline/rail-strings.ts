@@ -129,4 +129,20 @@ export const RAIL_STRINGS = {
     `${year}付近・${String(count)} 件`,
   bundleOpenList: 'この範囲の錨を一覧で見る',
   bundleClose: '閉じる',
+
+  // --- 右クリック（設計書 §I.3 の「時刻レールの錨の印」「時刻レールの空白」） ---
+  menuJumpToAnchor: 'この錨へ移動',
+  menuChangeAnchorStart: 'この錨の開始年を変える',
+  menuDeleteAnchor: 'この錨を消す',
+  menuJumpHere: 'この年へ移動',
+  menuCreateAnchorHere: 'この年に錨を作る',
+  menuMakeLeftEdge: 'ここを表示範囲の左端にする',
+  menuFitAll: '全体表示',
+  /** 親の系列から借りている印（まとめ役の子を選んでいるとき）。 */
+  menuReasonInherited: (owner: string): string =>
+    `この錨は上位領域「${owner}」の記録です。上位領域を選んでから直してください。`,
+  menuReasonSoleAnchor: '最後の 1 本の錨は消せません（地物が年表から消えてしまうため）。',
+  menuReasonViewOnly: '読むだけのあいだは直せません。鍵を開けてください。',
+  menuReasonNoSelection: '地物を選ぶと、その年に錨を作れます。',
+  menuReasonAnchorExists: 'すでにこの年に錨があります。',
 } as const;

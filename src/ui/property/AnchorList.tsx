@@ -32,7 +32,7 @@ import type { Calendar } from '../../domain/time/calendar';
 import { compare } from '../../domain/time/normalized';
 import type { TimePoint } from '../../domain/time/time-point';
 
-import { ImpactConfirmDialog } from '../shell/ImpactConfirmDialog';
+import { ImpactConfirmDialog, type ImpactGroup } from '../shell/ImpactConfirmDialog';
 import { formatTimePoint } from '../timeline/time-display';
 import { YearMonthDayInput } from '../timeline/YearMonthDayInput';
 
@@ -140,6 +140,8 @@ export interface AnchorListProps {
    * ときだけ根から引き直す。
    */
   readonly resolveParentName?: (featureId: FeatureId) => string | null;
+  /** 開始年の欄を開いて焦点を置く合図（時刻レールの右クリック。`AnchorSection` の注記）。 */
+  readonly openStartEditor?: { readonly anchorId: AnchorId; readonly n: number } | null;
 }
 
 export function AnchorList(props: AnchorListProps): JSX.Element {
@@ -438,10 +440,44 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
           soleAnchor={soleAnchor}
           onEditInterval={onEditInterval}
           {...(props.onModalChange ? { onModalChange: props.onModalChange } : {})}
+          openStartSignal={
+            props.openStartEditor?.anchorId === selectedEntry.anchor.id
+              ? props.openStartEditor.n
+              : 0
+          }
         />
       )}
     </div>
   );
+}
+
+/**
+ * 錨を消す前の影響の板の中身（N-05 / 設計書 §A.3）。素性欄の錨表と、時刻レールの右クリック
+ * 「この錨を消す」（項目 6）が **同じ 1 本**を使う（写しを作らない＝教訓 5.44）。
+ */
+export function anchorDeleteImpactView(start: TimePoint): {
+  readonly title: string;
+  readonly groups: readonly ImpactGroup[];
+  readonly confirmLabel: string;
+  readonly cancelLabel: string;
+  readonly note: string;
+} {
+  return {
+    title: PROPERTY_STRINGS.anchorDeleteTitle(formatTimePoint(start)),
+    groups: [
+      {
+        testId: 'gone',
+        heading: PROPERTY_STRINGS.impactHeadingGone,
+        lines: [
+          PROPERTY_STRINGS.anchorDeleteLineRecord(formatTimePoint(start)),
+          PROPERTY_STRINGS.anchorDeleteLineFallback,
+        ],
+      },
+    ],
+    confirmLabel: PROPERTY_STRINGS.anchorDeleteConfirm,
+    cancelLabel: PROPERTY_STRINGS.impactCancel,
+    note: PROPERTY_STRINGS.impactUndoNote,
+  };
 }
 
 /**
@@ -500,9 +536,39 @@ function AnchorIntervalEditor(props: {
   readonly soleAnchor: boolean;
   readonly onEditInterval: (intent: AnchorIntervalEditIntent) => string | null;
   readonly onModalChange?: (open: boolean) => void;
+  /** 0 でなければ、変わるたびに欄を開いて開始の欄へ焦点を置く（時刻レールの右クリック）。 */
+  readonly openStartSignal?: number;
 }): JSX.Element {
   const { entry, calendar, featureId, soleAnchor, onEditInterval, onModalChange } = props;
   const anchorId = entry.anchor.id;
+
+  // 「この錨の開始年を変える」（設計書 §I.3 の時刻レールの右クリック）。欄を開いて、
+  // 開始の最初の入力へ焦点を置く ―― 開始年を変える操作そのものは、この欄が持っている
+  // ものだけを使う（新しい操作を作らない）。
+  const intervalRef = useRef<HTMLDetailsElement | null>(null);
+  const openStartSignal = props.openStartSignal ?? 0;
+  useEffect(() => {
+    if (openStartSignal === 0) return;
+    const details = intervalRef.current;
+    if (details === null) return;
+    // **外側の節（「歴史の錨」）も開く**。子の effect は親より先に走るので、外側の節を
+    // 開くのを `AnchorSection` の effect に任せると、ここで焦点を置く時点ではまだ畳まれて
+    // いて入力が焦点を受け取れない（畳んだ <details> の中身は焦点を持てない）。
+    for (
+      let el: HTMLDetailsElement | null = details;
+      el !== null;
+      el = el.parentElement?.closest('details') ?? null
+    ) {
+      el.open = true;
+    }
+    // 錨 id は CSS の選択子に使えない文字を含みうるので、属性の値で突き合わせる。
+    const wanted = `anchor-interval-start-${String(anchorId)}-year`;
+    const field = [...details.querySelectorAll<HTMLInputElement>('input')].find(
+      (el) => el.getAttribute('data-testid') === wanted,
+    );
+    field?.focus();
+    field?.select();
+  }, [openStartSignal, anchorId]);
 
   const [message, setMessage] = useState<string | null>(null);
   /**
@@ -518,7 +584,11 @@ function AnchorIntervalEditor(props: {
   };
 
   return (
-    <details className="anchor-interval" data-testid={`anchor-interval-${anchorId}`}>
+    <details
+      className="anchor-interval"
+      data-testid={`anchor-interval-${anchorId}`}
+      ref={intervalRef}
+    >
       <summary data-testid={`anchor-interval-summary-${anchorId}`}>
         {PROPERTY_STRINGS.intervalEditTitle}
       </summary>
@@ -574,20 +644,7 @@ function AnchorIntervalEditor(props: {
       {confirmingDelete && (
         <ImpactConfirmDialog
           testIdPrefix="anchor-delete-impact"
-          title={PROPERTY_STRINGS.anchorDeleteTitle(formatTimePoint(entry.start))}
-          groups={[
-            {
-              testId: 'gone',
-              heading: PROPERTY_STRINGS.impactHeadingGone,
-              lines: [
-                PROPERTY_STRINGS.anchorDeleteLineRecord(formatTimePoint(entry.start)),
-                PROPERTY_STRINGS.anchorDeleteLineFallback,
-              ],
-            },
-          ]}
-          confirmLabel={PROPERTY_STRINGS.anchorDeleteConfirm}
-          cancelLabel={PROPERTY_STRINGS.impactCancel}
-          note={PROPERTY_STRINGS.impactUndoNote}
+          {...anchorDeleteImpactView(entry.start)}
           onConfirm={() => {
             setConfirmingDelete(false);
             run(buildDeleteAnchorIntent(featureId, anchorId));

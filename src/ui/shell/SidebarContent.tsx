@@ -66,6 +66,7 @@ import {
   isNoOpEdit,
   valuesFromFeature,
   NameFieldFocusStore,
+  type AnchorStartEditStore,
   PropertyDraftStatusStore,
   type AnchorSeriesLookup,
   type AssetResolver,
@@ -186,6 +187,8 @@ export interface SidebarContentDeps<S> {
   readonly onDraftConfirmChange?: (open: boolean) => void;
   /** 素性欄の中の板が出ていると名乗る口（司令塔の決定 (13)）。 */
   readonly onPropertyModalChange?: (open: boolean) => void;
+  /** 時刻レールの右クリック「この錨の開始年を変える」の要求の口（項目 6）。 */
+  readonly anchorStartEdit?: AnchorStartEditStore;
   /**
    * Focus the camera on the feature just selected from a一覧 row (錨一覧 HB5-3 AND
    * 地物一覧 A1 — both導線 share the SAME fit path, the user's「地物一覧にも視点移動が
@@ -270,6 +273,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
     resolveDeleteImpact,
     onDraftConfirmChange,
     onPropertyModalChange,
+    anchorStartEdit,
     onFocusFeatureCamera,
     addDraft,
     focusStore,
@@ -367,6 +371,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
       {...(resolveDeleteImpact ? { resolveDeleteImpact } : {})}
       {...(onDraftConfirmChange ? { onDraftConfirmChange } : {})}
       {...(onPropertyModalChange ? { onPropertyModalChange } : {})}
+      {...(anchorStartEdit ? { anchorStartEdit } : {})}
       nameFieldFocus={nameFieldFocus}
       draftStatus={draftStatus}
       onAdvanceBundle={() => {
@@ -512,6 +517,7 @@ function PropertyPanelHost<S>(props: {
   readonly onDraftConfirmChange?: (open: boolean) => void;
   /** 素性欄の中の板が出ていると名乗る口（司令塔の決定 (13)）。 */
   readonly onPropertyModalChange?: (open: boolean) => void;
+  readonly anchorStartEdit?: AnchorStartEditStore;
   readonly nameFieldFocus?: NameFieldFocusStore;
   readonly draftStatus?: PropertyDraftStatusStore;
   readonly onAdvanceBundle?: () => void;
@@ -674,6 +680,7 @@ function PropertyPanelHost<S>(props: {
         ? { onModalChange: props.onPropertyModalChange }
         : {})}
       {...(props.nameFieldFocus ? { nameFieldFocus: props.nameFieldFocus } : {})}
+      {...(props.anchorStartEdit ? { anchorStartEdit: props.anchorStartEdit } : {})}
       {...(props.draftStatus ? { draftStatus: props.draftStatus } : {})}
       {...(props.onAdvanceBundle ? { onAdvanceBundle: props.onAdvanceBundle } : {})}
     />

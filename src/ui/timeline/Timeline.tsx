@@ -27,7 +27,12 @@ import { nextAnchorIndex, previousAnchorIndex } from '../time/anchor-lane';
 import { railFoldOf, type RailFoldLevel } from '../time/rail-fold';
 import { viewMaxTime, viewMinTime, viewSpanDays } from '../time/timebar';
 
-import { AnchorLane } from './AnchorLane';
+import type { AnchorEntry } from '../../domain/anchor-series';
+import { canEdit } from '../shell/permissions';
+
+import { AnchorLane, type LaneContextRequest } from './AnchorLane';
+import { RailContextMenu } from './RailContextMenu';
+import { RAIL_MENU_ITEM, composeRailMenu, type RailMenuItemId } from './rail-menu';
 import { RailControls } from './RailControls';
 import { RailTicks } from './RailTicks';
 import { RAIL_STRINGS, railSpanNote } from './rail-strings';
@@ -69,6 +74,15 @@ export interface TimelineProps<S> {
    * 年が進み続けると「何年に対して答えたのか」が変わる。閉じても自動では再開しない。
    */
   readonly modalOpen?: boolean;
+  /**
+   * レールの右クリックメニューの開閉を名乗る口（決定 (13)。開いているあいだ鍵盤の持ち主は
+   * `modal`）。合成ルートは `toolModalChange('rail-menu')` を渡す。
+   */
+  readonly onMenuOpenChange?: (open: boolean) => void;
+  /** 右クリック「この錨を消す」: 素性欄の錨表と同じ影響の板を合成ルートが出す。 */
+  readonly onRequestAnchorDelete?: (entry: AnchorEntry) => void;
+  /** 右クリック「この錨の開始年を変える」: 素性欄の存続期間の欄を開いて焦点を置く。 */
+  readonly onRequestAnchorStartEdit?: (entry: AnchorEntry) => void;
 }
 
 export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
@@ -80,6 +94,9 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
     onPopoverOpenChange,
     getRoot,
     modalOpen = false,
+    onMenuOpenChange,
+    onRequestAnchorDelete,
+    onRequestAnchorStartEdit,
   } = props;
   const t = useTimeline(store);
   const playback = usePlayback(store, t.calendar);
@@ -530,6 +547,90 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
     };
   }, []);
 
+  // --- 右クリック（設計書 §I.3。増分 7 の申し送り §10 の 1 つ目） ---------------
+  //
+  // 中身の操作はどれも **既存の経路を呼ぶだけ**（`rail-menu.ts` の注記）。可否と理由は
+  // 純粋な組み立て 1 か所で決める。
+  const [railMenu, setRailMenu] = useState<LaneContextRequest | null>(null);
+  const closeRailMenu = useCallback(() => {
+    setRailMenu(null);
+  }, []);
+  // 閉じる契機は Escape と外の押下（`RailContextMenu`）。選択・道具・プロジェクトが
+  // 変わったときも閉じる（束の吹き出しと同じ指紋）。
+  const railMenuKey = `${mode}|${String(activeTool)}|${String(projectLoadNonce)}|${String(lane.featureId)}`;
+  useEffect(() => {
+    setRailMenu(null);
+  }, [railMenuKey]);
+  const openRailMenu = useCallback(
+    (request: LaneContextRequest) => {
+      // **板が鍵盤を持っているあいだは開かない**（地図の右クリックと同じ＝
+      // `suspendsContextMenu`）。
+      if (modalOpen) return;
+      setRailMenu(request);
+    },
+    [modalOpen],
+  );
+  const editable = canEdit(mode);
+  const railMenuItems = useMemo(() => {
+    if (railMenu === null) return [];
+    if (railMenu.kind === 'anchor') {
+      return composeRailMenu({
+        kind: 'anchor',
+        editable,
+        inheritedOwner: lane.inherited ? (lane.ownerName ?? '') : null,
+        soleAnchor: (lane.governingSeries?.entries.length ?? 0) <= 1,
+      });
+    }
+    const at = railMenu.time;
+    return composeRailMenu({
+      kind: 'empty',
+      editable,
+      hasSelection: lane.featureId !== null,
+      anchorAtYear:
+        lane.governingSeries?.entries.some((e) => compare(e.start, at, t.calendar) === 0) ??
+        false,
+    });
+  }, [railMenu, editable, lane, t.calendar]);
+  const onRailMenuSelect = useCallback(
+    (id: RailMenuItemId) => {
+      const request = railMenu;
+      if (request === null) return;
+      switch (id) {
+        case RAIL_MENU_ITEM.JumpToAnchor:
+          if (request.kind === 'anchor') jumpTo(request.entry.start);
+          return;
+        case RAIL_MENU_ITEM.ChangeAnchorStart:
+          if (request.kind === 'anchor') {
+            jumpTo(request.entry.start);
+            onRequestAnchorStartEdit?.(request.entry);
+          }
+          return;
+        case RAIL_MENU_ITEM.DeleteAnchor:
+          if (request.kind === 'anchor') onRequestAnchorDelete?.(request.entry);
+          return;
+        case RAIL_MENU_ITEM.JumpHere:
+          if (request.kind === 'empty') jumpTo(request.time);
+          return;
+        case RAIL_MENU_ITEM.CreateAnchorHere:
+          if (request.kind !== 'empty') return;
+          jumpTo(request.time);
+          // **年が本当に動いたときだけ**作る ―― 下書きの「捨てますか」が年を戻したら、
+          // 戻った年に錨を作ってはいけない（教訓 5.71）。作る側の可否と断りの文は
+          // Ctrl+K と同じコマンド 1 本が持つ。
+          if (compare(store.getState().currentTime, request.time, t.calendar) !== 0) return;
+          registry?.dispatch(COMMAND_ID.EditCreateAnchorHere);
+          return;
+        case RAIL_MENU_ITEM.MakeLeftEdge:
+          if (request.kind === 'empty') rail.scrollByPixels(request.px);
+          return;
+        case RAIL_MENU_ITEM.FitAll:
+          rail.fitAll();
+          return;
+      }
+    },
+    [railMenu, jumpTo, onRequestAnchorStartEdit, onRequestAnchorDelete, store, t.calendar, registry, rail],
+  );
+
   const spanDays = viewSpanDays(rail.view);
   /**
    * 開いている板を閉じる契機の指紋（共有の器の作法 4）。**プロジェクトを入れる**
@@ -606,8 +707,20 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
           onLaneHeight={lane.recordLaneHeight}
           closeKey={popoverCloseKey}
           {...(onPopoverOpenChange ? { onPopoverOpenChange } : {})}
+          onContextMenuAt={openRailMenu}
         />
       </div>
+      {railMenu !== null && (
+        <RailContextMenu
+          clientX={railMenu.clientX}
+          clientY={railMenu.clientY}
+          target={railMenu.kind}
+          items={railMenuItems}
+          onSelect={onRailMenuSelect}
+          onClose={closeRailMenu}
+          onModalChange={onMenuOpenChange}
+        />
+      )}
 
       {/* (c) 目盛り＋再生ヘッド 22px */}
       <RailTicks

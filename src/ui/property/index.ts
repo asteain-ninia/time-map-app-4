@@ -186,3 +186,8 @@ export {
   buildDeleteImpactView,
   summarizeNames,
 } from './delete-impact';
+// 決定 (2): まとめ役を終わらせる前の影響の文。
+export { type EndHereImpactView, buildEndHereImpactView } from './end-here-impact';
+// 項目 6: 錨を消す前の板の中身（錨表と時刻レールの右クリックで共有）と、開始年の欄を開く口。
+export { anchorDeleteImpactView } from './AnchorList';
+export { AnchorStartEditStore } from './anchor-start-edit';

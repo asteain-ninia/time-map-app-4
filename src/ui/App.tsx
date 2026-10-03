@@ -212,7 +212,7 @@ import './map/grid-toggle.css';
 import { buildForest } from '../domain/hierarchy/forest';
 // 増分 7: 所属変更の対象展開（FR-48 後半）と、削除の影響の説明（設計書 §A.3）。
 import { planAffiliationTargets } from '../domain/affiliation/index';
-import { hasOwnSeries } from '../domain/affiliation/materialize';
+import { hasOwnSeries, residentFeatureIds } from '../domain/affiliation/materialize';
 import { deletionStateFromHistories, describeDeletionImpact } from '../domain/deletion/index';
 import { maxDerivedDepth } from '../domain/hierarchy/depth';
 import { FEATURE_KIND, featureDisplayName } from '../domain/feature';
@@ -223,9 +223,14 @@ import {
   EDIT_PLAN_STRINGS,
   PROPERTY_STRINGS,
   buildDeleteImpactView,
+  AnchorStartEditStore,
+  anchorDeleteImpactView,
+  buildDeleteAnchorIntent,
+  buildEndHereImpactView,
   buildSetEndIntent,
   isYearAligned,
   type DeleteImpactView,
+  type EndHereImpactView,
 } from './property/index';
 import { formatYear } from './timeline/time-display';
 import type { ContextMenuRequest } from './map/live-context-menu-port';
@@ -2084,15 +2089,13 @@ export function App(): JSX.Element {
   // 右クリックの組み立てから同じ判定を引けるようにする（反証 2-9）。
   endHereRefusalForRef.current = endHereRefusalFor;
 
-  const endFeatureHere = useCallback(
-    (featureId: FeatureId): void => {
-      const refusal = endHereRefusalFor(featureId);
-      if (refusal !== null) {
-        statusMessageStore.failure(refusal);
-        return;
-      }
+  /**
+   * 終わりを打つ本体（板を通った後も、板を出さない地物も、ここ 1 本を通る）。
+   * `at` は **押した瞬間の年**（板が出ているあいだに年が動くことは無いが、控えた値で打つ）。
+   */
+  const commitEndHere = useCallback(
+    (featureId: FeatureId, at: TimePoint, name: string): void => {
       const s = store.getState();
-      const at = toYearPoint(s.currentTime);
       const history = s.domain.histories.find((h) => h.featureId === featureId);
       if (history === undefined) return;
       // いまの年に効いている錨（開始が現在時刻以下のうち最後のもの）。
@@ -2103,10 +2106,6 @@ export function App(): JSX.Element {
         statusMessageStore.failure(PROPERTY_STRINGS.endHereNoOwnSeries(''));
         return;
       }
-      // **名前は打つ前に取る**（Fable #6 / バグ狩り #6）。終了を打つとその年には
-      // 居なくなるので、あとから引くと必ず空になり、状態行が「を 1500 年に終わった
-      // ことにしました」と読めない文になっていた。
-      const name = featureNameOf(featureId) ?? '';
       try {
         anchorIntervalDispatchRef.current?.dispatchAnchorInterval(
           buildSetEndIntent(featureId, entry.anchor.id, at),
@@ -2121,7 +2120,89 @@ export function App(): JSX.Element {
         statusMessageStore.failure(e instanceof Error ? e.message : String(e));
       }
     },
-    [store, calendar, endHereRefusalFor, statusMessageStore, featureNameOf],
+    [store, calendar, statusMessageStore],
+  );
+
+  /**
+   * **まとめ役を終わらせる前の影響の板**（司令塔の決定 (2)）。素性欄のボタンと右クリックの
+   * 項目は、どちらもこの `endFeatureHere` に合流するので、板もここ 1 か所で出す。
+   */
+  // --- 項目 6: 時刻レールの右クリック（設計書 §I.3）---------------------------
+  /** 「この錨の開始年を変える」の口（素性欄の存続期間の欄を開いて焦点を置く）。 */
+  const anchorStartEditRef = useRef<AnchorStartEditStore | null>(null);
+  anchorStartEditRef.current ??= new AnchorStartEditStore();
+  const anchorStartEditStore = anchorStartEditRef.current;
+  const requestRailAnchorStartEdit = useCallback(
+    (entry: AnchorEntry): void => {
+      focusPropertyTab();
+      anchorStartEditStore.request(entry.anchor.id);
+    },
+    [focusPropertyTab, anchorStartEditStore],
+  );
+  /** 「この錨を消す」の板（押した瞬間の対象を控える）。 */
+  const [pendingRailAnchorDelete, setPendingRailAnchorDelete] = useState<{
+    readonly featureId: FeatureId;
+    readonly entry: AnchorEntry;
+  } | null>(null);
+  const requestRailAnchorDelete = useCallback(
+    (entry: AnchorEntry): void => {
+      const featureId = store.getState().selection.activeFeature;
+      if (featureId === null) return;
+      setPendingRailAnchorDelete({ featureId, entry });
+    },
+    [store],
+  );
+
+  const [pendingEndHere, setPendingEndHere] = useState<{
+    readonly featureId: FeatureId;
+    readonly at: TimePoint;
+    readonly name: string;
+    /** 押した瞬間に 1 度だけ数えた影響（板を開いているあいだ数え直さない）。 */
+    readonly view: EndHereImpactView;
+  } | null>(null);
+
+  const endFeatureHere = useCallback(
+    (featureId: FeatureId): void => {
+      const refusal = endHereRefusalFor(featureId);
+      if (refusal !== null) {
+        statusMessageStore.failure(refusal);
+        return;
+      }
+      const s = store.getState();
+      const at = toYearPoint(s.currentTime);
+      // **名前は打つ前に取る**（Fable #6 / バグ狩り #6）。終了を打つとその年には
+      // 居なくなるので、あとから引くと必ず空になり、状態行が「を 1500 年に終わった
+      // ことにしました」と読めない文になっていた。
+      const name = featureNameOf(featureId) ?? '';
+      // **子が居るときだけ板を出す**（決定 (2) / 実装係 2 の判断。進捗 増分7.md §12.6）。
+      // 数え上げは確定（`createAnchorIntervalCommandForRoot`）と同じ `residentFeatureIds`
+      // を通し（教訓 5.26 / 5.29: 予告と確定で別の数え方を作らない）、そのうち **この年に
+      // 居る**子だけを「この年から最上位になります」と言う ―― それより前に終わっていた子は
+      // 画面上の姿が変わらない。子が 1 件も居なければ、起きることは「この地物が終わる」
+      // だけで、それはボタンの文がそのまま言っている（Ctrl+Z 1 回で戻る）ので、板は出さない。
+      const promoted = residentFeatureIds(s.domain.histories, featureId).filter(
+        (id) => featureByIdAt(s.domain, at, id) !== null,
+      );
+      if (promoted.length === 0) {
+        commitEndHere(featureId, at, name);
+        return;
+      }
+      const promotedNames = promoted
+        .map((id) => featureByIdAt(s.domain, at, id)?.attributes.name ?? '')
+        .filter((n) => n !== '');
+      setPendingEndHere({
+        featureId,
+        at,
+        name,
+        view: buildEndHereImpactView({
+          targetName: name,
+          yearLabel: formatYear(at.year),
+          promotedCount: promoted.length,
+          promotedNames,
+        }),
+      });
+    },
+    [store, endHereRefusalFor, statusMessageStore, featureNameOf, commitEndHere],
   );
 
   /**
@@ -2804,8 +2885,30 @@ export function App(): JSX.Element {
    * 逆に**ダイアログが持っているときは通さない** ―― 確認の背後で保存が走ると、
    * 「何に対して答えたのか」が分からなくなる。
    */
+  //
+  // **B64 / Fable #8: 戻す点を持たない道具では、取り消しは大域へ譲る**（実装係 2 の判断。
+  // 依頼書の候補 ①。進捗 増分7.md §12.6）。所属変更の道具は「対象を掴んでいる」ことが
+  // 下書きにあたるので鍵盤の持ち主は `tool-drawing` になるが、この道具には **1 つ戻す点が
+  // 無い**（`ReparentToolController` の keydown は Ctrl+Z を受けない）。だから大域を
+  // 止めると Ctrl+Z / Ctrl+Y は **誰にも受けられず、画面にも何も出なかった**。止める理由
+  // （道具の Ctrl+Z と二重に走らせない＝bughunt3 H2）がこの道具には無いので、通す。
+  // 板が出れば持ち主は `modal` になってここは閉じる。取り消しで対象の地物が消えても、
+  // 道具は確定の直前に対象を洗い直して居ないものを外す（`planAffiliationTargets`）ので
+  // 対象は壊れない ―― 年を動かしたときと同じ扱いである。
+  const reparentOnlyDrawing =
+    reparentDrawing &&
+    !addDrawing &&
+    !knifeDrawing &&
+    !mergeDrawing &&
+    !ringEditDrawing &&
+    !drillDrawing &&
+    !surveyDrafting;
   const alwaysAllowedShortcuts =
-    focusOwner === FOCUS_OWNER.ToolDrawing ? SAVE_WHILE_TOOL_OWNS_KEYBOARD : undefined;
+    focusOwner === FOCUS_OWNER.ToolDrawing
+      ? reparentOnlyDrawing
+        ? HISTORY_AND_SAVE_WHILE_REPARENT_HOLDS_TARGET
+        : SAVE_WHILE_TOOL_OWNS_KEYBOARD
+      : undefined;
   /**
    * **止めている間に押された打鍵の理由を出す**（増分 3。現状.md B28 の第 2 の理由 /
    * 「打ちかけの確認中に Ctrl+K を押したとき、止まるだけでなく理由を出す」）。
@@ -3475,6 +3578,8 @@ export function App(): JSX.Element {
         onDraftConfirmChange: setDraftConfirmOpen,
         // 素性欄の中の板（錨の削除の確認）も鍵盤の持ち主として名乗る（決定 (13)）。
         onPropertyModalChange: toolModalChange('anchor-delete-impact'),
+        // 項目 6: 時刻レールの右クリック「この錨の開始年を変える」の受け口。
+        anchorStartEdit: anchorStartEditStore,
         onFocusFeatureCamera: focusCameraOnFeature,
         // 増分 3 / N-15: 追加を確定したあとの素性入力を **素性欄の位置**に出す。
         addDraft: addDraftStore,
@@ -3522,6 +3627,7 @@ export function App(): JSX.Element {
       endFeatureHere,
       endHereRefusalFor,
       resolveDeleteImpactFor,
+      anchorStartEditStore,
     ],
   );
 
@@ -3603,6 +3709,11 @@ export function App(): JSX.Element {
                「どの年に対する答えだったのか」が変わってしまう（板は鍵盤を持つので
                Space でも止められない）。閉じても自動では再開しない。 */
             modalOpen={modalOwnsKeyboard}
+            // 項目 6（設計書 §I.3）: レールの右クリック。開閉は鍵盤の持ち主へ名乗り、
+            // 中身は既存の経路（錨表と同じ影響の板・存続期間の欄）へ渡すだけ。
+            onMenuOpenChange={toolModalChange('rail-menu')}
+            onRequestAnchorDelete={requestRailAnchorDelete}
+            onRequestAnchorStartEdit={requestRailAnchorStartEdit}
           />
         }
 /* 状態行 5 枠（設計書 §C.8）。60Hz で動く値（カーソル座標・縮尺）は
@@ -4071,6 +4182,49 @@ export function App(): JSX.Element {
               />
             )}
 
+            {/* 時刻レールの右クリック「この錨を消す」（項目 6）。素性欄の錨表と **同じ中身**
+                （`anchorDeleteImpactView`）・同じ intent（`buildDeleteAnchorIntent`）。 */}
+            {pendingRailAnchorDelete !== null && (
+              <ImpactConfirmDialog
+                testIdPrefix="anchor-delete-impact"
+                {...anchorDeleteImpactView(pendingRailAnchorDelete.entry.start)}
+                onConfirm={() => {
+                  const target = pendingRailAnchorDelete;
+                  setPendingRailAnchorDelete(null);
+                  try {
+                    anchorIntervalDispatchRef.current?.dispatchAnchorInterval(
+                      buildDeleteAnchorIntent(target.featureId, target.entry.anchor.id),
+                    );
+                  } catch (e) {
+                    statusMessageStore.failure(e instanceof Error ? e.message : String(e));
+                  }
+                }}
+                onCancel={() => setPendingRailAnchorDelete(null)}
+                onModalChange={toolModalChange('rail-anchor-delete-impact')}
+              />
+            )}
+
+            {/* **まとめ役を終わらせる前の影響の板**（司令塔の決定 (2)）。素性欄のボタンと
+                右クリックの項目の両方がここを通る。削除と同じ器・同じ作法（鍵盤の持ち主へ
+                自分で名乗る＝決定 (13)）。 */}
+            {pendingEndHere !== null && (
+              <ImpactConfirmDialog
+                testIdPrefix="end-here-impact"
+                title={pendingEndHere.view.title}
+                groups={pendingEndHere.view.groups}
+                confirmLabel={pendingEndHere.view.confirmLabel}
+                cancelLabel={pendingEndHere.view.cancelLabel}
+                note={pendingEndHere.view.note}
+                onConfirm={() => {
+                  const target = pendingEndHere;
+                  setPendingEndHere(null);
+                  commitEndHere(target.featureId, target.at, target.name);
+                }}
+                onCancel={() => setPendingEndHere(null)}
+                onModalChange={toolModalChange('end-here-impact')}
+              />
+            )}
+
             {/* まとめて種別を付ける板（増分 7 の中身 8）。確定は 1 つの複合コマンドに
                 畳まれるので、335 件でも Ctrl+Z 1 回で戻る。 */}
             {bulkKindTargets !== null && (
@@ -4178,6 +4332,17 @@ const SAVE_WHILE_TOOL_OWNS_KEYBOARD: ReadonlySet<CommandId> = new Set<CommandId>
   // ファイル側が別に持っている。
   COMMAND_ID.FileNew,
   COMMAND_ID.FileOpen,
+]);
+
+/**
+ * 所属変更の道具が対象を掴んでいるあいだに通すコマンド（B64）。保存の一式に **取り消し・
+ * やり直し**を足したもの。所属変更には「1 つ戻す点」が無いので、ここで止めると打鍵が
+ * 誰にも受けられず黙る（`App` の `reparentOnlyDrawing` の注記）。
+ */
+const HISTORY_AND_SAVE_WHILE_REPARENT_HOLDS_TARGET: ReadonlySet<CommandId> = new Set<CommandId>([
+  ...SAVE_WHILE_TOOL_OWNS_KEYBOARD,
+  COMMAND_ID.EditUndo,
+  COMMAND_ID.EditRedo,
 ]);
 
 const KNIFE_DEFAULT_COLOR = withFillOpacity(
@@ -4655,6 +4820,7 @@ import {
 } from '../domain/consistency/index';
 import type { AddSnapshot } from '../domain/add/index';
 import type { TimePoint } from '../domain/time/time-point';
+import type { AnchorEntry } from '../domain/anchor-series';
 // U44 — the LIVE U13 binding factories (no longer a 型骨格): these build the real
 // ConsistencyPorts<DomainRoot, Snapshot> adapter over the live domain root and
 // expose the `startProcess` closure the controllers consume (./consistency-binding.ts).
