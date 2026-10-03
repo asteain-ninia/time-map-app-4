@@ -27,8 +27,14 @@ import { LONGITUDE_PERIOD, unwrapRing } from '../geo/index';
 import { countLongEdgesInMultiPolygon } from '../geo/long-edge';
 import {
   difference,
+  EMPTY_MULTI_POLYGON,
   intersection,
   isOk,
+  multiPolygonFromRing,
+  quantizeMultiPolygon,
+  quantizeRing,
+  ringSelfIntersects,
+  union,
   pointInPolygon,
   POINT_LOCATION,
   QUANTIZE_SCALE,
@@ -507,12 +513,20 @@ function planarRingArea2(ring: GeoRing): number {
 // n-way OPEN split (HB3-5/19): a cut crossing the boundary 2k times → k+1 pieces.
 //
 // Strategy (確定プラン iterative-per-chord, G1〜G8): decompose the open line into
-// INTERIOR CHORDS (boundary-node → 面内部 → boundary-node), then apply the EXISTING
-// 2-way mechanism (openLineToClip + U06 intersection/difference) ONE chord at a time
-// to whichever current piece the chord runs through. k chords → k+1 pieces. The
-// dangling head/tail (line ends that stop inside / start outside) are naturally
-// dropped because a chord needs a boundary crossing at BOTH ends (G2). A self-
-// intersecting cut (chords crossing) is rejected (G3) rather than mis-processed.
+// INTERIOR CHORDS (boundary-node → 面内部 → boundary-node), then split whichever
+// current piece the chord runs through ALONG THAT CHORD ONLY (ring walk, see
+// splitRingByChord). k chords → k+1 pieces. The dangling head/tail (line ends that
+// stop inside / start outside) are naturally dropped because a chord needs a boundary
+// crossing at BOTH ends (G2). A self-intersecting cut (chords crossing / touching each
+// other inside the face) is rejected (G3) rather than mis-processed.
+//
+// V10 / N-08 (増分 8B): this path used to cut each chord with openLineToClip — the chord
+// CONTINUED along its end segments out to a far frame. For a concave face that
+// continuation re-enters the face: for a straight line every later chord is collinear
+// with chord 1's continuation, so chord 1 already cut along chords 2..k, their interior
+// samples then sat exactly ON a piece boundary, no piece "contained" them, and every
+// straight line crossing a concave country 4+ times was refused (実データのアルラーク国で
+// 南北 110/199・東西 99/199 本). Splitting the ring by the chord itself cuts nothing else.
 // ---------------------------------------------------------------------------
 
 /** Whether `point` is strictly inside the multi-polygon (inside ANY polygon; 穴透過 via U06 even-odd). */
@@ -630,51 +644,209 @@ type PiecesResult =
   | { readonly ok: false; readonly reason: SplitRejectKind };
 
 /**
- * Collect the k+1 pieces of an OPEN cut by applying each chord's 2-way clip to the
- * piece it runs through (G1/G6: the piece count is the actual connected-component
- * count the iterated boolean ops yield, not a `pieces.length===k+1` assert). Rejects
- * a self-intersecting cut (a chord whose interior lands in no current piece, or whose
- * clip empties a side) honestly (G3). Pure.
+ * Whether two chords cross or touch each other INSIDE the face (G3: a genuinely
+ * self-intersecting cut). Two chords may legitimately share an END node (the line
+ * touched the boundary at one point and went back in), so a contact that is an end of
+ * both chords is allowed; every other contact — a proper crossing, a touch at an
+ * interior point, a collinear overlap — is a self-intersection. A chord is also checked
+ * against itself (non-adjacent segments). Pure.
+ */
+function chordsSelfIntersect(chords: readonly (readonly WorldCoordinate[])[]): boolean {
+  const isEndOf = (chord: readonly WorldCoordinate[], p: WorldCoordinate): boolean =>
+    coordinatesEqual(chord[0]!, p) || coordinatesEqual(chord[chord.length - 1]!, p);
+  for (let ci = 0; ci < chords.length; ci += 1) {
+    const a = chords[ci]!;
+    for (let cj = ci; cj < chords.length; cj += 1) {
+      const b = chords[cj]!;
+      for (let i = 0; i + 1 < a.length; i += 1) {
+        const startJ = ci === cj ? i + 2 : 0; // same chord: skip itself and its neighbour
+        for (let j = startJ; j + 1 < b.length; j += 1) {
+          const hit = segmentsIntersect(a[i]!, a[i + 1]!, b[j]!, b[j + 1]!);
+          if (hit.relation === SEGMENT_RELATION.Disjoint) continue;
+          if (hit.relation === SEGMENT_RELATION.Endpoint && hit.point !== undefined) {
+            const p = quantizeCoordinate(hit.point);
+            if (ci !== cj && isEndOf(a, p) && isEndOf(b, p)) continue;
+          }
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/** Squared planar distance from `p` to segment a→b, plus the clamped parameter along it. */
+function pointSegmentDistance2(
+  p: WorldCoordinate,
+  a: WorldCoordinate,
+  b: WorldCoordinate,
+): { readonly d2: number; readonly t: number } {
+  const t = Math.min(1, Math.max(0, paramAlong(a, b, p)));
+  const x = a.lon + (b.lon - a.lon) * t - p.lon;
+  const y = a.lat + (b.lat - a.lat) * t - p.lat;
+  return { d2: x * x + y * y, t };
+}
+
+/**
+ * A chord end located on a ring: on an existing vertex (`t === 0` at `edge`) or partway
+ * along the edge `edge → edge+1` (`0 < t < 1`).
+ */
+interface RingSpot {
+  readonly edge: number;
+  readonly t: number;
+}
+
+/**
+ * How far (in grid quanta) a chord end may sit from the ring edge it was computed on.
+ * The crossing is quantized onto the U06 grid, so it lies within half a quantum of the
+ * true edge per axis; 2 quanta leaves slack without ever reaching a different edge of a
+ * real map (the closest distinct vertices on the derle data are many quanta apart).
+ */
+const RING_SPOT_TOLERANCE = 2 / QUANTIZE_SCALE;
+
+/** Locate a chord end on `ring` (vertex equality first, else the nearest edge). */
+function locateOnRing(ring: GeoRing, p: WorldCoordinate): RingSpot | undefined {
+  const n = ring.length;
+  for (let i = 0; i < n; i += 1) {
+    if (coordinatesEqual(ring[i]!, p)) return { edge: i, t: 0 };
+  }
+  let best: RingSpot | undefined;
+  let bestD2 = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < n; i += 1) {
+    const { d2, t } = pointSegmentDistance2(p, ring[i]!, ring[(i + 1) % n]!);
+    if (d2 < bestD2) {
+      bestD2 = d2;
+      best = { edge: i, t };
+    }
+  }
+  if (best === undefined || bestD2 > RING_SPOT_TOLERANCE * RING_SPOT_TOLERANCE) return undefined;
+  // A spot that clamps onto an edge END is that vertex — but then the vertex-equality
+  // pass above would have matched unless the point is off-grid by a hair. Keep it strictly
+  // mid-edge so the walk below inserts it as its own node.
+  return { edge: best.edge, t: Math.min(Math.max(best.t, Number.EPSILON), 1 - Number.EPSILON) };
+}
+
+/**
+ * Split ONE simple ring along a chord whose two ends lie on the ring and whose interior
+ * runs strictly inside it (V10 / N-08 root fix). The ring is walked from the chord's
+ * start P to its end Q and closed back along the chord (one half), and from Q to P and
+ * closed along the chord forwards (the other half). NOTHING but the chord is cut — unlike
+ * the old far-frame clip, whose continuation re-entered a concave face.
+ *
+ * P and Q are inserted as their own nodes when they fall mid-edge. Their coordinates are
+ * the quantized crossings `splitIntoChords` computed against the QUANTIZED ring, i.e. the
+ * same node `computeEdgeCuts` hands to the shared-edge neighbour (FR-95), so the seam node
+ * and the neighbour's inserted node coincide. Returns undefined when either end cannot be
+ * located on the ring, or both ends are the same spot (no area on one side). Pure.
+ */
+function splitRingByChord(
+  ring: GeoRing,
+  chord: readonly WorldCoordinate[],
+): readonly [GeoRing, GeoRing] | undefined {
+  const p = chord[0];
+  const q = chord[chord.length - 1];
+  if (p === undefined || q === undefined || chord.length < 2) return undefined;
+  const sp = locateOnRing(ring, p);
+  const sq = locateOnRing(ring, q);
+  if (sp === undefined || sq === undefined) return undefined;
+  if (sp.edge === sq.edge && sp.t === sq.t) return undefined;
+
+  // Walk the ring once, inserting P / Q (mid-edge) right after their edge's start vertex,
+  // ordered by their position along that edge; remember where each landed.
+  const aug: WorldCoordinate[] = [];
+  let ip = -1;
+  let iq = -1;
+  const n = ring.length;
+  for (let i = 0; i < n; i += 1) {
+    if (sp.edge === i && sp.t === 0) ip = aug.length;
+    if (sq.edge === i && sq.t === 0) iq = aug.length;
+    aug.push(ring[i]!);
+    const mids: { t: number; which: 'p' | 'q' }[] = [];
+    if (sp.edge === i && sp.t > 0) mids.push({ t: sp.t, which: 'p' });
+    if (sq.edge === i && sq.t > 0) mids.push({ t: sq.t, which: 'q' });
+    mids.sort((x, y) => x.t - y.t);
+    for (const m of mids) {
+      if (m.which === 'p') {
+        ip = aug.length;
+        aug.push(p);
+      } else {
+        iq = aug.length;
+        aug.push(q);
+      }
+    }
+  }
+  if (ip < 0 || iq < 0 || ip === iq) return undefined;
+
+  const walk = (from: number, to: number): WorldCoordinate[] => {
+    const out: WorldCoordinate[] = [];
+    const m = aug.length;
+    for (let k = from; ; k = (k + 1) % m) {
+      out.push(aug[k]!);
+      if (k === to) break;
+    }
+    return out;
+  };
+  const inner = chord.slice(1, chord.length - 1);
+  const half1 = [...walk(ip, iq), ...[...inner].reverse()];
+  const half2 = [...walk(iq, ip), ...inner];
+  return [half1, half2];
+}
+
+/**
+ * Normalize a ring-walk half through U06 (quantize + kernel normalize + invariant check),
+ * the same defense every boolean result gets (技術方針 R2). A chord strictly inside a
+ * simple ring yields a simple half, so anything other than ONE polygon with ONE ring is a
+ * degeneracy and is refused rather than silently reshaped.
+ */
+function normalizeHalf(ring: GeoRing): GeoMultiPolygon | undefined {
+  const res = union(multiPolygonFromRing(ring), EMPTY_MULTI_POLYGON);
+  if (!isOk(res)) return undefined;
+  if (res.result.length !== 1 || res.result[0]!.length !== 1) return undefined;
+  return res.result;
+}
+
+/**
+ * Collect the k+1 pieces of an OPEN cut on a SIMPLE face (one polygon, one ring) by
+ * splitting, chord by chord, the piece each chord runs through along that chord only
+ * (G1/G6). `mp` must already be quantized onto the U06 grid (checkSplittable does it) so
+ * the chord ends are the same nodes {@link computeEdgeCuts} produces (FR-95).
+ *
+ * Rejections (each its own reason, V10 / §M-6):
+ *   - no chord at all → 貫通せず;
+ *   - chords crossing / touching each other inside the face → 自己交差 (G3, a real one);
+ *   - a chord whose interior lies in no current piece → chord-outside-pieces (should not
+ *     happen once self-intersection is excluded; kept as an honest defensive code);
+ *   - a chord whose ends cannot be placed on that piece's ring, or that leaves one side
+ *     without area → chord-empties-side;
+ *   - a half that U06 cannot normalize into one simple polygon → 不正形状.
+ * Pure.
  */
 export function collectOpenPieces(
   linePts: readonly WorldCoordinate[],
   mp: GeoMultiPolygon,
   span: number,
 ): PiecesResult {
-  void span; // kept for the stable test/consumer API; the clip frame is derived from `mp`.
-  const box = multiPolygonBBox(mp);
+  void span; // kept for the stable test/consumer API.
   const chords = splitIntoChords(linePts, mp);
   if (chords.length === 0) return { ok: false, reason: SPLIT_REJECT.DoesNotPierce };
+  if (chordsSelfIntersect(chords)) return { ok: false, reason: SPLIT_REJECT.SelfIntersectingCut };
 
-  // Each chord is a boundary→interior→boundary cut of exactly ONE current piece (the one
-  // its interior sample lands in). Applying the SAME 2-way clip (openLineToClip +
-  // intersection/difference) to that piece replaces it with its two halves; k chords ⇒
-  // k+1 pieces. NOTE (documented limitation, plan G1/G6): each half is kept WHOLE — we do
-  // NOT split a half into connected components. A single chord that genuinely disconnects
-  // a CONCAVE half into two regions therefore yields ONE multi-part (exclave) piece rather
-  // than two — the SAME conservative grouping the prior 2-way split produced. We avoid the
-  // naive component-split because the chord's own clip (a half-plane extrusion of a BENT
-  // chord) routinely produces disjoint boolean artifacts that are NOT real pieces, and
-  // splitting those over-counts the common comb cut. A true component collector that
-  // distinguishes real cut-disconnections from clip artifacts is future work.
+  // Each chord cuts exactly ONE current piece (the one its interior sample lands in); that
+  // piece is replaced by its two halves, so k chords ⇒ k+1 pieces.
   const pieces: GeoMultiPolygon[] = [mp];
   for (const chord of chords) {
-    const clipRing = openLineToClip(chord, box);
-    if (planarRingArea2(clipRing) <= CHORD_DEGENERATE_EPS) {
-      return { ok: false, reason: SPLIT_REJECT.DegenerateLine };
-    }
-    const clip: GeoMultiPolygon = [[clipRing]];
     const sample = chordInteriorSample(chord);
-    const idx = pieces.findIndex((p) => multiPolygonContains(p, sample));
+    const idx = pieces.findIndex((piece) => multiPolygonContains(piece, sample));
     if (idx < 0) return { ok: false, reason: SPLIT_REJECT.ChordOutsidePieces };
     const piece = pieces[idx]!;
-    const inside = intersection(piece, clip);
-    const outside = difference(piece, clip);
-    if (!isOk(inside) || !isOk(outside)) return { ok: false, reason: SPLIT_REJECT.InvalidShape };
-    if (inside.result.length === 0 || outside.result.length === 0) {
-      return { ok: false, reason: SPLIT_REJECT.ChordEmptiesSide };
-    }
-    pieces.splice(idx, 1, inside.result, outside.result);
+    const outer = piece.length === 1 && piece[0]!.length === 1 ? piece[0]![0] : undefined;
+    if (outer === undefined) return { ok: false, reason: SPLIT_REJECT.InvalidShape };
+    const halves = splitRingByChord(outer, chord);
+    if (halves === undefined) return { ok: false, reason: SPLIT_REJECT.ChordEmptiesSide };
+    const a = normalizeHalf(halves[0]);
+    const b = normalizeHalf(halves[1]);
+    if (a === undefined || b === undefined) return { ok: false, reason: SPLIT_REJECT.InvalidShape };
+    pieces.splice(idx, 1, a, b);
   }
 
   if (pieces.length < 2) return { ok: false, reason: SPLIT_REJECT.DoesNotPierce };
@@ -914,25 +1086,35 @@ export function checkSplittable(
     return rejection(SPLIT_REJECT.DegenerateLine);
   }
 
-  // HB3-5/19 n-way split scope — PURELY ADDITIVE: the n-way path is taken ONLY for an
-  // OPEN cut on a SIMPLE face (one polygon, one ring) that decomposes into ≥2 interior
-  // chords (i.e. crosses the boundary ≥4 times ⇒ ≥3 pieces). Every ≤2-piece cut (one
-  // chord), every CLOSED cut, and every holed / multi-region face fall through to the
-  // EXISTING single-clip 2-way path UNCHANGED — so the common 2-piece behaviour (incl.
-  // the FR-95 shared-edge-cut seam node, all existing tests) is bit-for-bit preserved.
-  // Only the genuinely-multi-crossing comb cut (which the 2-way grouped into one
-  // exclave-bearing side) now correctly yields k+1 separate pieces. targetMp + linePts
-  // are already seam-anchored to ONE branch above (R3) so the chord planar geometry is
-  // correct across the antimeridian. (Holes/exclaves + n-way edge-cut coincidence remain
-  // future work — verify-workflow findings.)
+  // HB3-5/19 n-way split scope: the chord path is taken for an OPEN cut on a SIMPLE face
+  // (one polygon, one ring); a cut crossing the boundary 2k times yields k+1 pieces.
+  // Every CLOSED cut and every holed / multi-region face goes through the single-clip
+  // 2-way path. targetMp + linePts are already seam-anchored to ONE branch above (R3) so
+  // the chord planar geometry is correct across the antimeridian. (Holes/exclaves remain
+  // future work.)
+  //
+  // V10 / N-08 (増分 8B): the chord path now cuts along the chords ONLY (ring walk), so it
+  // also takes the ONE-chord case on a simple face. The far-frame clip of the 2-way path
+  // continues the line's end segments outward, and on a CONCAVE face that continuation
+  // re-enters the face and silently cuts parts the user never crossed (a short line over
+  // one arm of a U also slices the other arm). The 2-way path stays for CLOSED cuts and
+  // for holed / multi-region faces (現状分析 §11-14: those still fall to 2 pieces — the UI
+  // says so before confirming). The chord path works on the QUANTIZED face so its chord
+  // ends are exactly the nodes computeEdgeCuts inserts on a shared-edge neighbour (FR-95).
   let pieces: GeoMultiPolygon[];
-  const simpleFace = targetMp.length === 1 && (targetMp[0]?.length ?? 0) === 1;
-  const nwayChords =
+  const simpleFace = splitsIntoManyPieces(targetMp);
+  const quantizedTarget = simpleFace ? quantizeMultiPolygon(targetMp) : targetMp;
+  const chordCount =
     line.kind === KNIFE_LINE_KIND.Open && simpleFace
-      ? splitIntoChords(linePts, targetMp)
-      : [];
-  if (nwayChords.length >= 2) {
-    const collected = collectOpenPieces(linePts, targetMp, 0);
+      ? splitIntoChords(linePts, quantizedTarget).length
+      : 0;
+  if (chordCount >= 1) {
+    // One chord keeps the 2-way gate's meaning: the line must run outside → through →
+    // outside (FR-90). A line that dangles inside stays 貫通せず, as before.
+    if (chordCount === 1 && !linePiercesFace(linePts, targetMp)) {
+      return rejection(SPLIT_REJECT.DoesNotPierce);
+    }
+    const collected = collectOpenPieces(linePts, quantizedTarget, 0);
     if (!collected.ok) return rejection(collected.reason);
     pieces = [...collected.pieces];
   } else {
@@ -997,6 +1179,19 @@ export function checkSplittable(
     sideA: sides[0]!,
     sideB: sides[1]!,
   };
+}
+
+/**
+ * Whether an OPEN cut can split this face into k+1 pieces (現状分析 §11-14): exactly one
+ * polygon, no hole, and an outer ring that does not touch or cross itself (some real
+ * islands are stored as one ring pinched into a lagoon — that is a hole in disguise, and
+ * walking such a ring along a chord does not give two simple halves). Every other face
+ * falls to the 2-piece path. Exported so the UI can say so BEFORE confirming (V10 ③④).
+ * The ring is judged on the U06 grid, the same values the split itself works on. Pure.
+ */
+export function splitsIntoManyPieces(mp: GeoMultiPolygon): boolean {
+  if (mp.length !== 1 || (mp[0]?.length ?? 0) !== 1) return false;
+  return !ringSelfIntersects(quantizeRing(mp[0]![0]!));
 }
 
 /** Wrap a resolved multi-polygon piece as a {@link SplitSide} with its geodesic area (FR-93). */
