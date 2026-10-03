@@ -189,6 +189,10 @@ export function useAnchorLane<S>(
    */
   const onlyOrigin = useMemo(() => {
     if (resolved.source.starts.length !== 1) return false;
+    // **終わりのある系列には出さない**（バグ狩り 2-3）。案内文が存続の帯の上に重なり、
+    // 終端の印（決定 (12)）が読めなかった。終わりが打たれていれば、もう「0 年にしか
+    // 節目が無い」空の状態ではない。
+    if (resolved.source.runs.some((r) => r.endDay !== null)) return false;
     const only = resolved.source.starts[0];
     return only !== undefined && only === (normalize(timelineMin, calendar) as number);
   }, [resolved.source, timelineMin, calendar]);

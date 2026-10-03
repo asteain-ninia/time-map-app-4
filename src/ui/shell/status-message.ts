@@ -17,6 +17,18 @@
 // 確定・ドメインの拒否理由）はシェルの外に散らばっているので、React state に置くと押し込みの
 // たびにシェル全体が再レンダーする。購読するのは状態行の 1 ノードだけにする。
 
+import type { TimePoint } from '../../domain/time/time-point';
+
+/**
+ * 時刻の移動の知らせに続ける文の鍵（{@link StatusMessageStore.stageMoveTrailer}）。粒度の
+ * 違う同じ時刻（1500 年と 1500 年 1 月 1 日）を同じ鍵にする。
+ */
+export function moveTrailerKey(t: TimePoint): string {
+  const month = t.granularity === 'year' ? 1 : t.month;
+  const day = t.granularity === 'yearMonthDay' ? t.day : 1;
+  return `${String(t.year)}-${String(month)}-${String(day)}`;
+}
+
 /** 結果の色味。文言そのものは押し込む側が日本語で作る（FR-115）。 */
 export const STATUS_TONE = {
   /** 成功（保存できた・所属を変えた など）。 */
@@ -50,6 +62,14 @@ export type StatusMessageListener = (message: StatusMessage | null) => void;
 export class StatusMessageStore {
   private message: StatusMessage | null = null;
   private readonly listeners = new Set<StatusMessageListener>();
+  /**
+   * 時刻の移動の知らせ（「○○年へ移動しました。」）の **後ろに続ける文**（増分 7 の手直し 2 回目 /
+   * 設計適合 指摘 3・バグ狩り 2-4）。移動の知らせは時刻レールが描画のあとで出すので、移動と
+   * 同時に起きたこと（居なくなった印を外した・その年に錨を作った）を先に出すと、すぐ
+   * 上書きされて読めなかった。ここへ控えておき、移動の知らせが 1 つの文にまとめて出す。
+   * 鍵はその時刻（別の時刻への知らせには付けない）。
+   */
+  private trailers: { readonly key: string; readonly text: string }[] = [];
 
   get(): StatusMessage | null {
     return this.message;
@@ -80,6 +100,30 @@ export class StatusMessageStore {
   /** 中立の結末を出す（やめた・何も変わらなかった）。 */
   notice(text: string): void {
     this.set(text, STATUS_TONE.Neutral);
+  }
+
+  /** 時刻 `key` への移動の知らせに続ける文を控える。 */
+  stageMoveTrailer(key: string, text: string): void {
+    if (text === '') return;
+    this.trailers.push({ key, text });
+  }
+
+  /** 控えを全部捨てる（時刻が動くたびに、前の時刻の控えを残さない）。 */
+  clearMoveTrailers(): void {
+    this.trailers = [];
+  }
+
+  /**
+   * 時刻 `key` への移動の知らせに続ける文を取り出す（取り出したら控えは全部捨てる）。
+   * 無ければ空文字。
+   */
+  takeMoveTrailers(key: string): string {
+    const text = this.trailers
+      .filter((t) => t.key === key)
+      .map((t) => t.text)
+      .join('');
+    this.trailers = [];
+    return text;
   }
 
   set(text: string, tone: StatusTone): void {

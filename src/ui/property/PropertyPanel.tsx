@@ -59,6 +59,7 @@ import { FEATURE_KIND, featureDisplayName, type Feature } from '../../domain/fea
 import type { AnchorId, FeatureId } from '../../domain/ids';
 import { ownerLookupFromMap, type VertexOwnerLookup } from '../../domain/selection';
 import type { Calendar } from '../../domain/time/calendar';
+import { compare } from '../../domain/time/normalized';
 import { carriedAttributesOf, carryForwardTargets, nextDivergingEntry } from '../../domain/editing/carry-forward';
 
 import { canEdit } from '../shell/permissions';
@@ -74,6 +75,7 @@ import { useModalChannels } from '../a11y/index';
 import { AnchorSection, type StartEditorSignal } from './AnchorSection';
 import type { AnchorStartEditStore } from './anchor-start-edit';
 import { BasicInfoForm } from './BasicInfoForm';
+import { existenceStatusAt, type ExistenceStatus } from './existence-status';
 import { DeleteFeatureButton } from './DeleteFeatureButton';
 import type { DeleteImpactView } from './delete-impact';
 import { DetailDocumentSection } from './DetailDocumentSection';
@@ -384,6 +386,25 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     () => governing?.series ?? ownSeries,
     [governing, ownSeries],
   );
+  // **いま見ている年に、選んでいる地物がどういう状態か**（司令塔の決定 (12) / 設計適合
+  // 指摘 5・GPT #5・バグ狩り 2-3）。終わらせた年（以後）に選択を保ったまま「○○年で
+  // 終わっています」と読めるようにする。時刻レールの見出しも同じ 1 本から決める。
+  const existence = useMemo<ExistenceStatus>(
+    () => existenceStatusAt(displaySeries, targetFeatureId, currentTime, calendar),
+    [displaySeries, targetFeatureId, currentTime, calendar],
+  );
+  /** 居ない年に見出しへ出す名前（その年より前の最後の姿、無ければ最初の姿）。 */
+  const absentName = useMemo<string | null>(() => {
+    if (feature !== null || displaySeries === null || targetFeatureId === null) return null;
+    let found: Feature | undefined;
+    for (const entry of displaySeries.entries) {
+      const f = entry.anchor.snapshot.features.find((x) => x.id === targetFeatureId);
+      if (f === undefined) continue;
+      if (found === undefined || compare(entry.start, currentTime, calendar) <= 0) found = f;
+    }
+    return found === undefined ? null : shownName(found);
+  }, [feature, displaySeries, targetFeatureId, currentTime, calendar]);
+
   const anchorRows = useMemo<readonly AnchorRow[]>(() => {
     if (displaySeries === null || targetFeatureId === null) return [];
     return anchorRowsOf(displaySeries.entries, targetFeatureId, { onlyRelevant: inherited });
@@ -510,10 +531,11 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
         currentTime,
         series: governing?.series ?? null,
         featurePresent: feature !== null,
+        featureEnded: existence.kind === 'ended',
         calendar,
         snapshotSize: governing?.effectiveSize ?? null,
       }),
-    [currentTime, governing, feature, calendar],
+    [currentTime, governing, feature, calendar, existence],
   );
 
   // --- 下書き（名前・種別ラベル・見た目・詳細文書の 4 つ、設計書 §C.6） --------
@@ -903,18 +925,20 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   const endHereAction = useMemo(() => {
     if (targetFeatureId === null || onEndHere === undefined) return null;
     const id = targetFeatureId;
-    // **終わりが打たれている年**（司令塔の決定 (12)）。自分の系列の錨のうち、終了が
-    // 入っているもののいちばん早い年を出す ―― 押したあと「終わったのかどうか」が
-    // 素性欄のどこにも出ていなかった。
-    const endedEntry = displaySeries?.entries.find((e) => e.end !== null);
-    const endedYear = endedEntry?.end?.year;
+    // **いま居る区間に終わりが打たれていれば、その年を言う**（司令塔の決定 (12) / GPT #5）。
+    // 旧版は「終わりのある最初の錨」から引いていたので、過去に終わって後で再び現れた
+    // 地物や、終わる年より前を見ているときも「終わっています」と言っていた。いま見ている
+    // 年の解決結果（`existence`）から決める。終わった後の年の表示は下の `ended` の欄。
+    const endsAt = existence.kind === 'present' ? existence.endsAt : null;
     return {
       onEndHere: () => onEndHere(id),
       endHereLabel: PROPERTY_STRINGS.endHereLabel(formatYear(currentTime.year)),
       endHereDisabledReason: endHereDisabledReason?.(id) ?? null,
-      ...(endedYear === undefined ? {} : { endedYearLabel: formatYear(endedYear) }),
+      ...(endsAt === null
+        ? {}
+        : { endStateText: PROPERTY_STRINGS.endHereFuture(formatYear(endsAt.year)) }),
     };
-  }, [targetFeatureId, onEndHere, endHereDisabledReason, currentTime, displaySeries]);
+  }, [targetFeatureId, onEndHere, endHereDisabledReason, currentTime, existence]);
 
   /** 影響の一覧を押した瞬間に解く（全錨の走査なので、開いている間は再計算しない）。 */
   const resolveDeleteImpactPort = props.resolveDeleteImpact;
@@ -1020,7 +1044,30 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
           </div>
         </div>
       )}
-      {feature === null ? (
+      {feature === null && absentName !== null && (existence.kind === 'ended' || existence.kind === 'not-yet') ? (
+        // **選択は保ったまま、居ない理由を名前で言う**（司令塔の決定 (12)）。終わらせた年
+        // （以後）に「選択された地物が見つかりません。」と出すと、押した操作が失敗した
+        // ように読める（設計適合 指摘 5 / バグ狩り 2-3）。
+        <div className="property-panel__absent" data-testid="property-absent">
+          <div className="property-panel__head" data-testid="property-panel-head">
+            <div className="property-panel__title">
+              <span className="property-panel__name" data-testid="property-title-name">
+                {absentName}
+              </span>
+            </div>
+          </div>
+          <p className="property-panel__guidance" data-testid="end-here-state">
+            {existence.kind === 'ended'
+              ? existence.reappearsAt === null
+                ? PROPERTY_STRINGS.endHereState(formatYear(existence.endedAt.year))
+                : PROPERTY_STRINGS.endHereStateReappears(
+                    formatYear(existence.endedAt.year),
+                    formatYear(existence.reappearsAt.year),
+                  )
+              : PROPERTY_STRINGS.notYetState(formatYear(existence.startsAt.year))}
+          </p>
+        </div>
+      ) : feature === null ? (
         <GuidanceMessage decision={decision} />
       ) : (
         <>

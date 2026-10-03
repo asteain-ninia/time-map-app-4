@@ -237,8 +237,15 @@ export const PROPERTY_STRINGS = {
   /** 親の名前が引けないとき（名前を出さずに、やることだけを言う）。 */
   endHereNoOwnSeriesUnnamed:
     'この地物の歴史は上位領域が持っているので、ここからは終わりを打てません。先に所属を変えるか、上位領域の側で記録してください。',
-  /** 既に終わりが打たれている状態（司令塔の決定 (12)）。 */
+  /** 既に終わりが打たれている状態（司令塔の決定 (12)）。いま見ている年はもう終わった後。 */
   endHereState: (year: string): string => `この地物は${year}で終わっています。`,
+  /** 終わった後、後の年の錨で再び現れるとき（その年も言う）。 */
+  endHereStateReappears: (year: string, reappears: string): string =>
+    `この地物は${year}で終わっています（${reappears}の記録で再び現れます）。`,
+  /** いま見ている年は居る年で、いま居る区間に終わりが打たれている（GPT #5）。 */
+  endHereFuture: (year: string): string => `この地物は${year}で終わります。`,
+  /** いま見ている年はまだ始まる前（最初の錨より前）。 */
+  notYetState: (year: string): string => `この地物は${year}から始まります。`,
   /** 入口 A が通ったときの結果の文。 */
   endHereDone: (name: string, year: string): string => `「${name}」は${year}で終わったことにしました。`,
   /**

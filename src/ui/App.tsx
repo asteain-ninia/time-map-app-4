@@ -176,7 +176,7 @@ import {
 } from './e2e/synthetic-project';
 import { AppIdentity } from './shell/AppIdentity';
 import { StatusBarContent } from './shell/StatusBarContent';
-import { StatusMessageStore } from './shell/status-message';
+import { StatusMessageStore, moveTrailerKey } from './shell/status-message';
 import { commandLabelJa, RESULT_STRINGS, UI_COMMAND_LABEL } from './shell/command-result';
 import { BulkKindLabelDialog } from './property/BulkKindLabelDialog';
 import { ImpactConfirmDialog } from './shell/ImpactConfirmDialog';
@@ -1181,13 +1181,21 @@ export function App(): JSX.Element {
       // **その年に居なくなった印は外す**（Fable #5）。印は「まとめて直す相手」なので、
       // 居ない地物を数え続けると帯の件数と実際に直せる件数が食い違う。外した件数は
       // 黙って減らさずに状態行へ出す（教訓 5.12）。
+      //
+      // **移動の知らせと 1 つの文にまとめる**（設計適合 指摘 3）。時刻レールは「○○年へ
+      // 移動しました。」を描画のあとで出すので、ここで出した件数はすぐ上書きされていた。
+      // 件数は移動の知らせの後ろへ続ける文として控え、レールを通らない移動（再生など）
+      // でも読めるよう、ここでもいったん出しておく。
+      if (timeMoved) statusMessageStore.clearMoveTrailers();
       if (timeMoved && markedFeaturesRef.current.size > 0) {
         const alive = new Set(featuresAt(s.domain, s.currentTime).map((f) => f.id));
         const kept = [...markedFeaturesRef.current].filter((id) => alive.has(id));
         const dropped = markedFeaturesRef.current.size - kept.length;
         if (dropped > 0) {
           s.setFeatureMarks(kept);
-          statusMessageStore.notice(APP_STRINGS.markDroppedByTime(dropped));
+          const text = APP_STRINGS.markDroppedByTime(dropped);
+          statusMessageStore.notice(text);
+          statusMessageStore.stageMoveTrailer(moveTrailerKey(s.currentTime), text);
         }
       }
       paint();
@@ -3354,10 +3362,26 @@ export function App(): JSX.Element {
       const proposal = createEditProposal(featureId, at, snapshot);
       const result = propertyEditBindings.createAnchor.startProcess(proposal);
       if (result.status === PROCESS_STATUS.Committed) {
+        // 自分の年表を持たないまとめ役の子では、記録は **上位領域の年表**に増える。子の
+        // レーンには印が増えないので、どこに増えたかを名前で言う（バグ狩り 2-4: 押しても
+        // 何も起きなかったように見えていた）。
+        const before = store.getState().domain;
+        const owner = hasOwnSeries(before.histories, featureId)
+          ? undefined
+          : findHistoryContaining(before, featureId, at, calendar);
         recordCommit(result, { featureId }, at);
+        if (owner !== undefined) {
+          const ownerName =
+            featureByIdAt(store.getState().domain, at, owner.history.featureId)?.attributes.name ?? '';
+          if (ownerName !== '') {
+            statusMessageStore.success(
+              EDIT_PLAN_STRINGS.createAnchorHereInOwner(ownerName, formatYear(at.year)),
+            );
+          }
+        }
       }
     },
-    [store, propertyEditBindings, recordCommit],
+    [store, propertyEditBindings, recordCommit, calendar, statusMessageStore],
   );
 
   // FR-85 — the プロパティタブ「地物を削除」button. The {@link DeleteFeatureButton}

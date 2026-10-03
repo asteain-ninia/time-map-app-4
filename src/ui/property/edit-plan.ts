@@ -111,6 +111,12 @@ export interface EditPlanInput {
   readonly series: AnchorSeries | null;
   /** 現在時刻にその地物が解決できるか（＝地図に出ているか）。 */
   readonly featurePresent: boolean;
+  /**
+   * 居ない理由が「もう終わっている」か（`existence-status.ts`）。真なら「この年にはまだ
+   * ありません」ではなく「この年にはもうありません」と言う（終わらせた直後に「まだ」と
+   * 読めていた。設計適合 指摘 5 / バグ狩り 2-3）。省略は偽。
+   */
+  readonly featureEnded?: boolean;
   readonly calendar: Calendar;
   /** 新しい錨を作るときに増える量の材料。無ければ概算を出さない（数字を捏造しない）。 */
   readonly snapshotSize?: AnchorSnapshotSize | null;
@@ -193,6 +199,7 @@ export const EDIT_PLAN_STRINGS = {
   noteNewAnchorWithCost: (bytes: string): string =>
     `錨を新しく作ります（保存ファイルが${bytes}増えます）`,
   noteFeatureAbsent: 'この年にはまだありません',
+  noteFeatureEnded: 'この年にはもうありません（終わっています）',
   noteNotYearAligned: '月日の付いた年には記録を作れません',
   saveLabelOverwrite: (year: string): string => `${year}の錨を上書き保存`,
   saveLabelNewAnchor: (year: string): string => `${year}に錨を作って保存`,
@@ -200,6 +207,8 @@ export const EDIT_PLAN_STRINGS = {
   saveLabelDisabled: '保存',
   reasonFeatureAbsent: (year: string): string =>
     `${year}にはこの地物がまだありません。存在する年へ移ると保存できます。`,
+  reasonFeatureEnded: (year: string): string =>
+    `${year}にはこの地物はもうありません（終わっています）。存在する年へ移ると保存できます。`,
   reasonNotYearAligned: (full: string, year: string): string =>
     `いまは${full}です。錨の開始は年だけで記録するので、${year}へ丸めてから保存してください。`,
   /** 年に丸めるボタン。 */
@@ -209,6 +218,12 @@ export const EDIT_PLAN_STRINGS = {
   createAnchorHereDisabledReason: (year: string): string => `${year}にはすでに錨があります。`,
   /** 対象の地物が決まっていない（鍵盤から押したときに起きる）。 */
   createAnchorHereNoTarget: '記録を作る地物が選ばれていません。地図か一覧で 1 つ選んでください。',
+  /**
+   * 自分の年表を持たないまとめ役の子で「この年に錨を作る」を押したとき（バグ狩り 2-4）。
+   * 記録は上位領域の年表に増えるので、どこに増えたかを言う（子のレーンには印が増えない）。
+   */
+  createAnchorHereInOwner: (ownerName: string, year: string): string =>
+    `上位領域「${ownerName}」の年表に${year}の記録を作りました（この地物は上位領域の年表に記録されています）。`,
   /** 「読むだけ」のとき（教訓 5.13 の一括無効化に、鍵盤経路でも文字を付ける）。 */
   createAnchorHereViewOnly: 'いまは「読むだけ」です。鍵を開けると記録を作れます。',
   /**
@@ -270,6 +285,7 @@ export function saveEffectOf(
 /** 保存の行き先を決める（設計書 §D.3 の表そのもの）。 */
 export function decideEditPlan(input: EditPlanInput): EditPlan {
   const { currentTime, series, featurePresent, calendar } = input;
+  const ended = input.featureEnded === true;
   const aligned = isYearAligned(currentTime);
   const yearLabel = formatYear(currentTime.year);
   const fullLabel = formatTimePoint(currentTime);
@@ -285,9 +301,11 @@ export function decideEditPlan(input: EditPlanInput): EditPlan {
       savable: false,
       editTime: null,
       badgeTime: timeLabel,
-      badgeNote: EDIT_PLAN_STRINGS.noteFeatureAbsent,
+      badgeNote: ended ? EDIT_PLAN_STRINGS.noteFeatureEnded : EDIT_PLAN_STRINGS.noteFeatureAbsent,
       saveLabel: EDIT_PLAN_STRINGS.saveLabelDisabled,
-      reason: EDIT_PLAN_STRINGS.reasonFeatureAbsent(timeLabel),
+      reason: ended
+        ? EDIT_PLAN_STRINGS.reasonFeatureEnded(timeLabel)
+        : EDIT_PLAN_STRINGS.reasonFeatureAbsent(timeLabel),
       roundedTime: null,
       estimatedBytes: null,
     };

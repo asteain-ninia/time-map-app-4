@@ -20,8 +20,9 @@ import { compare, normalize } from '../../domain/time/normalized';
 import type { TimePoint } from '../../domain/time/time-point';
 import { publishRailObservation } from '../e2e/rail-observation';
 import { decideEditPlan, EDIT_PLAN_STRINGS } from '../property/edit-plan';
+import { existenceStatusAt } from '../property/existence-status';
 import { COMMAND_ID, type CommandRegistry } from '../shell/commands';
-import type { StatusMessageStore } from '../shell/status-message';
+import { moveTrailerKey, type StatusMessageStore } from '../shell/status-message';
 import type { SessionStore } from '../state/store';
 import { nextAnchorIndex, previousAnchorIndex } from '../time/anchor-lane';
 import { railFoldOf, type RailFoldLevel } from '../time/rail-fold';
@@ -197,13 +198,16 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
     (point: TimePoint): void => {
       // すでにその時刻に居るなら、これ以上何も動かない ―― その場で言ってよい。
       if (compare(t.currentTime, point, t.calendar) === 0) {
-        succeeded(RAIL_STRINGS.movedTo(formatTimePoint(point)));
+        succeeded(
+          RAIL_STRINGS.movedTo(formatTimePoint(point)) +
+            (statusMessages?.takeMoveTrailers(moveTrailerKey(point)) ?? ''),
+        );
         return;
       }
       // 動くはずのときは **印だけ置く**。実際に動いたかは下の見張りが確かめる。
       pendingMoveRef.current = point;
     },
-    [t.currentTime, t.calendar, succeeded],
+    [t.currentTime, t.calendar, succeeded, statusMessages],
   );
 
   /**
@@ -220,8 +224,13 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
     pendingMoveRef.current = null;
     const live = store.getState().currentTime;
     if (compare(live, point, t.calendar) !== 0) return;
-    succeeded(RAIL_STRINGS.movedTo(formatTimePoint(point)));
-  }, [t.currentTime, t.calendar, store, succeeded]);
+    // 移動と同時に起きたこと（居なくなった印を外した・その年に錨を作った）は、控えから
+    // 取り出して **同じ 1 つの文**の後ろへ続ける（上書きして読めなくしない）。
+    succeeded(
+      RAIL_STRINGS.movedTo(formatTimePoint(point)) +
+        (statusMessages?.takeMoveTrailers(moveTrailerKey(point)) ?? ''),
+    );
+  }, [t.currentTime, t.calendar, store, succeeded, statusMessages]);
 
   // --- 時刻を動かす（すべて `useTimeline` の 1 本を通る） ---------------------
   const jumpTo = useCallback(
@@ -441,6 +450,10 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
         currentTime: t.currentTime,
         series: lane.governingSeries,
         featurePresent: lane.featureId !== null && featurePresent,
+        // 居ない理由が「もう終わっている」なら見出しでもそう言う（素性欄と同じ 1 本）。
+        featureEnded:
+          existenceStatusAt(lane.governingSeries, lane.featureId, t.currentTime, t.calendar)
+            .kind === 'ended',
         calendar: t.calendar,
         // **素性欄と同じ材料を渡す**（2026-09-07 の手直し）。渡さないと同じ純粋関数から
         // 出た文が画面の 2 か所で食い違う（片方だけ「約 306 KB 増えます」になる）。
@@ -618,7 +631,16 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
           // 戻った年に錨を作ってはいけない（教訓 5.71）。作る側の可否と断りの文は
           // Ctrl+K と同じコマンド 1 本が持つ。
           if (compare(store.getState().currentTime, request.time, t.calendar) !== 0) return;
-          registry?.dispatch(COMMAND_ID.EditCreateAnchorHere);
+          {
+            // 作った（または断られた）文を、移動の知らせの後ろへ続ける（バグ狩り 2-4: 移動の
+            // 文で上書きされ、押しても何も起きなかったように見えていた）。
+            const before = statusMessages?.get() ?? null;
+            registry?.dispatch(COMMAND_ID.EditCreateAnchorHere);
+            const after = statusMessages?.get() ?? null;
+            if (after !== null && after !== before) {
+              statusMessages?.stageMoveTrailer(moveTrailerKey(request.time), after.text);
+            }
+          }
           return;
         case RAIL_MENU_ITEM.MakeLeftEdge:
           if (request.kind === 'empty') rail.scrollByPixels(request.px);
@@ -628,7 +650,17 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
           return;
       }
     },
-    [railMenu, jumpTo, onRequestAnchorStartEdit, onRequestAnchorDelete, store, t.calendar, registry, rail],
+    [
+      railMenu,
+      jumpTo,
+      onRequestAnchorStartEdit,
+      onRequestAnchorDelete,
+      store,
+      t.calendar,
+      registry,
+      rail,
+      statusMessages,
+    ],
   );
 
   const spanDays = viewSpanDays(rail.view);
