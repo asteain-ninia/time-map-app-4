@@ -424,3 +424,53 @@ test.describe('A-4 — 年をまたぐ所属の食い違いは、保存を止め
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// B76: 過去の年の編集が、終わりを越えて地物を生き返らせない
+// ---------------------------------------------------------------------------
+
+test.describe('B76 — 終わった地物を終わる前の年で改名しても、終わりの後に生き返らない', () => {
+  test('1500 年で終わった国を 1300 年で改名 → 2000 年に居ない・取り消しで戻る・保存 → 開き直しで同じ', async () => {
+    await withSavePath(async ({ page }, savePath) => {
+      await nested(page, 2, [1000], 1500);
+      await endHere(page, OUTSIDER_NAME, OUTSIDER_ID);
+
+      // 1300 年で改名して保存する（その年に錨が無いので、新しい錨が挿される）。
+      await jumpToYear(page, 1300);
+      await selectRow(page, OUTSIDER_NAME, OUTSIDER_ID);
+      await page.getByTestId('sidebar-tab-properties').click();
+      const NEW_NAME = '改名した外の国';
+      await page.getByTestId('basic-info').getByLabel('名前').fill(NEW_NAME);
+      await page.getByTestId('save-button').click();
+      await expect(page.getByTestId('property-title-name')).toHaveText(NEW_NAME);
+
+      const listed = async (year: number, name: string): Promise<number> => {
+        await jumpToYear(page, year);
+        await page.getByTestId('sidebar-tab-list').click();
+        await page.getByTestId('unified-list-filter').fill(name);
+        return page.locator(`[data-testid="feature-list-item-${OUTSIDER_ID}"]`).count();
+      };
+      // 1400 年は新しい名前で居る。2000 年には居ない（以前は改名した錨が終わりを持たず、生き返っていた）。
+      expect(await listed(1400, NEW_NAME)).toBe(1);
+      expect(await listed(2000, '外の国')).toBe(0);
+
+      // 取り消すと名前が戻り、2000 年にはやはり居ない。やり直しも同じ。
+      await blurToLedger(page);
+      await page.keyboard.press('Control+z');
+      await expect(page.getByTestId('app-can-redo')).toHaveText('1');
+      expect(await listed(1400, OUTSIDER_NAME)).toBe(1);
+      expect(await listed(2000, '外の国')).toBe(0);
+      await blurToLedger(page);
+      await page.keyboard.press('Control+y');
+      await expect(page.getByTestId('app-can-redo')).toHaveText('0');
+      expect(await listed(1400, NEW_NAME)).toBe(1);
+
+      // 保存 → 開き直しても同じ（修復の板も出ない）。
+      await saveWithCtrlS(page);
+      expect(await reopenWithoutBoards(page, savePath)).toBe('loaded');
+      await enterEditMode(page);
+      expect(await listed(1400, NEW_NAME)).toBe(1);
+      expect(await listed(2000, '外の国')).toBe(0);
+    });
+  });
+});
