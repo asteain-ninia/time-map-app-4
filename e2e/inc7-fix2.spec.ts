@@ -127,6 +127,25 @@ async function reopenWithoutBoards(page: Page, path: string): Promise<LoadProjec
   return first === 'none' ? loading : first;
 }
 
+/** 開き直し、修復の板が出たら各行の先頭（既定）の方法を選んで適用する（板が出なければそのまま）。 */
+async function reopenWithDefaultRepairs(page: Page, path: string): Promise<LoadProjectOutcome> {
+  const loading = loadProject(page, path);
+  const board = page.getByTestId('repair-dialog');
+  const shown = await board
+    .waitFor({ state: 'visible', timeout: 20_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (shown) {
+    const rows = page.locator('[data-testid^="repair-row-"]');
+    const count = await rows.count();
+    for (let i = 0; i < count; i += 1) {
+      await rows.nth(i).locator('[data-testid^="repair-option-"]').first().check();
+    }
+    await page.getByTestId('repair-apply').click();
+  }
+  return loading;
+}
+
 async function saveWithCtrlS(page: Page): Promise<void> {
   await blurToLedger(page);
   await page.keyboard.press('Control+s');
@@ -161,22 +180,24 @@ test.describe('A-1 — まとめ役を終わらせても、子が後の年に移
       await moveMarkedInto(page, OUTSIDER_ID);
       expect(await parentOf(page, childName(0), childId(0))).toBe(OUTSIDER_NAME);
 
-      // 1500 年に親を終わらせる。板は「1700 年の記録で再び現れる」ことも言う。
+      // 1500 年に親を終わらせる。親の 1700 年の錨（所属変更が作った帳簿の記録）は途切れずに
+      // 続いているので一緒に終わる、と板が言う（手直し 3 回目。親は 1700 年に再び現れない）。
       await jumpToYear(page, 1500);
       await selectRow(page, PARENT_NAME, PARENT_ID);
       await page.getByTestId('sidebar-tab-properties').click();
       await page.getByTestId('end-here').click();
-      await expect(page.getByTestId('end-here-impact-promoted')).toContainText('1700年');
+      await expect(page.getByTestId('end-here-impact-ends')).toContainText('一緒に終わります');
+      await expect(page.getByTestId('end-here-impact-promoted')).not.toContainText('再び現れます');
       await page.getByTestId('end-here-impact-confirm').click();
       await expect(page.getByTestId('end-here-impact')).toHaveCount(0);
 
-      // 1600 年: 子はどれも最上位。1700 年: 子 0 は外の国のまま、子 1 は再び現れた親の下。
+      // 1600 年: 子はどれも最上位。1700 年: 子 0 は外の国のまま、子 1 も最上位（親は戻らない）。
       await jumpToYear(page, 1600);
       expect(await parentOf(page, childName(0), childId(0))).toBe('上位領域なし');
       expect(await parentOf(page, childName(1), childId(1))).toBe('上位領域なし');
       await jumpToYear(page, 1700);
       expect(await parentOf(page, childName(0), childId(0))).toBe(OUTSIDER_NAME);
-      expect(await parentOf(page, childName(1), childId(1))).toBe(PARENT_NAME);
+      expect(await parentOf(page, childName(1), childId(1))).toBe('上位領域なし');
 
       // 取り消し・やり直しでも 1700 年の外の国との所属は残る。
       await blurToLedger(page);
@@ -382,33 +403,33 @@ test.describe('D5 — まとめ役の子でレールの「この年に錨を作�
 // ---------------------------------------------------------------------------
 
 test.describe('A-4 — 年をまたぐ所属の食い違いは、保存を止めずに聞く', () => {
-  test('子の開始年を親より前へ動かすと、保存の前に理由（名前と年）が出て、やめる／このまま保存するを選べる', async () => {
+  test('まとめ役の開始年を前へ動かすと、保存の前に理由と次に開いたときの直し方が出て、開き直しの既定の修復で記録が消えない', async () => {
     await withSavePath(async ({ page }, savePath) => {
       await nested(page, 2, [1000], 1000);
-      // 外の国を 1000 年に親の下へ入れ（自分の系列を持つ子）、その開始年を 900 年へ動かす。
-      // 900〜1000 年の外の国は、その年には居ない親を指す（年をまたぐ食い違い）。
+      // 外の国を 1000 年に親の下へ入れ（自分の系列を持つ子）、親の開始年を 900 年へ動かす。
+      // 900〜1000 年の親の下位領域の一覧には、まだ居ない外の国が載っている（年をまたぐ食い違い。
+      // `docs/現状.md` B74 の形。子の開始年を親より前へ動かす形は、手直し 3 回目で作らなくなった）。
       await markRow(page, OUTSIDER_NAME, OUTSIDER_ID);
       await moveMarkedInto(page, PARENT_ID);
-      await selectRow(page, OUTSIDER_NAME, OUTSIDER_ID);
+      await selectRow(page, PARENT_NAME, PARENT_ID);
       await page.getByTestId('sidebar-tab-properties').click();
       await openPropertySection(page, 'anchor-section');
-      await clickClearOfStickyBars(page.getByTestId('anchor-interval-summary-syn-nest-a-outsider'));
-      await page.getByTestId('anchor-interval-start-syn-nest-a-outsider-year').fill('900');
-      await clickClearOfStickyBars(page.getByTestId('anchor-interval-start-syn-nest-a-outsider-confirm'));
-      // 900 年に外の国が居る（開始年が動いた）。親はその年には居ない。
+      await clickClearOfStickyBars(page.getByTestId('anchor-interval-summary-syn-nest-a-1000'));
+      await page.getByTestId('anchor-interval-start-syn-nest-a-1000-year').fill('900');
+      await clickClearOfStickyBars(page.getByTestId('anchor-interval-start-syn-nest-a-1000-confirm'));
       await jumpToYear(page, 900);
-      await revealRow(page, OUTSIDER_NAME, OUTSIDER_ID);
+      await revealRow(page, PARENT_NAME, PARENT_ID);
 
-      // Ctrl+S → 止めずに聞く板。理由は名前と年で言う。
+      // Ctrl+S → 止めずに聞く板。理由は名前と年で言い、次に開いたときに何をするかも言う。
       await blurToLedger(page);
       await page.keyboard.press('Control+s');
       const dialog = page.getByTestId('pre-save-dialog');
       await expect(dialog).toBeVisible();
       await expect(page.getByTestId('app-focus-owner')).toHaveText('modal');
       const line = page.getByTestId('pre-save-line').first();
-      await expect(line).toContainText(OUTSIDER_NAME);
       await expect(line).toContainText(PARENT_NAME);
       await expect(line).toContainText('900年');
+      await expect(line).toContainText('次に開くと');
 
       // やめる → 書かない。
       await page.getByTestId('pre-save-cancel').click();
@@ -421,6 +442,13 @@ test.describe('A-4 — 年をまたぐ所属の食い違いは、保存を止め
       await page.getByTestId('pre-save-confirm').click();
       await expect(page.getByTestId('statusbar-result')).toContainText('保存しました');
       expect(existsSync(savePath)).toBe(true);
+
+      // 開き直す → 修復の板の各行の先頭（既定）を選んで適用 → 記録は消えていない。
+      expect(await reopenWithDefaultRepairs(page, savePath)).toBe('loaded');
+      await enterEditMode(page);
+      await jumpToYear(page, 1100);
+      expect(await parentOf(page, OUTSIDER_NAME, OUTSIDER_ID)).toBe(PARENT_NAME);
+      expect(await parentOf(page, childName(0), childId(0))).toBe(PARENT_NAME);
     });
   });
 });
