@@ -3153,18 +3153,6 @@ body {
   color: var(--c-text-muted);
 }
 
-/* 欄の上に添える注記（増分 8B の手直し）。分割の「この名前は 3 片すべてに付きます」など、
-   保存の前に読んでほしい 1 文なので、継承先の板の注記（knife.css の .knife-dialog__note）と
-   同じ見た目にする。 */
-.add-property-form__note {
-  margin: 0;
-  padding: 6px 8px;
-  border-left: 3px solid #ff8f00;
-  background: #fff8e1;
-  color: #3e2723;
-  font-size: 13px;
-}
-
 .add-property-form__actions {
   display: flex;
   gap: 8px;

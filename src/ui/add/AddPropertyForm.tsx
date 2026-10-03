@@ -70,8 +70,6 @@ export interface AddPropertyFormProps {
    * 普段どおり。出ている間は［保存］がこの文になって押せなくなり、読み上げにも流す。
    */
   readonly busyLabel?: string | null;
-  /** 欄の上に添える注記（`AddDraftPrompt.note`）。null・省略なら出さない。 */
-  readonly note?: string | null;
   /** 打ちかけの有無が変わったら呼ぶ（`AddDraftPrompt.onDirtyChange`）。 */
   readonly onDirtyChange?: (dirty: boolean) => void;
 }
@@ -133,11 +131,6 @@ export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
       }}
     >
       <h2 className="add-property-form__title">{ADD_STRINGS.formTitle}</h2>
-      {props.note !== undefined && props.note !== null && (
-        <p className="add-property-form__note" data-testid="add-draft-note">
-          {props.note}
-        </p>
-      )}
 
       {/* **欄が「まだ何も打っていない」と自分で名乗る**（`data-pristine`。増分 5 の手直し
           A2）。焦点がこの欄にあるあいだ、Escape は道具が受けて「やめる」になるが、
@@ -268,7 +261,6 @@ export function addPromptToFormProps(prompt: AddDraftPrompt): AddPropertyFormPro
     onSave: prompt.onSave,
     onCancel: prompt.onCancel,
     busyLabel: prompt.busyLabel ?? null,
-    note: prompt.note ?? null,
     ...(prompt.onDirtyChange !== undefined ? { onDirtyChange: prompt.onDirtyChange } : {}),
   };
 }

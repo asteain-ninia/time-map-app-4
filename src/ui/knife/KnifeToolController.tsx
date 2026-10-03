@@ -725,18 +725,21 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   useEffect(() => {
     if (!enteringProperties) propertiesDirtyRef.current = false;
   }, [enteringProperties]);
-  // **素性欄の注記**（増分 8B の手直し）: 新しい片が 2 つ以上なら「この名前と種別は n 片
-  // すべてに付きます」（設計適合 2-1）、延ばした先でも切れていればそれも（B65 の残り）。
+  // **名前を入れる段の前置き**（増分 8B の手直し）: 延ばした先でも切れていればそのこと
+  // （B65 の残り）、新しい片が 2 つ以上なら「この名前と種別は n 片すべてに付きます」
+  // （設計適合 2-1）。**次の一手の先頭**に置く ―― 素性欄に段を足すと、窓が低いとき
+  // ［保存］が時刻レールの下へ押し出されて押せなくなった（E2E の knife-nway で実測）。
+  // 帯は 1 行で末尾が切れるので、大事な順に前から並べる（行き先の案内は最後）。
   const enteringResult =
     knife.state.phase === KNIFE_PHASE.EnteringProperties ? knife.state.result : undefined;
-  const enteringNote = useMemo((): string | null => {
-    if (enteringResult === undefined) return null;
+  const enteringPrefix = useMemo((): string => {
+    if (enteringResult === undefined) return '';
     const newPieces =
       (enteringResult.pieces ?? [enteringResult.sideA, enteringResult.sideB]).length - 1;
-    const parts: string[] = [];
-    if (newPieces >= 2) parts.push(KNIFE_STRINGS.sharedNameNote(newPieces));
-    if (enteringResult.cutsBeyondLine === true) parts.push(KNIFE_STRINGS.beyondLineNote);
-    return parts.length === 0 ? null : parts.join('');
+    const beyond =
+      enteringResult.cutsBeyondLine === true ? KNIFE_STRINGS.beyondLineShort : '';
+    const shared = newPieces >= 2 ? KNIFE_STRINGS.sharedNameNote(newPieces) : '';
+    return `${beyond}${shared}`;
   }, [enteringResult]);
   useEffect(() => {
     if (addDraft === undefined || !enteringProperties) return;
@@ -754,7 +757,6 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
       onSave: runKnifeSave,
       onCancel: knifeCancel,
       busyLabel: saveBusy ? KNIFE_STRINGS.committing : null,
-      note: enteringNote,
       onDirtyChange: onPropertiesDirtyChange,
     };
     addDraft.set(mine);
@@ -769,7 +771,6 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     runKnifeSave,
     knifeCancel,
     saveBusy,
-    enteringNote,
     onPropertiesDirtyChange,
   ]);
 
@@ -989,9 +990,11 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     if (knife.message !== null) return knife.message;
     if (saveBusy || knifeDeferred.busy) return KNIFE_STRINGS.committing;
     if (enteringProperties) {
-      return mapLockedHint
-        ? KNIFE_STRINGS.mapLockedWhileNaming
-        : KNIFE_STRINGS.nextStepEnterProperties;
+      return `${enteringPrefix}${
+        mapLockedHint
+          ? KNIFE_STRINGS.mapLockedWhileNaming
+          : KNIFE_STRINGS.nextStepEnterProperties
+      }`;
     }
     if (drawingCut) {
       if (cutClosed) return KNIFE_STRINGS.nextStepClosed;
@@ -1013,6 +1016,7 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     saveBusy,
     knifeDeferred.busy,
     enteringProperties,
+    enteringPrefix,
     mapLockedHint,
     drawingCut,
     cutClosed,

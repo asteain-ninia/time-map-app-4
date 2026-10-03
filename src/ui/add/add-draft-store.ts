@@ -65,11 +65,6 @@ export interface AddDraftPrompt {
    */
   readonly busyLabel?: string | null;
   /**
-   * **欄の上に添える注記**（増分 8B の手直し）。null・省略なら出さない。分割の非継承側は
-   * 1 つの素性欄を何片かで共有するので「この名前と種別は 3 片すべてに付きます」と言う。
-   */
-  readonly note?: string | null;
-  /**
    * **打ちかけがあるかの知らせ**（増分 8B の手直し / 反証 2-2）。名前か種別に何か打たれて
    * いれば真。変わったときだけ呼ばれる。道具は Escape で「聞かずにやめてよいか」を
    * **焦点のある欄ではなく中身で**決めるのに使う ―― 名前を打ってから地図を押すと焦点が
@@ -121,7 +116,6 @@ function samePrompt(a: AddDraftPrompt | null, b: AddDraftPrompt | null): boolean
     a.onSave === b.onSave &&
     a.onCancel === b.onCancel &&
     (a.busyLabel ?? null) === (b.busyLabel ?? null) &&
-    (a.note ?? null) === (b.note ?? null) &&
     a.onDirtyChange === b.onDirtyChange
   );
 }
