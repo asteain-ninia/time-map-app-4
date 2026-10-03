@@ -213,7 +213,7 @@ import { buildForest } from '../domain/hierarchy/forest';
 // 増分 7: 所属変更の対象展開（FR-48 後半）と、削除の影響の説明（設計書 §A.3）。
 import { planAffiliationTargets } from '../domain/affiliation/index';
 import { hasOwnSeries } from '../domain/affiliation/materialize';
-import { createDeletionState, describeDeletionImpact } from '../domain/deletion/index';
+import { deletionStateFromHistories, describeDeletionImpact } from '../domain/deletion/index';
 import { maxDerivedDepth } from '../domain/hierarchy/depth';
 import { FEATURE_KIND, featureDisplayName } from '../domain/feature';
 import { findHistoryContaining } from '../domain/editing/apply-proposal';
@@ -2155,17 +2155,20 @@ export function App(): JSX.Element {
   const resolveDeleteImpactFor = useCallback(
     (featureId: FeatureId): DeleteImpactView => {
       const s = store.getState();
-      const anchors = s.domain.histories.flatMap((h) => h.series.entries.map((e) => e.anchor));
+      // 実行（createDeleteFeatureCommandForRoot）と同じ「時刻ごとの全系列の束」の見方で数える
+      // （教訓 5.26）。錨 1 枚だけで数えると、子が自分の系列を持つまとめ役を
+      // 「自動で消える」と誤って予告する。
+      const { state: deletionState } = deletionStateFromHistories(s.domain.histories, calendar);
       const ownYears = (s.domain.histories.find((h) => h.featureId === featureId)?.series.entries ??
         []).map((e) => e.start.year);
-      const impact = describeDeletionImpact(createDeletionState(anchors), featureId, ownYears);
+      const impact = describeDeletionImpact(deletionState, featureId, ownYears);
       return buildDeleteImpactView({
         impact,
         targetName: featureNameOf(featureId) ?? '',
         nameOf: (id) => featureByIdAt(s.domain, s.currentTime, id)?.attributes.name ?? null,
       });
     },
-    [store, featureNameOf],
+    [store, featureNameOf, calendar],
   );
   // 上の漏斗から呼べるようにする（宣言の順を入れ替えずに済ませる）。
   resolveDeleteImpactRef.current = resolveDeleteImpactFor;

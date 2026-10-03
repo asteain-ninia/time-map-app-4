@@ -68,11 +68,7 @@ import {
 } from '../domain/anchor-series';
 import type { AnchorIntervalEditIntent } from './property/index';
 import { ANCHOR_INTERVAL_OP } from './property/index';
-import {
-  createDeletionState,
-  createDeleteFeatureCommand,
-  isNoOpDeletion,
-} from '../domain/deletion/index';
+import { deleteFeatureFromHistories } from '../domain/deletion/index';
 import {
   materializeOwnSeries,
   promoteToTopLevelFrom,
@@ -1019,6 +1015,9 @@ export const createLiveAffiliationBinding: CreateLiveAffiliationBinding = (acces
 // are folded back into their originating entries (start/end preserved), and a history
 // whose every anchor snapshot is left empty is dropped wholesale (its feature ceased
 // to exist across the whole timeline — 教訓 5.6 集約の連鎖消滅 / no幽霊 history).
+// 2026-10-03: この写像と「束」（その時刻に全系列で効いている地物）への載せ方は
+// ドメインの `deletion/bundle.ts`（deleteFeatureFromHistories）へ移した。ここは命令に
+// 包むだけである。
 
 /**
  * Build the indivisible 全錨 delete command for `targetId` over the live root, or
@@ -1032,68 +1031,19 @@ export function createDeleteFeatureCommandForRoot(
   root: DomainRoot,
   targetId: FeatureId,
 ): Command<DomainRoot> | null {
-  // Flatten every history's anchors into the U31 view, remembering each anchor's
-  // (history index, entry index) origin so the swept result folds back exactly.
-  interface Origin {
-    readonly historyIndex: number;
-    readonly entryIndex: number;
-  }
-  // 記録の置き場（司令塔の決定 (1)）: まとめ役を全部の年から消すとき、その錨の中に
-  // 居候している子（自分の系列を持たない下位領域・孫を含む）の記録も一緒に消えて
-  // しまう。実データでは「デーレ共和国を消す→保存→開き直し」で 60 州が丸ごと
-  // 失われた。だから掃除の前に、居候の記録を全部の年ぶん自分の系列へ起こしておく。
-  // 起こした後で掃除が走るので、親を失った子の parentId は掃除が最上位へ戻す
-  // （裁定「子は最上位へ昇格」の実体）。取り消しは構築時の root をそのまま戻すので
-  // 系列の起こしも同じ 1 段で対称に消える。
-  const prepared = materializeOwnSeries(
-    root.histories,
-    residentFeatureIds(root.histories, targetId),
-    calendar,
-  ).histories;
-
-  const origins: Origin[] = [];
-  const anchors: Anchor[] = [];
-  prepared.forEach((history, historyIndex) => {
-    history.series.entries.forEach((entry, entryIndex) => {
-      origins.push({ historyIndex, entryIndex });
-      anchors.push(entry.anchor);
-    });
-  });
-
-  const before = createDeletionState(anchors);
-  if (isNoOpDeletion(before, targetId)) return null;
-
-  // Run the pure U31 command once to obtain the swept after-anchors + the change
-  // set. execute is a whole-state swap that ignores its input, so calling it on
-  // `before` yields the planned after-state exactly.
-  const command = createDeleteFeatureCommand(before, targetId);
-  const outcome = command.execute(before);
-  const afterAnchors = outcome.state.anchors;
-
-  // Fold the swept anchors back into their originating histories, preserving each
-  // entry's start/end (U31 only rewrites the snapshot, never the interval).
-  const rebuiltEntries = prepared.map((h) => h.series.entries.map((e) => e));
-  afterAnchors.forEach((anchor, flatIndex) => {
-    const origin = origins[flatIndex];
-    if (origin === undefined) return;
-    const slot = rebuiltEntries[origin.historyIndex];
-    if (slot === undefined) return;
-    const entry = slot[origin.entryIndex];
-    if (entry === undefined) return;
-    slot[origin.entryIndex] = { anchor, start: entry.start, end: entry.end };
-  });
-
-  const histories: FeatureHistory[] = [];
-  prepared.forEach((history, historyIndex) => {
-    const entries = rebuiltEntries[historyIndex];
-    if (entries === undefined) return;
-    // Drop a history whose every anchor snapshot is now empty: its feature (and
-    // any chain-pruned aggregate) ceased to exist across the whole timeline, so a
-    // kept empty series would be a幽霊 orphan (教訓 5.6 / load-time consistency).
-    const allEmpty = entries.every((e) => e.anchor.snapshot.features.length === 0);
-    if (allEmpty) return;
-    histories.push({ featureId: history.featureId, series: { entries } });
-  });
+  // 記録の置き場（司令塔の決定 (1)）と「その時刻の全系列の束」での掃除（所有者の裁定
+  // 2026-09-07）は、ドメインの {@link deleteFeatureFromHistories} が 1 か所で持つ:
+  //   1. 対象の錨に居候している子・孫を全部の年ぶん自分の系列へ起こす（60 州が丸ごと
+  //      消えた件）。起こした子の parentId は同じ操作の掃除が外す（裁定「子は最上位へ」）。
+  //   2. 錨ごとに、その錨を「その時刻に全系列で効いている地物の束」に載せて U31 の
+  //      掃除＋連鎖剪定を走らせる。錨 1 枚だけを見ると、子が自分の系列を持つまとめ役
+  //      （外へ移した子の行き先・連邦化で作ったまとめ役）が「下位領域を全部失った」と
+  //      読まれて消えていた。
+  //   3. 掃除した錨を元の系列・元の位置へ書き戻し、全部の錨が空になった系列は落とす。
+  // 取り消しは構築時の root をそのまま戻すので、系列の起こしも同じ 1 段で対称に消える。
+  const planned = deleteFeatureFromHistories(root.histories, targetId, calendar);
+  if (planned === null) return null;
+  const histories = planned.histories;
 
   // SPREAD to preserve ALL of root's fields — including the optional
   // DomainProject.uiSettings (FR-109/110). A `{ histories, settings, baseMap }` literal
@@ -1110,16 +1060,7 @@ export function createDeleteFeatureCommandForRoot(
   // where nothing disappears), so a deletion would silently report no `deleted`
   // ids and selection would keep the gone feature. We build the swap command with
   // the correct delete result directly (教訓 5.23 symmetric execute/undo).
-  // 母集合は「起こした後」の histories。居候から独立した子は消えたのではなく生き残る
-  // ので、baseline に入れておかないと deleted と誤って報告され選択が外れる。
-  const baselineIds = new Set<FeatureId>(prepared.map((h) => h.featureId));
-  const finalIds = new Set<FeatureId>(histories.map((h) => h.featureId));
-  const deleted = new Set<DomainId>();
-  const survived = new Set<DomainId>();
-  for (const id of baselineIds) {
-    if (finalIds.has(id)) survived.add(id);
-    else deleted.add(id);
-  }
+  const { deleted, survived } = planned;
   const forward: CommandResult = createCommandResult({ deleted, survived });
   // Undo brings the deleted features back: report them as created so selection
   // re-resolution can promote them again, mirroring the forward touched set.

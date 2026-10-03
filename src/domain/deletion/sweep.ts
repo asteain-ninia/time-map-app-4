@@ -116,11 +116,15 @@ function sweepPass(
 export function sweepAndPruneAnchor(
   features: readonly Feature[],
   targetIds: ReadonlySet<FeatureId>,
+  options: { readonly sweepAbsentTargets?: boolean } = {},
 ): AnchorSweepResult {
   const present = new Set<FeatureId>(features.map((f) => f.id));
   const removed = new Set<FeatureId>();
   for (const t of targetIds) {
-    if (present.has(t)) removed.add(t);
+    // `sweepAbsentTargets`: 全部の年から消す削除では、対象がこの集合に居なくても対象への
+    // 参照は掃除する（教訓 5.21: 単一時点だけの掃除は dangling を残す）。対象はどの年にも
+    // 残らないので、どこに残った参照も宙に浮く。`removedIds` には居たものだけを載せる。
+    if (present.has(t) || options.sweepAbsentTargets === true) removed.add(t);
   }
 
   const edited = new Set<FeatureId>();
@@ -153,7 +157,9 @@ export function sweepAndPruneAnchor(
     if (!removed.has(id)) finalEdited.add(id);
   }
 
-  return { features: current, removedIds: removed, editedIds: finalEdited };
+  const removedHere = new Set<FeatureId>();
+  for (const id of removed) if (present.has(id)) removedHere.add(id);
+  return { features: current, removedIds: removedHere, editedIds: finalEdited };
 }
 
 /**

@@ -12,18 +12,53 @@
 // exercised by both-side tests so callers and U31 agree by type, not by accident
 // (教訓 5.33 / 5.34).
 
-import type { Anchor } from '../anchor';
+import type { Anchor, AnchorSnapshot } from '../anchor';
+
+/**
+ * 錨 1 枚が「その時刻の全系列の束」のどこに居るか（所有者の裁定 2026-09-07 の直し）。
+ * `bundle` は {@link DeletionBundling.bundles} の番号、`[from, to)` はその束の地物列の
+ * うち **この錨自身の地物**が並んでいる範囲（束はその時刻に効いている各系列の錨の地物を
+ * 系列の順に連結したもの）。
+ */
+export interface DeletionBundleSlot {
+  readonly bundle: number;
+  readonly from: number;
+  readonly to: number;
+}
+
+/**
+ * 錨を「その時刻の全系列の束」に載せる情報（任意）。束は相異なる開始時刻ごとに 1 つ
+ * だけ作り、同じ時刻に始まる錨は同じ束を共有する（束を錨ごとに作ると、実データ
+ * 689 系列で数十秒かかった）。`slots[i]` が無い錨（その錨が自分の開始時刻に効いて
+ * いない壊れた系列など）は、従来どおり錨 1 枚だけで掃除する。
+ */
+export interface DeletionBundling {
+  /** 時刻ごとの束: その時刻に効いている全系列の錨の地物（系列順に連結）と頂点。 */
+  readonly bundles: readonly AnchorSnapshot[];
+  /** `anchors` と同じ並び。錨 i が載っている束と範囲。 */
+  readonly slots: readonly (DeletionBundleSlot | undefined)[];
+}
 
 /**
  * The deletion view: the ordered anchors (全錨) the operation sweeps. Each anchor
  * carries its own feature set and vertex store ({@link Anchor} / AnchorSnapshot).
  * Pure data; never mutated in place (Immer-style structural sharing on update).
+ *
+ * `bundling` があると、掃除と連鎖剪定の判定は錨 1 枚ではなく **その錨が始まる時刻の
+ * 全系列の束**で行い、書き換えるのは錨自身の地物だけになる。子が自分の系列を持つ
+ * まとめ役が、錨 1 枚だけを見ると「下位領域を全部失った」と読まれて消えていたのを
+ * 直すため（所有者の裁定 2026-09-07「直す」）。系列の並びから組むのは `bundle.ts` の
+ * `deletionStateFromHistories`。
  */
 export interface DeletionState {
   readonly anchors: readonly Anchor[];
+  readonly bundling?: DeletionBundling;
 }
 
-/** Build a deletion view from anchors. */
-export function createDeletionState(anchors: readonly Anchor[]): DeletionState {
-  return { anchors };
+/** Build a deletion view from anchors (and, optionally, their time-slice bundling). */
+export function createDeletionState(
+  anchors: readonly Anchor[],
+  bundling?: DeletionBundling,
+): DeletionState {
+  return bundling === undefined ? { anchors } : { anchors, bundling };
 }

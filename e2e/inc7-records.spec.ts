@@ -33,6 +33,7 @@ import {
 const PARENT_ID = 'syn-nest-parent';
 const PARENT_NAME = '合成の連邦';
 const OUTSIDER_ID = 'syn-nest-outsider';
+const OUTSIDER_NAME = '合成の外の国';
 const CHILD_COUNT = 6;
 
 function childId(index: number): string {
@@ -115,6 +116,13 @@ test.describe('増分 7 の手直し A — 記録の置き場（決定 (1)(2)）
       await page.getByTestId('unified-list-filter').fill('合成州');
       expect(await listedFeatureCount(page)).toBe(CHILD_COUNT);
 
+      // 子は消えた親を指したままにならず、最上位になっている（裁定「子は最上位へ昇格」）。
+      // 以前は子の錨に親が居ないので掃除が届かず、消えた親を指したまま残っていた。
+      await selectInLedger(page, childName(0), childId(0));
+      await page.getByTestId('sidebar-tab-properties').click();
+      await expect(page.getByTestId('parent-value')).toHaveText('上位領域なし');
+      await page.getByTestId('sidebar-tab-list').click();
+
       // 取り消すと元に戻る（系列の起こしも同じ 1 段に含まれる）。
       await page.getByTestId('ledger-scroller').click({ position: { x: 5, y: 5 } });
       await page.keyboard.press('Control+z');
@@ -187,16 +195,28 @@ test.describe('増分 7 の手直し A — 記録の置き場（決定 (1)(2)）
       expect(await listedFeatureCount(page)).toBe(CHILD_COUNT);
 
       // 移した子は一覧に居て、素性欄が開ける（記録は失われていない）。
+      // **上位領域は行き先のまとめ役のまま**である（所有者の裁定 2026-09-07「直す」）。
+      // 以前は U31 の掃除が錨 1 枚ずつを見ていたので、子が自分の系列を持つ行き先の
+      // まとめ役は「下位領域を全部失った」と読まれて連鎖剪定され、ここが「上位領域なし」に
+      // なっていた。いまは時刻ごとに全系列を束ねてから掃除する。
       await selectInLedger(page, childName(0), childId(0));
       await page.getByTestId('sidebar-tab-properties').click();
       await expect(page.getByTestId('parent-row')).toBeVisible();
-      // NOTE（未解決。進捗 §11.4 の「まとめ役を消すと、外の行き先まで空扱いで消える」）:
-      // ここで本来は上位領域が「合成の外の国」のままであることを見たい。いまは
-      // **行き先のまとめ役が消えてしまう**ので「上位領域なし」になる。原因は U31 の
-      // 掃除が **錨 1 枚ずつ**を見ていることで、子が自分の系列を持つと、その錨には子が
-      // 居ないため「下位領域を全部失ったまとめ役」と読まれて連鎖剪定される。
-      // 時刻ごとに全系列を束ねてから掃除する形へ直す必要があるので、ここでは
-      // 「記録が失われない」ところまでを固定し、上位領域の同一性は宿題として残す。
+      await expect(page.getByTestId('parent-value')).toHaveText(OUTSIDER_NAME);
+      // 行き先のまとめ役そのものも一覧に居る。
+      await page.getByTestId('sidebar-tab-list').click();
+      await page.getByTestId('unified-list-filter').fill(OUTSIDER_NAME);
+      await expect(page.getByTestId(`feature-list-item-${OUTSIDER_ID}`)).toBeVisible();
+
+      // 取り消すと、消す前の姿（元のまとめ役が居る）へ戻る。全体差し替えの命令なので
+      // 構築時の根がそのまま戻る。
+      await page.getByTestId('ledger-scroller').click({ position: { x: 5, y: 5 } });
+      await page.keyboard.press('Control+z');
+      await expect
+        .poll(async () => (await projectStats(page)).featureCount, { timeout: 5000 })
+        .toBe(CHILD_COUNT + 3);
+      await page.getByTestId('unified-list-filter').fill(PARENT_NAME);
+      await expect(page.getByTestId(`feature-list-item-${PARENT_ID}`)).toBeVisible();
     } finally {
       await app.close();
     }

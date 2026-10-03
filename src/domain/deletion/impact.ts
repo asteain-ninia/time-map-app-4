@@ -19,7 +19,7 @@ import type { FeatureId, VertexId } from '../ids';
 
 import { judgeDeletion, referencesInAnchor, type DeleteVerdict } from './eligibility';
 import type { DeletionState } from './state';
-import { sweepAndPruneAnchor } from './sweep';
+import { sweepDeletionState } from './sweep-state';
 
 /**
  * 削除の影響（§A.3 のダイアログに出す材料）。**件数と ID だけ**を持ち、文は持たない。
@@ -93,7 +93,9 @@ export function describeDeletionImpact(
   let ownsShape = false;
 
   const targets = new Set<FeatureId>([targetId]);
-  for (const anchor of state.anchors) {
+  // 掃除は実行（command.ts）と同じ 1 か所で行う（束があれば束で判定する。教訓 5.26）。
+  const { perAnchor } = sweepDeletionState(state, targets);
+  for (const [index, anchor] of state.anchors.entries()) {
     const features = anchor.snapshot.features;
     const target = features.find((f) => f.id === targetId);
     if (target !== undefined) {
@@ -110,7 +112,8 @@ export function describeDeletionImpact(
     for (const id of referencesInAnchor(features, targetId).childRefs) promoted.add(id);
     // 自動消滅は **実際に掃除して剪定した結果**から採る（教訓 5.6）。対象自身は
     // 「消える」ではなく「消す」ものなので除く。
-    const swept = sweepAndPruneAnchor(features, targets);
+    const swept = perAnchor[index];
+    if (swept === undefined) continue;
     for (const id of swept.removedIds) if (id !== targetId) autoRemoved.add(id);
   }
 

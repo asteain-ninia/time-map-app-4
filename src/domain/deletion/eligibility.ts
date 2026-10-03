@@ -20,7 +20,7 @@ import type { FeatureId } from '../ids';
 import { buildForest } from '../hierarchy/forest';
 import { validateHierarchy } from '../hierarchy/validate';
 
-import { sweepAndPruneAnchor } from './sweep';
+import { sweepDeletionState } from './sweep-state';
 import type { DeletionState } from './state';
 
 export const DELETE_REJECT = {
@@ -144,17 +144,28 @@ export function judgeDeletion(
   // 3.再編許容: simulate sweep + prune per anchor and validate with U08.
   const targets = new Set<FeatureId>([targetId]);
   const violating: FeatureId[] = [];
-  for (const anchor of state.anchors) {
-    const swept = sweepAndPruneAnchor(anchor.snapshot.features, targets);
-    const validation = validateHierarchy(swept.features, {
-      vertexStore: anchor.snapshot.vertices,
-    });
-    if (!validation.ok) {
-      for (const v of validation.violations) {
-        for (const id of v.featureIds) violating.push(id);
-      }
+  // 掃除は実行と同じ 1 か所（sweep-state.ts）で行う。束（その時刻の全系列）に載る錨は
+  // **束ごとに 1 回**、掃除後のその時刻の世界を検査する（所有者の裁定 2026-09-07: 錨 1 枚
+  // だけ見ると、子が自分の系列を持つまとめ役が「子が居ない」違反に見える）。束に載らない
+  // 錨は従来どおり錨 1 枚で検査する。
+  const { perAnchor, bundleSurvivors } = sweepDeletionState(state, targets);
+  const collect = (validation: ReturnType<typeof validateHierarchy>): void => {
+    if (validation.ok) return;
+    for (const v of validation.violations) {
+      for (const id of v.featureIds) violating.push(id);
     }
-  }
+  };
+  state.anchors.forEach((anchor, index) => {
+    if (state.bundling?.slots[index] !== undefined) return;
+    const swept = perAnchor[index];
+    if (swept === undefined) return;
+    collect(validateHierarchy(swept.features, { vertexStore: anchor.snapshot.vertices }));
+  });
+  bundleSurvivors.forEach((survivors, k) => {
+    const bundle = state.bundling?.bundles[k];
+    if (survivors === undefined || bundle === undefined) return;
+    collect(validateHierarchy(survivors, { vertexStore: bundle.vertices }));
+  });
   if (violating.length > 0) {
     return {
       kind: DELETE_VERDICT.Rejected,

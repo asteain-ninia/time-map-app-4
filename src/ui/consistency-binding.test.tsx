@@ -45,6 +45,7 @@ import { createGeoParams } from '../domain/geo/geo-params';
 import type { AddSnapshot } from '../domain/add/index';
 import type { UiSettings } from '../domain/persistence/index';
 import { DEFAULT_APP_SETTINGS, DEFAULT_PROJECT_SETTINGS } from './state/settings';
+import { aggregate, anchorOf, fid, leafTile } from '../domain/deletion/fixtures';
 
 const color = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
 
@@ -1371,6 +1372,57 @@ describe('createDeleteFeatureCommandForRoot (bughunt2 — U31 全錨削除 over 
     expect(ids).toEqual([b.feature.id]);
     expect(after.result.deleted.has(a.feature.id)).toBe(true);
     expect(after.result.survived.has(b.feature.id)).toBe(true);
+  });
+
+  // 所有者の裁定 2026-09-07「直す」: まとめ役 P を消しても、P から外のまとめ役 Q へ移した
+  // 子 a の行き先 Q は消えない（以前は Q の錨に子が居ないので連鎖剪定されていた）。
+  // 取り消しは構築時の根をそのまま戻す（全体差し替えの命令）。
+  it('keeps the destination aggregate of a moved child alive, and undo restores the root identity', () => {
+    const a = leafTile('a', 0, 0, 10, 10, 'Q');
+    const b = leafTile('b', 10, 0, 10, 10, 'P');
+    const at = timePointYear(1000);
+    const root: DomainRoot = {
+      ...emptyProject(),
+      histories: [
+        {
+          featureId: fid('P'),
+          series: {
+            entries: [
+              { anchor: anchorOf('anchor-P', [aggregate('P', ['b']), b.feature], b.vertices), start: at, end: null },
+            ],
+          },
+        },
+        {
+          featureId: fid('Q'),
+          series: { entries: [{ anchor: anchorOf('anchor-Q', [aggregate('Q', ['a'])], []), start: at, end: null }] },
+        },
+        {
+          featureId: fid('a'),
+          series: { entries: [{ anchor: anchorOf('anchor-a', [a.feature], a.vertices), start: at, end: null }] },
+        },
+      ],
+    };
+
+    const command = createDeleteFeatureCommandForRoot(root, fid('P'));
+    if (command === null) throw new Error('expected a delete command');
+    const after = command.execute(root);
+    const owners = after.state.histories.map((h) => h.featureId);
+    expect(owners).toContain(fid('Q'));
+    expect(owners).toContain(fid('a'));
+    expect(owners).toContain(fid('b')); // 居候だった b は自分の系列を持って生き残る
+    expect(owners).not.toContain(fid('P'));
+    expect(after.result.deleted.has(fid('Q'))).toBe(false);
+    const aAfter = after.state.histories.find((h) => h.featureId === fid('a'))!.series.entries[0]!
+      .anchor.snapshot.features[0]!;
+    expect(aAfter.parentId).toBe(fid('Q'));
+    const bAfter = after.state.histories.find((h) => h.featureId === fid('b'))!.series.entries[0]!
+      .anchor.snapshot.features[0]!;
+    expect(bAfter.parentId).toBeUndefined();
+
+    const undone = command.undo(after.state);
+    expect(undone.state).toBe(root);
+    const redone = command.redo(undone.state);
+    expect(redone.state).toBe(after.state);
   });
 });
 

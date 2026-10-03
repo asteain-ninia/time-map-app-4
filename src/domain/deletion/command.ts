@@ -22,7 +22,7 @@ import {
 } from '../command/index';
 import type { DomainId, FeatureId } from '../ids';
 
-import { sweepAndPruneAnchor } from './sweep';
+import { sweepDeletionState } from './sweep-state';
 import { createDeletionState, type DeletionState } from './state';
 
 /** The kind discriminator for the面情報削除 command (教訓 5.19). */
@@ -62,8 +62,12 @@ function planDeletion(state: DeletionState, targetId: FeatureId): DeletionPlan {
   const survived = new Set<DomainId>();
   const touched = new Set<DomainId>();
 
-  for (const anchor of state.anchors) {
-    const swept = sweepAndPruneAnchor(anchor.snapshot.features, targets);
+  // 束（その時刻の全系列）があれば束で判定する（所有者の裁定 2026-09-07。錨 1 枚だけを
+  // 見ると、子が自分の系列を持つまとめ役が「下位領域を全部失った」と読まれて消えていた）。
+  const { perAnchor } = sweepDeletionState(state, targets);
+  for (const [index, anchor] of state.anchors.entries()) {
+    const swept = perAnchor[index];
+    if (swept === undefined) continue;
     after.push(
       createAnchor(
         anchor.id,
@@ -119,7 +123,7 @@ export function createDeleteFeatureCommand(
     result: plan.result,
   });
   const toBefore = (): CommandOutcome<DeletionState> => ({
-    state: createDeletionState(plan.before),
+    state: createDeletionState(plan.before, state.bundling),
     // undo touches the same elements (教訓 5.23): the same notification set, but
     // the lifecycle inverts (deleted → created back). We report the symmetric
     // touched set; created carries the restored ids so selection re-resolution

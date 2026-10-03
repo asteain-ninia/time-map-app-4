@@ -45,6 +45,14 @@ export {
 } from './command';
 
 export {
+  type HistoryAnchorOrigin,
+  type BundledDeletionState,
+  type HistoryDeletionOutcome,
+  deletionStateFromHistories,
+  deleteFeatureFromHistories,
+} from './bundle';
+
+export {
   MSG_DELETE_CONFIRM_TITLE,
   MSG_DELETE_CONFIRM_BODY,
   deleteRejectMessage,
