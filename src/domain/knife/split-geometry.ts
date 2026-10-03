@@ -75,6 +75,18 @@ export const SPLIT_REJECT = {
    */
   SelfIntersectingCut: 'self-intersecting-cut',
   /**
+   * n 分割の途中で、ある切片 (境界→内部→境界の一続き) の内側の代表点が、それまでに
+   * 切ってできたどの片の内部にも入らなかった (V10 / N-08 の場面 (a))。
+   * 以前は {@link SPLIT_REJECT.SelfIntersectingCut} と同じ理由コードを使い回していたので、
+   * どちらで断られたかを測れなかった。
+   */
+  ChordOutsidePieces: 'chord-outside-pieces',
+  /**
+   * n 分割の途中で、ある切片で片を切った結果の片側 (交差か差) が空になった
+   * (V10 / N-08 の場面 (b))。以前は {@link SPLIT_REJECT.SelfIntersectingCut} と共用だった。
+   */
+  ChordEmptiesSide: 'chord-empties-side',
+  /**
    * 分割してできた形に「1 辺で経度 180 度以上を渡る辺」がある (N-51 / 技術方針 §6.8)。
    *
    * 保存形式は「隣り合う頂点は最短方向で繋がっている」と仮定して経度を連続量へ戻すので、
@@ -100,6 +112,10 @@ export const SPLIT_REJECT_MESSAGE: Readonly<Record<SplitRejectKind, string>> = {
   [SPLIT_REJECT.Unresolvable]: '対象面の形状を取得できませんでした。',
   [SPLIT_REJECT.DegenerateLine]: '分断線の点が足りません。',
   [SPLIT_REJECT.SelfIntersectingCut]: '分断線が自己交差しています。交差しないように引き直してください。',
+  [SPLIT_REJECT.ChordOutsidePieces]:
+    '分断線の途中の区間が、切り分けた片のどれにも入りませんでした。分断線を引き直してください。',
+  [SPLIT_REJECT.ChordEmptiesSide]:
+    '分断線の途中の区間で片を切ると、片側が空になりました。分断線を引き直してください。',
   // 利用者はナイフでは頂点を打たないので「途中に点を打つ」とは言えない。この道具で実際に
   // 取れる次の手は「別の場所で切る」なので、そう書く (追加の道具の文言と同じ趣旨)。
   [SPLIT_REJECT.LongEdge]:
@@ -650,13 +666,13 @@ export function collectOpenPieces(
     const clip: GeoMultiPolygon = [[clipRing]];
     const sample = chordInteriorSample(chord);
     const idx = pieces.findIndex((p) => multiPolygonContains(p, sample));
-    if (idx < 0) return { ok: false, reason: SPLIT_REJECT.SelfIntersectingCut };
+    if (idx < 0) return { ok: false, reason: SPLIT_REJECT.ChordOutsidePieces };
     const piece = pieces[idx]!;
     const inside = intersection(piece, clip);
     const outside = difference(piece, clip);
     if (!isOk(inside) || !isOk(outside)) return { ok: false, reason: SPLIT_REJECT.InvalidShape };
     if (inside.result.length === 0 || outside.result.length === 0) {
-      return { ok: false, reason: SPLIT_REJECT.SelfIntersectingCut };
+      return { ok: false, reason: SPLIT_REJECT.ChordEmptiesSide };
     }
     pieces.splice(idx, 1, inside.result, outside.result);
   }
