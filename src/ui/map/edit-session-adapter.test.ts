@@ -461,4 +461,41 @@ describe('edit-mode edge-handle drag drives an EdgeAdd session (FR-87)', () => {
     expect(log.applyProposal).toBe(0);
     expect(dispatcher.activeCount).toBe(0);
   });
+
+  // 増分 8A（N-06）: 辺の中点の印は **クリック**でも頂点が増える。
+  it('増分 8A: 中点の印をクリックすると、辺のちょうど中点に頂点を足して 1 回だけ確定する', () => {
+    const MID: WorldCoordinate = { lon: 55, lat: 66 };
+    const { dispatcher, log, outcomes, sessions } = edgeSetup({ edgeClickPoint: () => MID });
+    dispatcher.pointerDown(ptr(1, 10, 10));
+    dispatcher.pointerUp(ptr(1, 11, 10)); // しきい値の内側＝クリック
+    expect(log.makeCommand).toBe(1);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.kind).toBe('processed');
+    // 足す座標は押した点ではなく、渡された中点。
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.preview).toEqual(MID);
+    expect(dispatcher.activeCount).toBe(0);
+  });
+
+  it('増分 8A: 中点が引けない（辺がもう無い）クリックは何もしない', () => {
+    const { dispatcher, log, outcomes } = edgeSetup({ edgeClickPoint: () => undefined });
+    dispatcher.pointerDown(ptr(1, 10, 10));
+    dispatcher.pointerUp(ptr(1, 10, 10));
+    expect(outcomes).toHaveLength(0);
+    expect(log.applyProposal).toBe(0);
+  });
+
+  it('増分 8A: 頂点のクリックは中点の口があっても編集にならない（従来どおり）', () => {
+    let asked = 0;
+    const { dispatcher, outcomes } = setup(vertexHit(asFeatureId('L'), asVertexId('v0')), {
+      edgeClickPoint: () => {
+        asked += 1;
+        return { lon: 0, lat: 0 };
+      },
+    });
+    dispatcher.pointerDown(ptr(1, 10, 10));
+    dispatcher.pointerUp(ptr(1, 10, 10));
+    expect(outcomes).toHaveLength(0);
+    expect(asked).toBe(0);
+  });
 });
