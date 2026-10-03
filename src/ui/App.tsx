@@ -135,6 +135,9 @@ import './conflict/conflict.css';
 import { participantFillColor } from './conflict/participant-color';
 import { conflictResolvedMessage } from './conflict/resolved-message';
 import { RESOLVED_STRINGS } from './conflict/strings';
+// 増分 8E（G-14）: 穴・飛び地の形を壊す編集を断ったときの文。
+import { editRejectionMessage } from './ring-hierarchy-gate';
+import type { RejectedResult } from '../domain/consistency/index';
 import './knife/knife.css';
 import type {
   Conflict,
@@ -828,6 +831,9 @@ export function App(): JSX.Element {
   // `recordCommitRef` と同じく ref に置く ―― 編集セッションの口は地図マウント時に 1 度だけ
   // 組み立てられるので、毎レンダーの関数を直接渡すと地図を組み直すことになる（技術方針 2.3）。
   const announceEditRefusalRef = useRef<((reason: EditRefusalKind) => void) | null>(null);
+  // 増分 8E（G-14）: 確定の手続きが編集を断ったとき（穴・飛び地の形を壊す編集など）の理由を
+  // 状態行へ出す口。上と同じく ref に置く（地図マウント時に 1 度だけ組み立てるため）。
+  const announceEditRejectionRef = useRef<((rejected: RejectedResult) => void) | null>(null);
 
   // 共有頂点の移動を「その年より後ろの記録へも反映した」ことを報せる口
   // （増分 3 の手直し 2 回目 / A1）。引き継ぎ自体は 1 回目で入れたが、**画面へ出す配線が
@@ -945,6 +951,7 @@ export function App(): JSX.Element {
       recordCommitRef,
       announceEditRefusalRef,
       announceCarryForwardRef,
+      announceEditRejectionRef,
       contextMenuOpenerRef,
       focusOwnerRef,
       toolDraftRef,
@@ -1418,6 +1425,10 @@ export function App(): JSX.Element {
     anchorCount: number,
   ): void => {
     announceResult(APP_STRINGS.vertexCarriedForward(fromYear, toYear, anchorCount));
+  };
+
+  announceEditRejectionRef.current = (rejected: RejectedResult): void => {
+    statusMessageStore.failure(editRejectionMessage(rejected));
   };
 
   announceEditRefusalRef.current = (reason: EditRefusalKind): void => {

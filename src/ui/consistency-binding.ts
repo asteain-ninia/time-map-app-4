@@ -106,6 +106,7 @@ import {
   createdAtOf,
   participantDisplayName,
 } from './conflict/participant-name';
+import { ringHierarchyViolationsIntroduced } from './ring-hierarchy-gate';
 
 /** The live domain truth root the binding threads through every port (U14). */
 export type DomainRoot = DomainProject;
@@ -834,7 +835,11 @@ export const createLiveEditBinding: CreateLiveEditBinding = (access, label) => {
   const ports: ConsistencyPorts<DomainRoot, FeatureSnapshot> = {
     applyProposal: (current, proposal) => applyEditProposal(current, proposal, calendar),
     checkTime: checkTimeOverExisting,
-    checkConstraints,
+    // 増分 8E（G-14）: 穴・飛び地の形を **この編集で新しく壊した** なら確定させない。
+    // 頂点のドラッグ・辺からの頂点の追加・頂点の削除・面の移動は、どれもこの束ねを通る。
+    // 以前は空を返していたので、穴の頂点を隣の穴の中へ入れた形がそのまま記録された。
+    checkConstraints: (resultState) =>
+      ringHierarchyViolationsIntroduced(access.getRoot(), resultState),
     detectSpatial: () => [],
     applyResolution: () => undefined,
     // **確定経路ごとに違う label**（増分 2）。素性欄の保存は「その年の錨を上書き」と
