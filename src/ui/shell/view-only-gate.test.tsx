@@ -517,6 +517,22 @@ function twoAnchorSeries(): AnchorSeries {
 
 const ALLOWED_PATHS: readonly AllowedPath[] = [
   {
+    // 増分 8C（設計書 §I.2 の `U` / §C.3「測るは読むだけでも使える」）。`U` は編集の関門に
+    // 載せない ―― 載せると、レールの「📏 測る」は押せるのに打鍵だけ効かない食い違いになる。
+    name: '打鍵 U（測るを持つ／終える）',
+    canUse: (mode) => {
+      const registry = new CommandRegistry();
+      const run = vi.fn();
+      registry.register(COMMAND_ID.ToolsSurvey, { run });
+      render(<AppShell store={sessionStore(mode)} registry={registry} />);
+      fireEvent.keyDown(window, { key: 'u' });
+      return (
+        run.mock.calls.length === 1 &&
+        resolveCommandEnabled(COMMAND_ID.ToolsSurvey, { runnable: true, mode })
+      );
+    },
+  },
+  {
     name: '上部バーのグリッド表示トグル（セッション限りの見え方。保存ファイルに書かない）',
     canUse: (mode) => {
       const store = sessionStore(mode);

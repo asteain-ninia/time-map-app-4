@@ -3,7 +3,7 @@
 // 実物（Electron ＋ 本物のレンダラ）を本物のポインタで動かし、DOM の観測と、描いた
 // プリミティブの数（`window.__E2E__` のフレームの観測。空のプロジェクトでは `line` は
 // 測量の線だけ）の両方を見る。固定すること:
-//   - V15: 測る → 2 点 → 読む（距離・凡例・度分秒）→ 右クリック「この線を消す」で消える。
+//   - V15: `U`（測る）→ 2 点 → 読む（距離・凡例・度分秒）→ 右クリック「この線を消す」で消える。
 //     消えるのは正距円筒の線と大円の線の 2 本セット。
 //   - 2 本の線が交差しているところを右クリックすると、項目が 2 つ出て選べる（どれか 1 つに
 //     勝手に決めない）。
@@ -83,13 +83,16 @@ function surveyItems(page: Page) {
 }
 
 test.describe('増分 8C — 測量の線を 1 本だけ消す（V15）', () => {
-  test('V15: 測る → 2 点 → 読む（凡例・度分秒）→ 右クリック「この線を消す」で 2 本セットが消える／地図の高さは動かない', async () => {
+  test('V15: U → 2 点 → 読む（凡例・度分秒）→ 右クリック「この線を消す」で 2 本セットが消える／地図の高さは動かない', async () => {
     const { app, page } = await launchApp();
     try {
       await waitForE2EHook(page);
       const heightBefore = await mapHeight(page);
 
-      await enableSurvey(page);
+      // V15 の 1 手目は打鍵 `U`（設計書 §I.2）。読むだけのままで効く（測るは編集ではない）。
+      await page.keyboard.press('u');
+      await expect(page.getByTestId('survey-toggle')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByTestId('survey-input-layer')).toBeVisible();
       // N-54: 次の一手欄に「測っている間は地物を選べません」。
       await expect(page.getByTestId('option-bar-next-step')).toContainText(
         '測っている間は地物を選べません',
@@ -138,6 +141,11 @@ test.describe('増分 8C — 測量の線を 1 本だけ消す（V15）', () => 
       expect((await frameCounts(page)).point).toBe(0);
       // 測量は続いている（線を消しても道具は持ったまま）。
       await expect(page.getByTestId('survey-toggle')).toHaveAttribute('aria-pressed', 'true');
+      expect(await mapHeight(page)).toBe(heightBefore);
+      // もう一度 `U` で測るのを終える（レールの「📏 測る」と同じ切り替え）。
+      await page.keyboard.press('u');
+      await expect(page.getByTestId('survey-toggle')).toHaveAttribute('aria-pressed', 'false');
+      await expect(page.getByTestId('survey-input-layer')).toHaveCount(0);
       expect(await mapHeight(page)).toBe(heightBefore);
     } finally {
       await app.close();
