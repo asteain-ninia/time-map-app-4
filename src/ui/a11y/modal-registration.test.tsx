@@ -24,6 +24,8 @@ const MODAL_COMPONENTS = [
   'DeleteConfirmDialog',
   // 項目 6: 時刻レールの右クリック（開いているあいだ鍵盤の持ち主は `modal`）。
   'RailContextMenu',
+  // 増分 8E（G-10）: 背景地図の縦横比を聞く板。
+  'BasemapAspectDialog',
 ] as const;
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
