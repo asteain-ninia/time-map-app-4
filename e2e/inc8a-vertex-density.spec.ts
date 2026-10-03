@@ -45,12 +45,12 @@ const canonicalPath = join(dataDir, REAL_DATA_FILE);
 // 観測の小道具
 // ---------------------------------------------------------------------------
 
-async function primitiveCounts(page: Page): Promise<{ handle: number; dashedLine: number }> {
+async function primitiveCounts(page: Page): Promise<{ handle: number; line: number; dashedLine: number }> {
   return page.evaluate(() => {
     const e2e = (window as unknown as {
-      __E2E__?: { getPrimitiveCounts: () => { handle: number; dashedLine: number } };
+      __E2E__?: { getPrimitiveCounts: () => { handle: number; line: number; dashedLine: number } };
     }).__E2E__;
-    return e2e === undefined ? { handle: 0, dashedLine: 0 } : e2e.getPrimitiveCounts();
+    return e2e === undefined ? { handle: 0, line: 0, dashedLine: 0 } : e2e.getPrimitiveCounts();
   });
 }
 
