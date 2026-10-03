@@ -36,7 +36,8 @@ import {
   MODAL_PHASE,
   useConflictResolution,
 } from './useConflictResolution';
-import { type ConflictShapes } from './preview';
+import { PREVIEW_COLORS, type ConflictShapes } from './preview';
+import { PARTICIPANT_TAGS, swatchesIndistinguishable } from './participant-color';
 import { GuidePanel } from '../shell/GuidePanel';
 import { MinimapPreview } from './MinimapPreview';
 import { ROW_STATE } from './model';
@@ -73,6 +74,14 @@ export interface ConflictResolutionModalProps<S> {
   readonly onCancel?: (() => void) | undefined;
   /** Called on commit (host closes the modal + records the single undo unit). */
   readonly onCommitted?: ((result: ProcessResult<S>) => void) | undefined;
+  /**
+   * 重なりの 2 件それぞれの、地図で塗られている色（増分 8E / V13 ③の色見本）。名前が空の
+   * 面どうしは呼び名が同じになりうるので、地図と同じ色で見分けられるようにする。
+   * 渡されない宿主（単体試験など）や色が引けない地物では色見本を出さない。
+   */
+  readonly colorFor?:
+    | ((conflict: Conflict, featureId: FeatureId, trialState: S) => string | undefined)
+    | undefined;
   /** Preview canvas size (CSS px). Defaults to a compact minimap. */
   readonly previewWidthPx?: number | undefined;
   readonly previewHeightPx?: number | undefined;
@@ -92,6 +101,7 @@ export function ConflictResolutionModal<S>(
     onSuppressGuide,
     onCancel,
     onCommitted,
+    colorFor,
   } = props;
   const previewW = props.previewWidthPx ?? DEFAULT_PREVIEW_PX;
   const previewH = props.previewHeightPx ?? DEFAULT_PREVIEW_PX;
@@ -162,6 +172,10 @@ export function ConflictResolutionModal<S>(
         <p className="conflict-dialog__paused" data-testid="conflict-paused-banner">
           {CONFLICT_STRINGS.pausedBanner}
         </p>
+        {/* 冒頭の文の言い換え（増分 8E / §H.1）。冒頭の文そのものは変えずに添える。 */}
+        <p className="conflict-dialog__paraphrase" data-testid="conflict-paraphrase">
+          {CONFLICT_STRINGS.pausedBannerParaphrase}
+        </p>
 
         {/* First-time guide (FR-118)。器は共有の `GuidePanel`（増分 6）。 */}
         {guideOpen && (
@@ -220,6 +234,9 @@ export function ConflictResolutionModal<S>(
               {listVM.rows.map((row) => {
                 const conflict = conflicts.find((c) => c.id === row.conflictId)!;
                 const isFocused = row.conflictId === focusedId;
+                const colorA = colorFor?.(conflict, conflict.a.featureId, trialState);
+                const colorB = colorFor?.(conflict, conflict.b.featureId, trialState);
+                const tagOf = participantTagsFor(conflict, colorFor !== undefined, colorA, colorB);
                 return (
                   <li
                     key={row.conflictId}
@@ -242,7 +259,13 @@ export function ConflictResolutionModal<S>(
                     >
                       <span className="conflict-row__time">{row.timeLabel}</span>
                       <span className="conflict-row__features" data-testid="conflict-row-features">
-                        {row.featureNames[0]} ／ {row.featureNames[1]}
+                        {/* 色見本（増分 8E / V13 ③）。地図で塗られている色で 2 件を見分ける。 */}
+                        <ParticipantSwatch color={colorA} />
+                        <ParticipantTag tag={tagOf(conflict.a.featureId)} />
+                        {row.featureNames[0]} ／{' '}
+                        <ParticipantSwatch color={colorB} />
+                        <ParticipantTag tag={tagOf(conflict.b.featureId)} />
+                        {row.featureNames[1]}
                       </span>
                       <span className="conflict-row__kind">{row.kindLabel}</span>
                       <span className="conflict-row__state">
@@ -257,6 +280,8 @@ export function ConflictResolutionModal<S>(
                       <legend>{POLICY_STRINGS.prompt}</legend>
                       <PolicyChoice
                         conflict={conflict}
+                        colorOf={(fid) => colorFor?.(conflict, fid, trialState)}
+                        tagOf={tagOf}
                         priorityFeatureId={drafts.get(row.conflictId)}
                         onChoose={(fid) =>
                           resolution.choosePriority(row.conflictId, fid)
@@ -280,14 +305,29 @@ export function ConflictResolutionModal<S>(
                   conflict={focusedConflict}
                   shapes={shapesFor(focusedConflict, trialState)}
                   priorityFeatureId={drafts.get(focusedConflict.id)}
+                  tags={previewTagsFor(focusedConflict, colorFor, trialState)}
                   widthPx={previewW}
                   heightPx={previewH}
                   devicePixelRatio={props.devicePixelRatio}
                 />
-                <ul className="conflict-preview__legend">
-                  <li>{PREVIEW_STRINGS.legendPriority}</li>
-                  <li>{PREVIEW_STRINGS.legendRemaining}</li>
-                  <li>{PREVIEW_STRINGS.legendOverlap}</li>
+                {/* 凡例に色見本を付ける（増分 8E / N-17）。色はミニマップが塗るのと同じ
+                    `PREVIEW_COLORS` を読む（教訓 5.29: 色の真実源は 1 つ）。選ぶ前は両方の面を
+                    灰色で描くので、その間だけ灰色の行も出す。 */}
+                <ul className="conflict-preview__legend" data-testid="conflict-legend">
+                  {drafts.get(focusedConflict.id) === undefined && (
+                    <LegendItem role="neutral" color={PREVIEW_COLORS.neutral}>
+                      {PREVIEW_STRINGS.legendNeutral}
+                    </LegendItem>
+                  )}
+                  <LegendItem role="priority" color={PREVIEW_COLORS.priority}>
+                    {PREVIEW_STRINGS.legendPriority}
+                  </LegendItem>
+                  <LegendItem role="remaining" color={PREVIEW_COLORS.remaining}>
+                    {PREVIEW_STRINGS.legendRemaining}
+                  </LegendItem>
+                  <LegendItem role="overlap" color={PREVIEW_COLORS.overlap}>
+                    {PREVIEW_STRINGS.legendOverlap}
+                  </LegendItem>
                 </ul>
                 {drafts.get(focusedConflict.id) === undefined && (
                   <p className="conflict-preview__hint">{PREVIEW_STRINGS.chooseFirst}</p>
@@ -330,13 +370,97 @@ export function ConflictResolutionModal<S>(
   );
 }
 
+/**
+ * 色見本 1 個（増分 8E）。色が無ければ何も描かない（色の無い四角は「何か壊れている」に
+ * 見えるので出さない）。読み上げには不要な飾りなので `aria-hidden`。
+ */
+function ParticipantSwatch(props: { readonly color: string | undefined }): JSX.Element | null {
+  if (props.color === undefined) return null;
+  return (
+    <span
+      className="conflict-swatch"
+      data-testid="conflict-participant-swatch"
+      data-color={props.color}
+      aria-hidden="true"
+      style={{ backgroundColor: props.color }}
+    />
+  );
+}
+
+/**
+ * 番号札 1 個（増分 8E の手直し。設計適合 S2-4）。2 つの色見本で見分けられないときだけ出る。
+ * 地図の下見にも同じ札が描かれるので、行・ラジオ・下見を札で突き合わせられる。
+ */
+function ParticipantTag(props: { readonly tag: string | undefined }): JSX.Element | null {
+  if (props.tag === undefined) return null;
+  return (
+    <span className="conflict-tag" data-testid="conflict-participant-tag">
+      {props.tag}
+    </span>
+  );
+}
+
+/**
+ * その重なりの 2 件に番号札を付けるか、付けるなら各地物の札を返す口。色見本を出す宿主
+ * （`colorFor` あり）で、2 つの色見本が同じか近いときだけ付ける（`swatchesIndistinguishable`）。
+ */
+function participantTagsFor(
+  conflict: Conflict,
+  hasSwatches: boolean,
+  colorA: string | undefined,
+  colorB: string | undefined,
+): (featureId: FeatureId) => string | undefined {
+  if (!hasSwatches || !swatchesIndistinguishable(colorA, colorB)) return () => undefined;
+  return (featureId) =>
+    featureId === conflict.a.featureId
+      ? PARTICIPANT_TAGS[0]
+      : featureId === conflict.b.featureId
+        ? PARTICIPANT_TAGS[1]
+        : undefined;
+}
+
+/** 地図の下見に描く番号札（札を付けない重なりなら undefined）。 */
+function previewTagsFor<S>(
+  conflict: Conflict,
+  colorFor: ConflictResolutionModalProps<S>['colorFor'],
+  trialState: S,
+): { readonly a: string; readonly b: string } | undefined {
+  if (colorFor === undefined) return undefined;
+  const a = colorFor(conflict, conflict.a.featureId, trialState);
+  const b = colorFor(conflict, conflict.b.featureId, trialState);
+  return swatchesIndistinguishable(a, b) ? { a: PARTICIPANT_TAGS[0], b: PARTICIPANT_TAGS[1] } : undefined;
+}
+
+/** 凡例の 1 行（色見本＋説明）。色は `PREVIEW_COLORS` から渡す。 */
+function LegendItem(props: {
+  readonly role: 'neutral' | 'priority' | 'remaining' | 'overlap';
+  readonly color: string;
+  readonly children: string;
+}): JSX.Element {
+  return (
+    <li className="conflict-preview__legend-item" data-testid={`conflict-legend-${props.role}`}>
+      <span
+        className="conflict-swatch"
+        data-testid={`conflict-legend-swatch-${props.role}`}
+        data-color={props.color}
+        aria-hidden="true"
+        style={{ backgroundColor: props.color }}
+      />
+      {props.children}
+    </li>
+  );
+}
+
 /** The two priority radios for one conflict (優先＝選択側, 調整対象＝もう一方). */
 function PolicyChoice(props: {
   readonly conflict: Conflict;
+  readonly colorOf: (featureId: FeatureId) => string | undefined;
+  /** 番号札（見分けられないときだけ。増分 8E の手直し）。 */
+  readonly tagOf: (featureId: FeatureId) => string | undefined;
   readonly priorityFeatureId: FeatureId | undefined;
   readonly onChoose: (priorityFeatureId: FeatureId) => void;
 }): JSX.Element {
-  const { conflict, priorityFeatureId, onChoose } = props;
+  const { conflict, colorOf, tagOf, priorityFeatureId, onChoose } = props;
   const name = `policy-${conflict.id}`;
   return (
     <div className="policy-choice">
@@ -349,7 +473,9 @@ function PolicyChoice(props: {
             checked={priorityFeatureId === p.featureId}
             onChange={() => onChoose(p.featureId)}
           />
-          {POLICY_STRINGS.priorityPrefix}: {p.displayName}
+          {POLICY_STRINGS.priorityPrefix}: <ParticipantSwatch color={colorOf(p.featureId)} />
+          <ParticipantTag tag={tagOf(p.featureId)} />
+          {p.displayName}
         </label>
       ))}
     </div>

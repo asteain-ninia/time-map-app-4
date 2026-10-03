@@ -17,8 +17,13 @@
 //      違うことも同時に確かめる（設計書 §O の GPT 結合点#2）。
 //   4. **行の高さが固定**（アプリバー 32 / オプションバー 40 / 状態行 28）。
 
-import { test, expect, type Page } from '@playwright/test';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
+import { test, expect, type ElectronApplication, type Page } from '@playwright/test';
+
+import { openSettingsAndReplace, stubImagePicker, writePng } from './basemap-image-helpers';
 import {
   ALL_TOOL_TESTIDS,
   DEFAULT_FACE_HALF,
@@ -38,9 +43,11 @@ import {
   leaveViewMode,
   openDepthOptions,
   openSurveyCoords,
+  openVertexCandidatesOnTinySquare,
   placeVertices,
   returnToViewMode,
   squareCorners,
+  openPreSaveBoard,
 } from './helpers';
 
 interface Rect {
@@ -792,7 +799,8 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
   });
 
   // -------------------------------------------------------------------------
-  // 台帳 #20〜#26 の板（増分 7 で足した 6 枚＋増分 7 の手直しの 1 枚。Fable #9）。
+  // 台帳 #20〜#27 と #30 の板（増分 7 で足した 6 枚＋増分 7 の手直しの 2 枚。Fable #9。#27 は本体の
+  // 取り込みで、#30 は増分 8E の手直しで足した）。
   // どれも **本物のモーダル**（背面を覆う板＋`role="alertdialog"` / `"dialog"`）なので、
   // 出ているあいだは地図の 25 点すべてが板に当たり、閉じたら板の名前が 1 点も残らない
   // （居座らない）ことを見る。表は設計書 §B.5 の台帳と同じ並び。
@@ -803,7 +811,13 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
     readonly backdrop: string;
     /** 板の本体（`role="dialog"` / `"alertdialog"`）の testid。 */
     readonly dialog: string;
-    readonly open: (page: Page) => Promise<void>;
+    /**
+     * 出たことを確かめる要素（省略時は `dialog`）。`role="dialog"` の根が大きさを持たない器
+     * （ファイル操作の板。中身は `DraggablePanel`）では、中身の testid で見る。
+     */
+    readonly shown?: string;
+    /** 板を開く。`app` は main 側の差し替えが要る板（#30 の画像選択）だけが使う。 */
+    readonly open: (page: Page, app: ElectronApplication) => Promise<void>;
     readonly close: (page: Page) => Promise<void>;
   }[] = [
     {
@@ -913,14 +927,41 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
       },
       close: (page) => page.getByTestId('end-here-impact-cancel').click(),
     },
+    // 本体の取り込みで足した: 保存の前の確認の板（#27。増分 7 の手直し 2 回目）。ファイル操作の板
+    // なので背面の覆いは `file-ops-backdrop`、`role="dialog"` は根の `pre-save-modal-root` が持つ。
+    {
+      ledger: '#27 保存の前の確認',
+      backdrop: 'file-ops-backdrop',
+      dialog: 'pre-save-modal-root',
+      shown: 'pre-save-dialog',
+      open: (page) => openPreSaveBoard(page),
+      close: (page) => page.getByTestId('pre-save-cancel').click(),
+    },
+    // 増分 8E の手直し（設計適合 S2-2）: 縦横比の板（#30）。設定の板の上に出る板なので、
+    // 走査では背面の覆いが地図の 25 点すべてを受けることを見る。閉じるときは設定の板も閉じる。
+    {
+      ledger: '#30 背景地図の縦横比',
+      backdrop: 'basemap-aspect-backdrop',
+      dialog: 'basemap-aspect-dialog',
+      open: async (page, app) => {
+        const dir = mkdtempSync(join(tmpdir(), 'tmap-e2e-k2-aspect-'));
+        await stubImagePicker(app, await writePng(page, dir, 300, 200));
+        await openSettingsAndReplace(page);
+      },
+      close: async (page) => {
+        await page.getByTestId('basemap-aspect-cancel').click();
+        await page.getByTestId('settings-cancel').click();
+        await expect(page.getByTestId('settings-dialog')).toHaveCount(0);
+      },
+    },
   ];
 
   for (const board of IMPACT_BOARDS) {
     test(`K-2: 台帳 ${board.ledger} の板は本物のモーダルで、閉じたら居座らない`, async () => {
       const { app, page } = await launchApp();
       try {
-        await board.open(page);
-        await expect(page.getByTestId(board.dialog)).toBeVisible();
+        await board.open(page, app);
+        await expect(page.getByTestId(board.shown ?? board.dialog)).toBeVisible();
         for (const hit of await scanMapGrid(page)) {
           expect(
             [board.backdrop, `popover:${board.dialog}`],
@@ -939,6 +980,32 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
       }
     });
   }
+
+  test('K-2: 台帳 #12 の頂点の候補一覧は、出ていても地図の他所の押下が入力層に届き、閉じたら居座らない', async () => {
+    // 増分 8A。候補一覧は **一時の吹き出し**（板ではない）なので、出ているあいだも覆って
+    // よいのは一覧の矩形だけで、残りの点は地図の入力層へ届かなければならない。
+    const { app, page } = await launchApp();
+    try {
+      const at = await openVertexCandidatesOnTinySquare(page);
+      const hits = await scanMapGrid(page);
+      expectMapReachable(hits, { extra: ['popover:vertex-candidates'] });
+      // 一覧の外の地図の点を **実際に押す**と、一覧は消える（地図の他所のクリック）。
+      const b = (await page.getByTestId('map-input-layer').boundingBox())!;
+      const elsewhere = { x: b.x + b.width * 0.1, y: b.y + b.height * 0.9 };
+      expect(Math.hypot(elsewhere.x - at.x, elsewhere.y - at.y)).toBeGreaterThan(100);
+      await page.mouse.click(elsewhere.x, elsewhere.y);
+      await expect(page.getByTestId('vertex-candidates')).toHaveCount(0);
+      expectMapReachable(await scanMapGrid(page));
+      // もう一度出して、Escape でも消える。
+      await page.mouse.click(at.x, at.y);
+      await expect(page.getByTestId('vertex-candidates')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('vertex-candidates')).toHaveCount(0);
+      expectMapReachable(await scanMapGrid(page));
+    } finally {
+      await app.close();
+    }
+  });
 
   test('K-2: 初回起動のガイドが出ていても、地図の 25 点はすべて地図へ届く', async () => {
     // **ガイドを畳まずに走査する**（2026-09-07 の手直し）。旧版のガイドは右パネルから

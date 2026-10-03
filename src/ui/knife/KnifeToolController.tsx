@@ -28,7 +28,7 @@
 // The component holds NO domain truth and writes the store ONLY through the
 // host-supplied `onCommitted` (教訓 5.22 確定までの非破壊 / 単一の真実源).
 
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -37,12 +37,19 @@ import type { WorldCoordinate } from '../../domain/coordinate';
 import type { EditProposal, ProcessResult } from '../../domain/consistency/index';
 import type { GeoMultiPolygon } from '../../domain/geometry/types';
 import type { FeatureId } from '../../domain/ids';
+import { featureDisplayName } from '../../domain/feature';
+import { createGeoParams } from '../../domain/geo/geo-params';
+import { multiPolygonAreaKm2 } from '../../domain/geo/geodesy';
 import {
+  KNIFE_LINE_KIND,
   KNIFE_PHASE,
+  largestPieceIndex,
   smallestPieceIndex,
   shouldCloseOnCircleClick,
+  splitsIntoManyPieces,
   type SplitSnapshot,
 } from '../../domain/knife/index';
+import { formatAreaKm2 } from '../property/messages';
 
 import { buildKnifePrimitives, DEFAULT_KNIFE_STYLE, type KnifeStyle } from '../../render/knife-batch';
 import type { DrawPrimitive } from '../../render/map-renderer';
@@ -379,6 +386,46 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     liveDisplayControl,
   ]);
 
+  // --- V10 ④（現状分析 §11-14）: 飛び地のある面（と外周が自分に接する面）は、分断線が
+  // 何度横切っても 2 つにまとまる。**確定の前に**言う ―― 分断線を引いている間の「次の一手」と
+  // 継承先の板の両方に出す。判定はドメインの分割と同じ 1 本（`splitsIntoManyPieces`）を見る
+  // （教訓 5.29。分割がどの経路を通るかと、画面が言うことを食い違わせない）。
+  //
+  // **穴のある面はもう 2 つにまとまらない**（増分 8B の手直し / B69）。外周を切片で分けて
+  // 穴を差し引くので、穴だけを持つ面には注記を出さない。`splitsIntoManyPieces` は保存された
+  // ままの経度を受けても経度をつないでから判定する（反証 2-4）。
+  const twoPiecesReason = useMemo((): string | null => {
+    if (targetShape === undefined || targetShape.length === 0) return null;
+    if (splitsIntoManyPieces(targetShape)) return null;
+    // 1 多角形で 2 つにまとまるのは、外周が自分に接している（くびれで囲んだ入り江）面だけ。
+    // これを「穴」と呼ぶのは今までどおり（言い換えは 8E の文言の総点検で）。
+    return targetShape.length > 1
+      ? KNIFE_STRINGS.twoPiecesReasonExclave
+      : KNIFE_STRINGS.twoPiecesReasonHole;
+  }, [targetShape]);
+  const twoPiecesNote =
+    twoPiecesReason === null
+      ? null
+      : KNIFE_STRINGS.twoPiecesNote(twoPiecesReason);
+
+  // --- V10 / N-09: 片を「番号・方角・面積」で呼ぶ。面積は **素性欄と同じ測り方**
+  // （プロジェクトの測地設定＋`formatAreaKm2`）にする ―― 板と素性欄で同じ片の面積が
+  // 違う数で出ると、どちらを信じればよいか分からなくなる。
+  const equatorLengthKm = useStore(
+    store,
+    (s) => s.projectSettings.equatorLengthKm,
+  );
+  const flattening = useStore(store, (s) => s.projectSettings.flattening);
+  const pieceAreas = useMemo((): readonly string[] | undefined => {
+    if (knifeState.phase !== KNIFE_PHASE.ChoosingInheritor) return undefined;
+    const geo = createGeoParams(equatorLengthKm, flattening);
+    const pieces = knifeState.result.pieces ?? [
+      knifeState.result.sideA,
+      knifeState.result.sideB,
+    ];
+    return pieces.map((p) => formatAreaKm2(multiPolygonAreaKm2(p.area, geo)));
+  }, [knifeState, equatorLengthKm, flattening]);
+
   // W3-AB fix-forward: when the target stops resolving (FR-113 hidden / no longer effective
   // at the current time), the session must not keep a ghost target — drop back to 対象選択
   // with the tool still ARMED, mirroring the store's own heal (setFeatureHidden deselects the
@@ -518,9 +565,23 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
         // 規則にする ―― 欄が「打ちかけ無し」を名乗っていれば 1 回でやめ、打ちかけが
         // あれば 1 度聞く。**やめた先は「対象を離す」段**（§D.4.1 の階段）で、道具は
         // 持ったままである（旧版の `knife.cancel()` は道具ごと降りていた）。
+        //
+        // **打ちかけは中身で見る**（増分 8B の手直し / 反証 2-2）。旧版は焦点のある欄の
+        // `pristine` だけを見ていたので、名前を打ってから地図（幕）を押して焦点が欄から外れると、
+        // 次の Escape で **打ちかけの名前・引いた分断線・選んだ継承先が確認なしに** まとめて
+        // 消えた。幕は「右のパネルで…」と案内する作りなので、案内を消すつもりで Escape を押す
+        // のは自然である。いまは「名前か種別に何か打った」「継承先を既定から選び直した」の
+        // どちらかがあれば、焦点がどこにあっても 1 度聞く。
         if (knife.flow === KNIFE_FLOW.EnteringProperties) {
           e.preventDefault();
-          if (inEditable && target?.pristine === false) {
+          const inheritChosen =
+            knife.state.phase === KNIFE_PHASE.EnteringProperties &&
+            knife.state.inheritIndex !== largestPieceIndex(knife.state.result);
+          if (
+            propertiesDirtyRef.current ||
+            inheritChosen ||
+            (inEditable && target?.pristine === false)
+          ) {
             knifeGuard.askOnEscape();
             return;
           }
@@ -626,9 +687,60 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   // **素性入力の局面**（＝非継承側の素性を右パネルで受けている最中）。下の帯の押し込みも
   // 同じ 1 本を見る（同じ判定を 2 か所に書かない＝教訓 5.29）。
   const enteringProperties = knife.flow === KNIFE_FLOW.EnteringProperties;
+  // N-13: 素性を入れている間に地図が押されたか（押されたら「次の一手」で理由を言う）。
+  // 局面を離れたら忘れる（次の分割へ持ち越さない）。
+  const [mapLockedHint, setMapLockedHint] = useState(false);
+  useEffect(() => {
+    if (!enteringProperties) setMapLockedHint(false);
+  }, [enteringProperties]);
   const enteringYear = anchorTime().year;
   const knifeSave = knife.save;
   const knifeCancel = knife.cancel;
+  /**
+   * **分割の本当の確定（＝右パネルの［保存］）に進行表示を掛ける**（実装計画 8B の中身 3 /
+   * 増分 7 の §3 の 1 の宿題）。分割は 4 段の手順で、時間がかかるのは最後の［保存］
+   * ―― 編集案を組み立てて整合の検査を通す段である（増分 8B の実測は進捗に書いた）。
+   * 所属変更と同じ器（`useDeferredCommit`）を通すので、押した直後に 1 コマ描かれて
+   * ［保存］が「分割しています…」になり、2 回目は走らない。
+   */
+  const knifeSaveDeferred = useDeferredCommit(
+    props.commitScheduler === undefined
+      ? undefined
+      : { schedule: props.commitScheduler },
+  );
+  const runKnifeSave = useCallback(
+    (properties: Parameters<typeof knifeSave>[0]) => {
+      knifeSaveDeferred.run(() => knifeSave(properties));
+    },
+    [knifeSaveDeferred, knifeSave],
+  );
+  const saveBusy = knifeSaveDeferred.busy;
+  // **素性欄の打ちかけ**（増分 8B の手直し / 反証 2-2）。欄が変わったときだけ知らせて
+  // もらい、Escape で「聞かずにやめてよいか」を焦点ではなく中身で決める。局面を離れたら
+  // 忘れる（次の分割へ持ち越さない）。
+  const propertiesDirtyRef = useRef(false);
+  const onPropertiesDirtyChange = useCallback((dirty: boolean) => {
+    propertiesDirtyRef.current = dirty;
+  }, []);
+  useEffect(() => {
+    if (!enteringProperties) propertiesDirtyRef.current = false;
+  }, [enteringProperties]);
+  // **名前を入れる段の前置き**（増分 8B の手直し）: 延ばした先でも切れていればそのこと
+  // （B69 の残り）、新しい片が 2 つ以上なら「この名前と種別は n 片すべてに付きます」
+  // （設計適合 2-1）。**次の一手の先頭**に置く ―― 素性欄に段を足すと、窓が低いとき
+  // ［保存］が時刻レールの下へ押し出されて押せなくなった（E2E の knife-nway で実測）。
+  // 帯は 1 行で末尾が切れるので、大事な順に前から並べる（行き先の案内は最後）。
+  const enteringResult =
+    knife.state.phase === KNIFE_PHASE.EnteringProperties ? knife.state.result : undefined;
+  const enteringPrefix = useMemo((): string => {
+    if (enteringResult === undefined) return '';
+    const newPieces =
+      (enteringResult.pieces ?? [enteringResult.sideA, enteringResult.sideB]).length - 1;
+    const beyond =
+      enteringResult.cutsBeyondLine === true ? KNIFE_STRINGS.beyondLineShort : '';
+    const shared = newPieces >= 2 ? KNIFE_STRINGS.sharedNameNote(newPieces) : '';
+    return `${beyond}${shared}`;
+  }, [enteringResult]);
   useEffect(() => {
     if (addDraft === undefined || !enteringProperties) return;
     const mine: AddDraftPrompt = {
@@ -642,15 +754,25 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
       onChooseParent: NOOP_CHOOSE_PARENT,
       // **戻り値は丸ごと渡す**（種別ラベルを黙って落とさない ―― 過去に同じ取りこぼしが
       // あった）。`AddProperties` は `knife.save` が受ける形と同じ 3 つ組である。
-      onSave: knifeSave,
+      onSave: runKnifeSave,
       onCancel: knifeCancel,
+      busyLabel: saveBusy ? KNIFE_STRINGS.committing : null,
+      onDirtyChange: onPropertiesDirtyChange,
     };
     addDraft.set(mine);
     // 局面を離れる・道具を降りる・アンマウントの全経路で必ず閉じる（教訓 5.2）。
     return () => {
       if (addDraft.get() === mine) addDraft.set(null);
     };
-  }, [addDraft, enteringProperties, enteringYear, knifeSave, knifeCancel]);
+  }, [
+    addDraft,
+    enteringProperties,
+    enteringYear,
+    runKnifeSave,
+    knifeCancel,
+    saveBusy,
+    onPropertiesDirtyChange,
+  ]);
 
   // **モーダルは別に報せる**（増分 5 の手直し A4）。継承先の選択板（`InheritorModal`）と
   // 非継承側の素性入力は、Escape / Tab しか自分では受けない本物のモーダルである。
@@ -683,8 +805,15 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   const onMapPointerDown = useCallback(
     (e: { clientX: number; clientY: number; button?: number }) => {
       if (e.button !== undefined && e.button !== 0) return;
-      const world = screenToWorld(e.clientX, e.clientY);
       const s = knife.state;
+      // N-13: 素性を入れている最終段階では、幕（入力の橋）が地図のクリックを受け止める
+      // だけで何もしない ―― 背後の地物を選んだり動かしたりさせない。黙って無視すると
+      // 「効かない」と読まれるので、理由を次の一手に出す。
+      if (s.phase === KNIFE_PHASE.EnteringProperties) {
+        setMapLockedHint(true);
+        return;
+      }
+      const world = screenToWorld(e.clientX, e.clientY);
       if (s.phase === KNIFE_PHASE.SelectingTarget) {
         const fid = featureAtPoint(world);
         if (fid !== null) knife.selectTarget(fid);
@@ -765,6 +894,17 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   const runConfirmCut = useCallback(() => {
     knifeDeferred.run(() => confirmCut());
   }, [knifeDeferred, confirmCut]);
+  // **分断線の点が足りないあいだは確定を押させない**（N-10「0 点でも押せる」）。開いた線は
+  // 2 点、閉じた線は 3 点（閉じられるのは 3 点からなので、閉じていれば常に足りている）。
+  // 理由は「次の一手」に出す（確定欄のすぐ左＝ボタンの脇）。
+  const cutPointCount =
+    knife.state.phase === KNIFE_PHASE.DrawingCut
+      ? knife.state.line.points.length
+      : 0;
+  const cutClosed =
+    knife.state.phase === KNIFE_PHASE.DrawingCut &&
+    knife.state.line.kind === KNIFE_LINE_KIND.Closed;
+  const cutTooShort = drawingCut && !cutClosed && cutPointCount < 2;
   const knifeCommit = useMemo(
     () =>
       drawingCut
@@ -773,7 +913,7 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
               id: 'confirm',
               testId: 'knife-confirm-cut',
               label: knifeDeferred.busy ? KNIFE_STRINGS.committing : KNIFE_STRINGS.confirmCut,
-              disabled: knifeDeferred.busy,
+              disabled: knifeDeferred.busy || cutTooShort,
               onClick: runConfirmCut,
             },
             {
@@ -795,13 +935,25 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
                 testId: 'knife-cancel',
                 label: KNIFE_STRINGS.cancel,
                 onClick: () => knife.cancel(),
+                // 保存（＝分割の確定）が走っている間は取りやめさせない（走り終えたら
+                // 道具が次の対象を待つ構えへ戻るので、押す相手がいなくなる）。
+                disabled: saveBusy,
               },
             ]
           : [],
     // **同一性を安定させる**（増分 5 の手直し B3 の注記 7）。依存に道具の戻り値を
     // 丸ごと入れると **毎レンダー新しい配列と新しい関数**になり、帯への押し込みが
     // 毎回走る（`setCommit` は `onClick` を同一性で見るので常に「違う」になる）。
-    [drawingCut, rejected, enteringProperties, runConfirmCut, knifeDeferred.busy, knife.cancel],
+    [
+      drawingCut,
+      rejected,
+      enteringProperties,
+      runConfirmCut,
+      knifeDeferred.busy,
+      cutTooShort,
+      saveBusy,
+      knife.cancel,
+    ],
   );
   const knifeExtras = useMemo(
     () =>
@@ -827,6 +979,51 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   // いません）」になり、そのあと空で固まった）。押し込みは店が「いまこの道具」と
   // 言っているあいだだけにする。
   const knifeArmedHoldsBar = (knife.flow !== KNIFE_FLOW.Idle) && knifeGuard.armed;
+  // **次の一手**（設計書 §C.4）。断り（`message`）があればそれが最優先なのは今までどおり。
+  //   - 確定が走っている間 → 「分割しています…」（中身 3 の進行表示。帯にも出す）
+  //   - 素性入力 → 行き先（右のパネル）。地図を押されたら「触れません」と言う（N-13）
+  //   - 分断線を閉じた → 閉じたこと（N-10「閉じても何も変わらない」）
+  //   - 点が足りない → 確定を押せない理由（N-10「0 点でも押せる」）
+  //   - 穴・飛び地のある面 → 2 つにまとまること（V10 ③④。開いた線のときだけ ――
+  //     閉じた線はどの面でも「囲みの内と外」の 2 つなので言う必要が無い）
+  const knifeNextStep = useMemo((): string => {
+    if (knife.message !== null) return knife.message;
+    if (saveBusy || knifeDeferred.busy) return KNIFE_STRINGS.committing;
+    if (enteringProperties) {
+      return `${enteringPrefix}${
+        mapLockedHint
+          ? KNIFE_STRINGS.mapLockedWhileNaming
+          : KNIFE_STRINGS.nextStepEnterProperties
+      }`;
+    }
+    if (drawingCut) {
+      if (cutClosed) return KNIFE_STRINGS.nextStepClosed;
+      // 帯の欄は 1 行で末尾が切れるので、**大事な順**に前から置く:
+      // 押せない理由 → 2 つにしか分かれないこと → いつもの案内。
+      const reason = cutTooShort
+        ? KNIFE_STRINGS.cutNeedsPoints(cutPointCount)
+        : '';
+      const note =
+        twoPiecesReason === null
+          ? ''
+          : KNIFE_STRINGS.twoPiecesShort(twoPiecesReason);
+      return `${reason}${note}${knife.guide}`;
+    }
+    return knife.guide;
+  }, [
+    knife.message,
+    knife.guide,
+    saveBusy,
+    knifeDeferred.busy,
+    enteringProperties,
+    enteringPrefix,
+    mapLockedHint,
+    drawingCut,
+    cutClosed,
+    cutTooShort,
+    cutPointCount,
+    twoPiecesReason,
+  ]);
   useToolBarChrome({
     optionBar,
     active: knifeArmedHoldsBar,
@@ -835,9 +1032,7 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     // 「新規地物のプロパティを入力してください。」までしか言わない ―― 板が目の前に
     // 出ていたころはそれで足りたが、いま欄は右パネルにある。断り（`message`）が
     // 出ているときは今までどおりそちらが最優先である。
-    nextStep:
-      knife.message ??
-      (enteringProperties ? KNIFE_STRINGS.nextStepEnterProperties : knife.guide),
+    nextStep: knifeNextStep,
     commit: knifeCommit,
     extras: knifeExtras,
   });
@@ -872,6 +1067,12 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     const feature = resolveFeature(knife.targetId);
     return feature === undefined ? null : describeOptionBarTarget(feature);
   }, [knife.targetId, resolveFeature]);
+  // 継承先の板の「○○として残る」の名前（種別を添えない素の表示名）。
+  const knifeTargetDisplayName = useMemo(() => {
+    if (knife.targetId === null) return undefined;
+    const feature = resolveFeature(knife.targetId);
+    return feature === undefined ? undefined : featureDisplayName(feature);
+  }, [knife.targetId, resolveFeature]);
   // **空へ戻すのは後片付けでやる**（`useToolBarChrome` と同じ理由＝教訓 5.68）。5 つの
   // コントローラは全部が同時にマウントされているので、effect の本体で「降りているなら
   // 空へ」と書くと、構えていない道具が構えている道具の押し込みを踏み消す。React は
@@ -900,6 +1101,9 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     <KnifeToolChrome
       knife={knife}
       guard={knifeGuard}
+      pieceAreas={pieceAreas}
+      targetName={knifeTargetDisplayName}
+      twoPiecesNote={twoPiecesNote}
       onMapPointerDown={onMapPointerDown}
       onMapWheel={onMapWheel}
       onMapCameraPointerDown={onMapCameraPointerDown}
@@ -916,6 +1120,12 @@ interface KnifeToolChromeProps<S> {
   readonly knife: ReturnType<typeof useKnifeTool<S>>;
   /** 「捨てますか」の板（`shell/useDraftSwitchGuard`）。 */
   readonly guard: DraftSwitchGuard;
+  /** 継承先の板に出す片ごとの面積（V10 / N-09）。 */
+  readonly pieceAreas: readonly string[] | undefined;
+  /** 切る前の地物の名前（「○○として残る」の 1 文）。 */
+  readonly targetName: string | undefined;
+  /** 穴・飛び地で 2 つにまとまる注記（V10 ③④）。 */
+  readonly twoPiecesNote: string | null;
   readonly onMapPointerDown: (e: { clientX: number; clientY: number; button?: number }) => void;
   /** Forward a wheel notch over the bridge to the camera (bughunt: 描画中のズーム). */
   readonly onMapWheel: (e: {
@@ -945,6 +1155,8 @@ interface KnifeToolChromeProps<S> {
  * LEFT-button forwarding differs, 教訓 5.30 過剰共有の戒め.)
  */
 function KnifeInputBridge(props: {
+  /** 幕として置いている（N-13）。見た目（カーソル）だけを変える。 */
+  readonly locked?: boolean;
   readonly onMapPointerDown: (e: { clientX: number; clientY: number; button?: number }) => void;
   readonly onMapWheel: (e: {
     clientX: number;
@@ -1002,6 +1214,7 @@ function KnifeInputBridge(props: {
       ref={ref}
       className="knife-tool__input"
       data-testid="knife-input-layer"
+      data-locked={props.locked === true ? 'true' : 'false'}
       onPointerDown={(e) =>
         onMapPointerDown({ clientX: e.clientX, clientY: e.clientY, button: e.button })
       }
@@ -1025,8 +1238,14 @@ function KnifeToolChrome<S>(props: KnifeToolChromeProps<S>): JSX.Element | null 
           forwards them to the hook with the固定円ヒット優先. It ALSO forwards the
           camera-only events (wheel + non-left pointer) to the live map dispatcher so
           中ボタンパン / ホイールズーム keep working while selecting / drawing (bughunt). */}
-      {(knife.flow === KNIFE_FLOW.SelectingTarget || knife.flow === KNIFE_FLOW.DrawingCut) && (
+      {(knife.flow === KNIFE_FLOW.SelectingTarget ||
+        knife.flow === KNIFE_FLOW.DrawingCut ||
+        // N-13「最終段階だけ幕が無い」: 素性を入れている間も同じ橋を **幕** として残す。
+        // 左クリックは受け止めて何もしない（背後の地物を選ばせない・動かさせない）。
+        // ホイールと中ボタンの移動は通すので、切った形を見回すことはできる。
+        knife.flow === KNIFE_FLOW.EnteringProperties) && (
         <KnifeInputBridge
+          locked={knife.flow === KNIFE_FLOW.EnteringProperties}
           onMapPointerDown={props.onMapPointerDown}
           onMapWheel={props.onMapWheel}
           onMapCameraPointerDown={props.onMapCameraPointerDown}
@@ -1069,6 +1288,16 @@ function KnifeToolChrome<S>(props: KnifeToolChromeProps<S>): JSX.Element | null 
           ).map((piece) => piece.area)}
           smallestIndex={smallestPieceIndex(knife.state.result)}
           selectedIndex={knife.state.selectedIndex}
+          areas={props.pieceAreas}
+          targetName={props.targetName}
+          // 「2 つにしか分かれません」は **開いた線のときだけ**（閉じた線はどの面でも囲みの
+          // 内と外の 2 つなので的外れ。設計適合 1-1。次の一手の側と同じ条件）。
+          note={
+            knife.state.line.kind === KNIFE_LINE_KIND.Open ? props.twoPiecesNote : null
+          }
+          beyondNote={
+            knife.state.result.cutsBeyondLine === true ? KNIFE_STRINGS.beyondLineNote : null
+          }
           onSelect={(index) => knife.selectInheritor(index)}
           onConfirm={() => knife.confirmInheritor()}
           onCancel={() => knife.cancel()}

@@ -55,6 +55,21 @@ describe('buildSurveyPrimitives (FR-15 描画記述)', () => {
     expect(widths).toContain(2);
   });
 
+  it('増分 8C / N-52: 正距円筒の線は実線、大円の線は破線（色見本と同じ値）', () => {
+    const prims = confirmedLinePrimitives(
+      { id: 1, start: P(0, 0), end: P(20, 10) },
+      DEFAULT_SURVEY_STYLE,
+    );
+    const lines = prims.flatMap((p) => (p.kind === 'line' ? [p] : []));
+    const eq = lines.find((l) => l.stroke === DEFAULT_SURVEY_STYLE.equirectangularStroke);
+    const gc = lines.find((l) => l.stroke === DEFAULT_SURVEY_STYLE.greatCircleStroke);
+    expect(eq?.points).toHaveLength(2);
+    expect(eq?.dashPx).toBeUndefined();
+    expect(gc?.points.length).toBeGreaterThan(2);
+    expect(gc?.dashPx).toEqual(DEFAULT_SURVEY_STYLE.greatCircleDashPx);
+    expect(DEFAULT_SURVEY_STYLE.greatCircleDashPx.length).toBeGreaterThan(0);
+  });
+
   it('two confirmed lines + a draft all appear', () => {
     let s = withTwoConfirmed();
     s = clickPoint(s, P(5, 5)); // start a 3rd draft

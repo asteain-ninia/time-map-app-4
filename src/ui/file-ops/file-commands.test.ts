@@ -27,6 +27,7 @@ import { REPAIR_OUTCOME, type RepairChoices } from './repair-flow';
 import {
   dropLoadCommand,
   newProjectCommand,
+  openBackupCommand,
   openCommand,
   quitGuard,
   saveCommand,
@@ -67,6 +68,9 @@ function makePorts(over: Partial<FileCommandPorts> = {}): FileCommandPorts {
     autoSave: () => Promise.resolve(SAVED),
     load: () => Promise.resolve(okTransport()),
     loadDropped: () => Promise.resolve(okTransport()),
+    listBackups: () => Promise.resolve({ basis: 'none' } as const),
+    openBackup: () => Promise.resolve(okTransport()),
+    endBackupChoice: () => {},
     toProject: () => FAKE_PROJECT,
     checkConsistency: () => CLEAN_REPORT,
     calendar: CAL,
@@ -217,10 +221,13 @@ describe('repair retry flow (BUG #2 / BUG #5)', () => {
     );
     // The dialog opens TWICE: first-open isRetry=false, retry-open isRetry=true.
     expect(promptRepair).toHaveBeenCalledTimes(2);
-    expect(promptRepair).toHaveBeenNthCalledWith(1, BROKEN_REPORT, false);
-    expect(promptRepair).toHaveBeenNthCalledWith(2, REMAINING_REPORT, true);
+    // 増分 8D の手直し: 修復ダイアログが名前を引けるよう、修復前のプロジェクトも渡す。
+    expect(promptRepair).toHaveBeenNthCalledWith(1, BROKEN_REPORT, false, FAKE_PROJECT);
+    expect(promptRepair).toHaveBeenNthCalledWith(2, REMAINING_REPORT, true, FAKE_PROJECT);
     // The second repair resolved everything ⇒ the project reflects (success path).
     expect(reflectProject).toHaveBeenCalledOnce();
+    // 修復してから反映したことを添える（世代から開いた中身なら未保存にするため）。
+    expect(reflectProject).toHaveBeenCalledWith(FAKE_PROJECT, '/tmp/x.gimoza', { repaired: true });
   });
 
   it('BUG #5: BOTH attempts Unresolved → notify + no reflect (explicit abort, not silent)', async () => {
@@ -321,5 +328,142 @@ describe('newProjectCommand / quitGuard (FR-107 / FR-03)', () => {
       }),
     );
     expect(ok).toBe(false);
+  });
+});
+
+
+// --- 増分 8D: 以前の保存から開く（設計書 §E.1 の V14 の手順 (a)・§J.4 の #9）---------
+
+describe('openBackupCommand — 一覧 → 行を選ぶ → 未保存の確認 → 開く の順', () => {
+  const ENTRY = {
+    id: 'b-1',
+    savedAtMs: 1000,
+    byteSize: 2048,
+    featureCount: 3,
+    sourceName: 'w.gimoza',
+  } as const;
+  const LISTING = { basis: 'file', sourceName: 'w.gimoza', entries: [ENTRY] } as const;
+
+  it('未保存の確認は openBackup より **前** に走り、キャンセルなら世代を読まない', async () => {
+    const order: string[] = [];
+    const openBackup = vi.fn(() => {
+      order.push('open');
+      return Promise.resolve(okTransport());
+    });
+    const ports = makePorts({
+      guard: {
+        isDirty: () => true,
+        promptUnsaved: () => {
+          order.push('unsaved');
+          return Promise.resolve(UNSAVED_CHOICE.Cancel);
+        },
+        save: () => Promise.resolve(true),
+      },
+      listBackups: () => {
+        order.push('list');
+        return Promise.resolve(LISTING);
+      },
+      openBackup,
+      endBackupChoice: () => order.push('end'),
+    });
+    await openBackupCommand(ports, (listing) => {
+      order.push(`choose:${listing.basis === 'file' ? listing.entries.length : 'none'}`);
+      return Promise.resolve('b-1');
+    });
+    // 増分 8D の手直し: キャンセルで終わっても、最後に「1 回の終わり」を主プロセスへ伝える
+    // （一覧の世代を間引きの対象に戻す）。
+    expect(order).toEqual(['list', 'choose:1', 'unsaved', 'end']);
+    expect(openBackup).not.toHaveBeenCalled();
+  });
+
+  it('「保存せずに続行」なら選んだ id で開き、読み込みと同じ完了の流れで reflect する', async () => {
+    const reflectProject = vi.fn();
+    const openBackup = vi.fn(() => Promise.resolve(okTransport()));
+    const ports = makePorts({
+      guard: {
+        isDirty: () => true,
+        promptUnsaved: () => Promise.resolve(UNSAVED_CHOICE.Discard),
+        save: () => Promise.resolve(true),
+      },
+      listBackups: () => Promise.resolve(LISTING),
+      openBackup,
+      reflectProject,
+    });
+    await openBackupCommand(ports, () => Promise.resolve('b-1'));
+    expect(openBackup).toHaveBeenCalledWith('b-1');
+    expect(reflectProject).toHaveBeenCalledOnce();
+  });
+
+  it('未保存の確認で「保存」を選ぶと、保存は「1 回の終わり」より **前** に走る（一覧の世代が守られている間に保存する）', async () => {
+    const order: string[] = [];
+    const ports = makePorts({
+      guard: {
+        isDirty: () => true,
+        promptUnsaved: () => Promise.resolve(UNSAVED_CHOICE.Save),
+        save: () => {
+          order.push('save');
+          return Promise.resolve(true);
+        },
+      },
+      listBackups: () => Promise.resolve(LISTING),
+      openBackup: () => {
+        order.push('open');
+        return Promise.resolve(okTransport());
+      },
+      endBackupChoice: () => order.push('end'),
+    });
+    await openBackupCommand(ports, () => Promise.resolve('b-1'));
+    expect(order).toEqual(['save', 'open', 'end']);
+  });
+
+  it('一覧で「やめる」なら未保存の確認も出さない', async () => {
+    const promptUnsaved = vi.fn(() => Promise.resolve(UNSAVED_CHOICE.Discard));
+    const openBackup = vi.fn(() => Promise.resolve(okTransport()));
+    const endBackupChoice = vi.fn();
+    const ports = makePorts({
+      guard: { isDirty: () => true, promptUnsaved, save: () => Promise.resolve(true) },
+      listBackups: () => Promise.resolve(LISTING),
+      openBackup,
+      endBackupChoice,
+    });
+    await openBackupCommand(ports, () => Promise.resolve(null));
+    expect(promptUnsaved).not.toHaveBeenCalled();
+    expect(openBackup).not.toHaveBeenCalled();
+    expect(endBackupChoice).toHaveBeenCalledOnce();
+  });
+
+  it('一覧が取れなくても板は「基準なし」で出る（例外で止まらない）', async () => {
+    const choose = vi.fn(() => Promise.resolve(null));
+    const endBackupChoice = vi.fn();
+    const ports = makePorts({ listBackups: () => Promise.reject(new Error('IPC')), endBackupChoice });
+    await openBackupCommand(ports, choose);
+    expect(choose).toHaveBeenCalledWith({ basis: 'none' });
+    expect(endBackupChoice).toHaveBeenCalledOnce();
+  });
+
+  it('開く途中で例外が出ても「1 回の終わり」を伝える', async () => {
+    const endBackupChoice = vi.fn();
+    const ports = makePorts({
+      listBackups: () => Promise.resolve(LISTING),
+      openBackup: () => Promise.reject(new Error('IPC')),
+      endBackupChoice,
+    });
+    await expect(openBackupCommand(ports, () => Promise.resolve('b-1'))).rejects.toThrow('IPC');
+    expect(endBackupChoice).toHaveBeenCalledOnce();
+  });
+
+  it('断られた id（一覧に無い）は読み込みの失敗と同じく理由を出して何も変えない', async () => {
+    const notify = vi.fn();
+    const reflectProject = vi.fn();
+    const ports = makePorts({
+      listBackups: () => Promise.resolve(LISTING),
+      openBackup: () =>
+        Promise.resolve({ ok: false, reason: 'read-failed', message: 'その世代は一覧に…' }),
+      notify,
+      reflectProject,
+    });
+    await openBackupCommand(ports, () => Promise.resolve('stale'));
+    expect(notify).toHaveBeenCalledOnce();
+    expect(reflectProject).not.toHaveBeenCalled();
   });
 });

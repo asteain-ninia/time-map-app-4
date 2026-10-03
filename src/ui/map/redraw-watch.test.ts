@@ -33,6 +33,7 @@ function baseState(): RedrawWatchInput {
     activeTool: null,
     displayControl: { tag: 'display' },
     gridVisibleOverride: null,
+    gridEmphasisVisible: true,
     filter: { tag: 'filter' },
     projectSettings: {
       areaLabelOccupancyThreshold: 0.2,
@@ -146,5 +147,14 @@ describe('redrawWatch (Canvas 再描画の watch 集合)', () => {
     expect(
       redrawWatchChanged(a, redrawWatch({ ...s, displayControl: { tag: 'display' } })),
     ).toBe(true);
+  });
+});
+
+// 増分 8E（G-12）: 表示の設定で赤道・0 度・180 度の強調を外したら、描き直す。
+describe('redrawWatch — グリッドの強調（増分 8E / G-12）', () => {
+  it('強調の見え方が変われば再描画を要求する', () => {
+    const before = baseState();
+    const after: RedrawWatchInput = { ...before, gridEmphasisVisible: false };
+    expect(redrawWatchChanged(redrawWatch(before), redrawWatch(after))).toBe(true);
   });
 });

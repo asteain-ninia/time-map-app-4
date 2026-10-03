@@ -31,9 +31,10 @@ import { asFeatureId, asRingId, asVertexId, type FeatureId, type VertexId } from
 import type { NextTargetPreference } from '../domain/selection/index';
 import { createGeoParams } from '../domain/geo/geo-params';
 import { createLiveEditBinding } from './consistency-binding';
-import { createEditProposal, PROCESS_STATUS } from '../domain/consistency/index';
+import { createEditProposal, PROCESS_STATUS, type RejectedResult } from '../domain/consistency/index';
 import { createHistory, execute } from '../domain/command/history';
 import { featuresAt } from './live-lookup';
+import { RING_BREAK, RING_HIERARCHY_GATE_KIND, editRejectionMessage } from './ring-hierarchy-gate';
 
 const color = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
 const T: TimePoint = timePointYear(1000);
@@ -492,6 +493,40 @@ describe('runEditDelete — single-funnel routing (Delete key / menu / FR-96 右
     expect(spy.recordCommit.count).toBe(0);
     expect(spy.cleared).toEqual([]);
     expect(spy.deletedAllAnchors).toEqual([]);
+  });
+
+  // 増分 8E の手直し（設計適合 S2-1・反証 2-1）: 断られた削除は、理由を知らせる口へ渡す。
+  it('a Rejected result is handed to onRejected, tagged as a vertex delete (the reason reaches the user)', () => {
+    const { feature, vertices } = lineFixture(4);
+    const seen: RejectedResult[] = [];
+    const gateDetail = [
+      {
+        kind: RING_HIERARCHY_GATE_KIND,
+        featureId: feature.id,
+        at: T,
+        violations: [],
+        breaks: RING_BREAK.HolesCross,
+        featureName: '穴のある面',
+        atLabel: '1200年',
+      },
+    ];
+    const { ports } = makePorts(projectWith(feature, vertices), {
+      startProcess: () => ({
+        status: PROCESS_STATUS.Rejected,
+        kind: 'constraint-violation',
+        message: 'rejected for the test',
+        detail: gateDetail,
+      }),
+      onRejected: (r) => seen.push(r),
+    });
+    runEditDelete(
+      sel({ activeFeature: feature.id, vertexOwner: feature.id, vertexIds: vset('lv-1') }),
+      ports,
+    );
+    expect(seen).toHaveLength(1);
+    expect(editRejectionMessage(seen[0]!)).toBe(
+      'この頂点を消すと穴と穴が交わるので消せません（「穴のある面」の1200年の形）。頂点は消していません。',
+    );
   });
 
   it('a ConflictsPending result opens the conflict modal (honest failure), no commit', () => {

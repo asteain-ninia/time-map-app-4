@@ -2379,6 +2379,16 @@ const TOOL_MODE_OPERATIONS: Readonly<Record<string, OperationEntry>> = {
     run: (s) => s.getState().surveyCancelDraft(),
   },
   surveyClear: { group: 'invariant', why: '同上。', run: (s) => s.getState().surveyClear() },
+  surveyRemoveLine: {
+    group: 'invariant',
+    why: '同上（増分 8C。測量の線を 1 本消すだけで、道具にもモードにも触らない）。',
+    run: (s) => s.getState().surveyRemoveLine(1),
+  },
+  surveyRestoreRemovedLine: {
+    group: 'invariant',
+    why: '同上（増分 8C の手直し。直前に消した線を戻すだけで、道具にもモードにも触らない）。',
+    run: (s) => s.getState().surveyRestoreRemovedLine(),
+  },
   // -- 絞り込み・強調（FR-113）----------------------------------------------
   setFilterKindVisible: {
     group: 'invariant',
@@ -2489,6 +2499,12 @@ const TOOL_MODE_OPERATIONS: Readonly<Record<string, OperationEntry>> = {
     group: 'invariant',
     why: '設定は別の軸。',
     run: (s) => s.getState().setGridVisibleOverride(false),
+  },
+  // 増分 8E（G-12）: 赤道・0 度・180 度の強調の見え方。グリッドの上書きと同じ軸。
+  setGridEmphasisVisible: {
+    group: 'invariant',
+    why: '設定は別の軸。',
+    run: (s) => s.getState().setGridEmphasisVisible(false),
   },
   setSnapSettings: {
     group: 'invariant',

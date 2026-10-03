@@ -31,7 +31,9 @@ import { isAllowedNavigation, isTrustedDevServerUrl } from './renderer-entry';
 import { CLOSE_DECISION, createCloseGuardHub } from './close-guard';
 import {
   registerIpcHandlers,
+  restoreAutoSaveConfig,
   type CurrentPathRef,
+  type IssuedBackup,
   type IpcDeps,
   type LoadCommitCounterRef,
   type PendingLoadEntry,
@@ -88,6 +90,11 @@ const HEADLESS_FLAGS: HeadlessFlags = {
 const E2E_SAVE_AS_PATH: string | null = E2E_TEST
   ? (process.env['E2E_SAVE_AS_PATH'] ?? null)
   : null;
+
+// E2E 専用の脱出口（増分 8D の手直し）: 「開く」ダイアログ（ファイル →「開く」と、世代の一覧の
+// 「元のファイルを選ぶ」）の答えを環境変数で決める。E2E_SAVE_AS_PATH と同じく **E2E_TEST=1 の
+// ときだけ** 読む（本番では旗ごと存在しない）。
+const E2E_OPEN_PATH: string | null = E2E_TEST ? (process.env['E2E_OPEN_PATH'] ?? null) : null;
 
 // --- 表示名を gimoza に固定する（現状.md B3 / FR-115）-----------------------------
 //
@@ -432,6 +439,20 @@ let pendingLoadPathEntry: PendingLoadEntry | undefined;
 let loadCommitCount = 0;
 
 /**
+ * 増分 8D: 世代の一覧で描画プロセスへ渡した id の表（`ListBackups` のたびに丸ごと
+ * 差し替える）と、世代から戻した元のファイル（保存先が未確定へ戻ったあとの一覧の対象・
+ * 名前を付けて保存の既定）。
+ */
+let issuedBackups: ReadonlyMap<string, IssuedBackup> = new Map();
+let restoredSourcePath: string | undefined;
+/**
+ * 増分 8D の手直し: 世代の一覧の基準の候補（開こうとしてまだ確定していないファイル・一覧の板で
+ * 選んだ元のファイル）と、世代の地物数の覚え書き（パス・大きさ・更新時刻が鍵）。
+ */
+let backupSourceCandidate: string | undefined;
+const backupFeatureMemo = new Map<string, number | null>();
+
+/**
  * FR-117 診断ログの環境。`wireIpc` が起動時（app ready 後 — `app.getPath` を使うため）
  * に一度だけ設定し、close ガードのログ（{@link logCloseGuard}）も同じ 1 個を読む
  * （単一の真実源: ログ先が 2 つに割れない）。設定前は `undefined` = ファイル出力なし。
@@ -541,13 +562,18 @@ function wireIpc(): void {
       ipcMain.handle(channel, handler as Parameters<typeof ipcMain.handle>[1]);
     },
     dialog: {
-      showSaveDialog: async () => {
+      showSaveDialog: async (defaultPath) => {
         // F2: E2E だけ、ネイティブダイアログの代わりに指定された行き先を返す。
         if (E2E_SAVE_AS_PATH !== null) return E2E_SAVE_AS_PATH;
-        const result = await dialog.showSaveDialog({ filters: [{ name: 'gimoza', extensions: ['gimoza'] }] });
+        // 増分 8D: 世代から戻したあとは、元の保存ファイルを既定の名前にする（V14 の規則 ②）。
+        const result = await dialog.showSaveDialog({
+          filters: [{ name: 'gimoza', extensions: ['gimoza'] }],
+          ...(defaultPath === undefined ? {} : { defaultPath }),
+        });
         return result.canceled ? undefined : result.filePath;
       },
       showOpenDialog: async () => {
+        if (E2E_OPEN_PATH !== null) return E2E_OPEN_PATH;
         const result = await dialog.showOpenDialog({
           properties: ['openFile'],
           filters: [{ name: 'gimoza', extensions: ['gimoza'] }],
@@ -569,12 +595,33 @@ function wireIpc(): void {
       // FR-04 pre-read size cap: the file's size without reading it (handleOpenImage
       // stats a picked base-map image and refuses past the 64 MB cap before the read).
       statSize: (path) => stat(path).then((s) => s.size),
+      // 増分 8D の手直し: 世代の地物数の覚え書きの鍵（パス・大きさ・更新時刻）。
+      statInfo: (path) => stat(path).then((s) => ({ size: s.size, mtimeMs: s.mtimeMs })),
     },
     saveEnv: buildSaveEnv(),
     currentPath,
     pendingLoadPath,
     newLoadToken: () => randomUUID(),
     loadCommitCounter,
+    backupListing: {
+      get: () => issuedBackups,
+      set: (listing) => {
+        issuedBackups = listing;
+      },
+    },
+    restoredSource: {
+      get: () => restoredSourcePath,
+      set: (path) => {
+        restoredSourcePath = path;
+      },
+    },
+    sourceCandidate: {
+      get: () => backupSourceCandidate,
+      set: (path) => {
+        backupSourceCandidate = path;
+      },
+    },
+    backupFeatureMemo,
     applyAutoSaveConfig,
     get maxGenerations(): number {
       return maxGenerations;
@@ -600,6 +647,9 @@ function wireIpc(): void {
   };
 
   registerIpcHandlers(deps);
+  // 増分 8D: 設定画面で変えた自動保存の間隔・世代数（userData の app-prefs.json）を、
+  // 起動のたびに効かせ直す。読めなければ既定（5 分・10 世代）のまま動く。
+  void restoreAutoSaveConfig(deps);
 }
 
 /**

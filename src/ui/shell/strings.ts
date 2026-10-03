@@ -110,6 +110,7 @@ export const MENU_TITLES = {
 export const MENU_ITEM_LABELS = {
   'file.new': '新規作成',
   'file.open': '開く',
+  'file.openBackup': '以前の保存から開く',
   'file.save': '保存',
   'file.saveAs': '名前を付けて保存',
   'edit.undo': '元に戻す',
@@ -137,6 +138,7 @@ export const MENU_ITEM_LABELS = {
   'time.togglePlay': '再生／一時停止',
   'time.back': '直前にいた年へ戻る',
   'tools.addFace': '面を描く',
+  'tools.survey': '測る',
   'tools.settings': '設定',
   // 増分 4 の手直し F3: 行き先が「一覧の絞り込み欄」になったので、名前も実態に合わせる。
   'tools.search': '一覧で絞り込む',
@@ -441,6 +443,7 @@ export const DISPLAY_CONTROL_STRINGS = {
 export const TOOLTIPS: Readonly<Record<string, string>> = {
   'file.new': '新しいプロジェクトを作成します',
   'file.open': 'プロジェクトファイルを開きます',
+  'file.openBackup': '保存のたびに残る世代から選んで開きます（元のファイルは上書きしません）',
   'file.save': '現在のプロジェクトを保存します',
   'file.saveAs': '名前を付けて保存します',
   'edit.undo': '直前の操作を取り消します',
@@ -479,6 +482,8 @@ export const TOOLTIPS: Readonly<Record<string, string>> = {
     '作業のまとまりの中で、次の地物を選びます（済んだものは飛ばします）',
   'list.rename': '選んでいる地物の名前を、地物一覧の行の中で直します',
   'tools.addFace': '面を描く道具を構えます（地図を押して輪郭を打ちます）',
+  'tools.survey':
+    '距離を測ります（地図で 2 点を押します）。もう一度押すと測るのを終えます。読むだけでも使えます',
   'edit.createAnchorHere':
     'いま見ている年に、選んでいる地物の歴史の錨を作ります（この年から形や名前を変えられます）',
   'help.about': 'アプリの情報を表示します',

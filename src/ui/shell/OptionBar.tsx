@@ -366,7 +366,13 @@ export function OptionBar(props: OptionBarProps): JSX.Element {
       </div>
 
       <div className="option-bar__next" data-testid="option-bar-next-step">
-        <span className="option-bar__next-text">
+        {/* **全文を `title` にも持たせる**（増分 8C）。この欄は縮む役なので、1280px の窓では
+            文が「…」で切れる（測るの「測っている間は地物を選べません」は後半ごと切れていた）。
+            指を載せれば切れた後ろまで読める。 */}
+        <span
+          className="option-bar__next-text"
+          title={state.nextStep ?? OPTION_BAR_STRINGS.defaultNextStep}
+        >
           {state.nextStep ?? OPTION_BAR_STRINGS.defaultNextStep}
         </span>
         {/* 次の一手を **押せる形**で置く口（手直し E1 / 設計書 §H.5）。 */}

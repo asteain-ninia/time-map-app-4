@@ -80,3 +80,86 @@
 .repair-dialog__unresolved {
   color: #b00020;
 }
+
+/* --- 増分 8D: 修復ダイアログの整理（N-22）と、以前の保存から開く（V14） --- */
+
+/* 直し方が 1 つしか無い種類は、ラジオを出さずに「こう直します」と 1 行で書く。 */
+.repair-row__fix {
+  margin: 2px 0 0;
+}
+
+.repair-row__options {
+  border: none;
+  margin: 2px 0 0;
+  padding: 0;
+}
+
+.repair-row__option {
+  display: block;
+}
+
+.backup-modal-root {
+  pointer-events: auto;
+}
+
+.backup-dialog {
+  max-width: 560px;
+}
+
+.backup-dialog__intro,
+.backup-dialog__note {
+  margin: 0 0 6px;
+}
+
+.backup-dialog__note {
+  font-size: 11px;
+  color: var(--c-text-muted);
+}
+
+/* 日時・大きさ・地物数の 3 列。見出しと行で同じ列幅を使う。 */
+.backup-dialog__head,
+.backup-row {
+  display: grid;
+  grid-template-columns: minmax(0, 11em) minmax(0, 6em) minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.backup-dialog__head {
+  font-size: 11px;
+  color: var(--c-text-muted);
+  padding: 0 6px 2px;
+}
+
+.backup-dialog__list {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.backup-row {
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 6px;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+
+.backup-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  /* 増分 8D の再手直し: ［別のファイルを選ぶ…］を［やめる］の左に並べる。 */
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* 増分 8D の手直し: どのファイルの世代を見ればよいか分からないとき（新規・開けなかった）。 */
+.backup-dialog__no-basis {
+  margin: 0 0 8px;
+}
+
+.backup-dialog__no-basis p {
+  margin: 0 0 6px;
+}

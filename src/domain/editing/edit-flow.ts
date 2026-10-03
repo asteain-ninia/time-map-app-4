@@ -52,6 +52,24 @@ export interface FeatureSnapshot {
    * validation — U24 does not (受け入れ基準12). Absent ⇒ a plain move.
    */
   readonly sharePair?: { readonly dragged: VertexId; readonly target: VertexId };
+  /**
+   * **辺に頂点を足した編集**（FR-87 / N-06）のときだけ立つ: 足した辺の両端と、足した頂点。
+   *
+   * 足す辺を隣の地物と共有しているとき（両端の頂点を隣も続けて引いているとき）、足した
+   * 頂点は **その辺を共有するすべての地物の輪に同じ頂点として入る**（共有頂点の規則。
+   * 増分 8A の手直し・反証 重 2）。入れないと、押した地物の輪にだけ頂点が増え（T 字）、
+   * あとでその頂点を動かすと隣との間に隙間ができる。入れるのは `applyEditProposal` で、
+   * 同じ 1 つの提案の中なので取り消し 1 回で全部戻る。
+   */
+  readonly edgeInsert?: EdgeInsert;
+}
+
+/** {@link FeatureSnapshot.edgeInsert} の中身。 */
+export interface EdgeInsert {
+  readonly startVertexId: VertexId;
+  readonly endVertexId: VertexId;
+  /** 足した頂点（`vertices` に体が入っている id）。 */
+  readonly vertexId: VertexId;
 }
 
 function buildSnapshot(input: BuildSnapshotInput): FeatureSnapshot {
@@ -60,10 +78,12 @@ function buildSnapshot(input: BuildSnapshotInput): FeatureSnapshot {
     vertices: readonly Vertex[];
     deletedFeatureId?: FeatureId;
     sharePair?: { dragged: VertexId; target: VertexId };
+    edgeInsert?: EdgeInsert;
   } = { vertices: input.vertices };
   if (input.feature !== undefined) base.feature = input.feature;
   if (input.deletedFeatureId !== undefined) base.deletedFeatureId = input.deletedFeatureId;
   if (input.sharePair !== undefined) base.sharePair = input.sharePair;
+  if (input.edgeInsert !== undefined) base.edgeInsert = input.edgeInsert;
   return base;
 }
 
@@ -78,6 +98,8 @@ interface BuildSnapshotInput {
    * when undefined to honour exactOptionalPropertyTypes on {@link FeatureSnapshot}.
    */
   readonly sharePair?: { readonly dragged: VertexId; readonly target: VertexId } | undefined;
+  /** 辺に頂点を足した編集の、辺の両端と足した頂点（{@link FeatureSnapshot.edgeInsert}）。 */
+  readonly edgeInsert?: EdgeInsert | undefined;
 }
 
 // --- snap → share-pair decision at release (受け入れ基準12) -------------------

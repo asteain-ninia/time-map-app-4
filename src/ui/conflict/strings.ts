@@ -38,6 +38,30 @@ export const CONFLICT_STRINGS = {
   remainingSuffix: '件',
   /** All conflicts resolved message. */
   allResolved: 'すべての重なりに方針を指定しました。適用できます。',
+  /**
+   * 冒頭の文の **言い換え**（増分 8E / 設計書 §E.1 の V13・§H.1）。冒頭の文そのものは
+   * 変えない（文言の総点検は 8E の後半でまとめて行う）。「末端地物」が初見では読めない
+   * ので、用語集の説明文をそのまま添える。
+   */
+  pausedBannerParaphrase:
+    '末端地物は「国境を持つ面」のことです。実際に形を持ち、隣と重なれない面なので、重なった部分をどちらに付けるかを決めてください。',
+} as const;
+
+/**
+ * 解決を適用したあとに状態行へ出す文（増分 8E / 設計書 §E.1 の V13 ⑦）。
+ * 「何をしたか」を過去形で言い切り、どの年の話かを添える（§H.5）。
+ */
+export const RESOLVED_STRINGS = {
+  /** 「アルラーク国とバアカの重なりを解消しました（1200年）」。 */
+  one: (a: string, b: string, at: string): string => `${a}と${b}の重なりを解消しました（${at}）`,
+  /** 2 件以上を一度に解消したとき。名前は最初の 1 件だけ出し、残りは件数で言う。 */
+  many: (a: string, b: string, rest: number, at: string): string =>
+    `${a}と${b}ほか ${String(rest)} 件の重なりを解消しました（${at}）`,
+  /**
+   * 板の［キャンセル］で重なりの解決をやめたとき。止まっていた編集は記録されない
+   * （何が起きたか → どうなったか）。成功でも失敗でもないので中立の色で出す。
+   */
+  cancelled: '重なりの解決をやめました。止まっていた編集は記録していません。',
 } as const;
 
 /** Resolution-policy control labels (FR-63: choose the priority feature). */
@@ -62,6 +86,11 @@ export const PREVIEW_STRINGS = {
   legendOverlap: '重なり（削られる領域）',
   /** Shown before a priority is chosen. */
   chooseFirst: '残す地物を選ぶと、削られる領域が表示されます。',
+  /**
+   * 凡例: 残す側を選ぶ前の灰色（増分 8E / N-17）。選ぶ前のミニマップは両方の面を同じ灰色で
+   * 描くので、その色が何なのかを凡例に足す（選んだあとは出さない）。
+   */
+  legendNeutral: '残す側を選ぶ前の面',
 } as const;
 
 /** Action buttons (FR-63 / 受け入れ基準 5・7). */

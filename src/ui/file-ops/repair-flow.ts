@@ -22,8 +22,10 @@
 // 末項「確定までドメイン現状態を破壊しない」).
 
 import type { Calendar } from '../../domain/time/calendar';
-import { idToString } from '../../domain/ids';
+import { idToString, type FeatureId } from '../../domain/ids';
+import { repairTargetLabel, type RepairNamer } from './repair-names';
 import {
+  REPAIR_OPTION,
   applyRepairWithReport,
   checkConsistency,
   repairOptionsFor,
@@ -64,12 +66,171 @@ export function buildRepairRows(report: ConsistencyReport): RepairRow[] {
 /**
  * A short Japanese summary line for one inconsistency (FR-115). Names the related
  * features; the kind-specific label lives in {@link INCONSISTENCY_LABELS}. Pure.
+ *
+ * **内部の ID（`f-5-4` など）は出さない**（増分 8D / N-22・N-18、設計書 §H.1 の U-1）。
+ *
+ * 増分 8D の手直し: 読み込んだプロジェクトから作った `namer`（{@link buildRepairNamer}）が
+ * あれば、対象を **1 件ずつ名前で** 呼ぶ。名前が無ければ「名前のない面（1500年に作成）」。
+ * 同じ名前の地物が並ぶときは作成年を添えて見分ける。歴史の行（時間の矛盾・重複した歴史）は
+ * 「〈名前〉の歴史」、孤立した歴史は持ち主がどの年にも居ないので、中に入っている地物の名前で
+ * 「持ち主の居ない歴史（中の地物: A、B ほか N 件）」と呼ぶ。
+ * `namer` が無いとき（報告しか無い呼び出し）は名前の欄を使う。空の欄は「名前のない地物」、
+ * ID が入っている欄は「名前の分からない地物」と数える（名前が無いとは言わない ―― 時間の矛盾・
+ * 孤立した歴史・重複した歴史は、名前があっても欄に ID を入れてくるので、分からないだけ）。
  */
-export function describeInconsistency(inc: Inconsistency): string {
-  const names = inc.featureNames.length > 0
-    ? inc.featureNames.join('、')
-    : inc.featureIds.map(idToString).join('、');
-  return `${INCONSISTENCY_LABELS[inc.kind]}（対象: ${names}）`;
+export function describeInconsistency(inc: Inconsistency, namer?: RepairNamer): string {
+  const target = namer === undefined ? targetNamesFromReport(inc) : targetNamesFromProject(inc, namer);
+  return `${INCONSISTENCY_LABELS[inc.kind]}（対象: ${target}）`;
+}
+
+/** 歴史を単位にする種類（対象は「〈持ち主〉の歴史」と呼ぶ）。 */
+const HISTORY_KINDS: ReadonlySet<Inconsistency['kind']> = new Set([
+  'time-conflict',
+  'duplicate-owner-history',
+]);
+
+/** 孤立した歴史の中身の名前を、いくつまで並べるか。 */
+const ORPHAN_MEMBER_NAMES = 3;
+
+/** プロジェクトから名前を引いて、対象を 1 件ずつ呼ぶ。 */
+function targetNamesFromProject(inc: Inconsistency, namer: RepairNamer): string {
+  if (inc.kind === 'orphan-history') {
+    return inc.featureIds.map((id) => orphanHistoryLabel(id, namer)).join('、');
+  }
+  const infos = inc.featureIds.map((id) => namer.featureInfo(id));
+  const nameCounts = new Map<string, number>();
+  for (const info of infos) {
+    if (info.name !== null) nameCounts.set(info.name, (nameCounts.get(info.name) ?? 0) + 1);
+  }
+  const labels = infos.map((info) =>
+    repairTargetLabel(info, info.name !== null && (nameCounts.get(info.name) ?? 0) > 1),
+  );
+  if (HISTORY_KINDS.has(inc.kind)) return labels.map((label) => `${label}の歴史`).join('、');
+  return labels.length === 0 ? '名前の分からない地物' : labels.join('、');
+}
+
+/** 孤立した歴史の呼び名（持ち主が居ないので、中に入っている地物の名前で呼ぶ）。 */
+function orphanHistoryLabel(ownerId: FeatureId, namer: RepairNamer): string {
+  const members = namer.historyMembers(ownerId) ?? [];
+  if (members.length === 0) return '持ち主の居ない、中身の無い歴史';
+  const shown = members.slice(0, ORPHAN_MEMBER_NAMES).map((id) => repairTargetLabel(namer.featureInfo(id)));
+  const rest = members.length - shown.length;
+  const more = rest > 0 ? ` ほか ${String(rest)} 件` : '';
+  return `持ち主の居ない歴史（中の地物: ${shown.join('、')}${more}）`;
+}
+
+/**
+ * 報告の名前の欄だけで呼ぶ（プロジェクトが手元に無いとき）。**対象ごとに** 名前があるかを
+ * 見る ―― 名前を重複なしに数えてから引き算すると、同じ名前の地物 2 件が「州、名前のない
+ * 地物 1 件」になっていた（GPT 指摘 7）。
+ */
+function targetNamesFromReport(inc: Inconsistency): string {
+  const count = Math.max(inc.featureIds.length, inc.featureNames.length);
+  const named: string[] = [];
+  let unnamed = 0;
+  let unknown = 0;
+  for (let i = 0; i < count; i += 1) {
+    const raw = (inc.featureNames[i] ?? '').trim();
+    const id = inc.featureIds[i];
+    if (raw.length === 0) unnamed += 1;
+    else if (id !== undefined && raw === idToString(id)) unknown += 1;
+    else named.push(raw);
+  }
+  const parts = [...named];
+  if (unnamed > 0) parts.push(`名前のない地物 ${String(unnamed)} 件`);
+  if (unknown > 0 || parts.length === 0) {
+    parts.push(`名前の分からない地物 ${String(Math.max(unknown, 1))} 件`);
+  }
+  return parts.join('、');
+}
+
+/**
+ * 不整合の **細かい理由**（`detail` は機械向けの符号）を画面の言葉にする（増分 8D / N-22）。
+ * 知らない符号は **出さない**（`null`）―― 英語の符号をそのまま見せるより、種類の名前だけの
+ * ほうが読める。
+ */
+export function describeInconsistencyDetail(inc: Inconsistency): string | null {
+  const detail = inc.detail;
+  if (detail === undefined) return null;
+  const known = DETAIL_TEXT[detail];
+  if (known !== undefined) return known;
+  const missing = /^missing:(.*)$/.exec(detail);
+  if (missing !== null) {
+    const count = missing[1]!.split(',').filter((s) => s.length > 0).length;
+    return `存在しない頂点を ${String(count)} 個参照しています。`;
+  }
+  if (detail.startsWith('vertex:')) return '同じ頂点の座標が歴史によって違います。';
+  const count = /^count:(\d+)$/.exec(detail);
+  if (count !== null) return `同じ地物の歴史が ${count[1]!} 本あります。`;
+  return null;
+}
+
+/** `detail` の符号 → 画面の言葉（固定の符号だけ。数を含むものは上の関数が組み立てる）。 */
+const DETAIL_TEXT: Readonly<Record<string, string>> = {
+  'top-level-mismatch': '最上位かどうかの印と、親の有無が食い違っています。',
+  cycle: '親をたどると自分に戻ってきます。',
+  'dangling-parent': '親として指している地物が見つかりません。',
+  'child-parent-mismatch': '下位領域の一覧と、各地物が指している親が食い違っています。',
+  'duplicate-id': '同じ地物が複数あります。',
+  'leaf-empty-shape': '形がありません。',
+  'aggregate-no-children': '下位領域が 1 つもありません。',
+  'leaf-with-children': '末端なのに下位領域を持っています。',
+  'positive-area-overlap': '面積のある重なりがあります。',
+  'inter-child-gap': '下位領域どうしのあいだに隙間があります。',
+  'same-time-spatial-conflict': '同じ時刻に重なっています。',
+  'owner-feature-absent': 'この歴史の持ち主の地物が、どの年にも居ません。',
+};
+
+/**
+ * 修復方法の **画面の文**（増分 8D / N-22）。ふだんは U14 の文（`option.label`）をそのまま
+ * 使う。**内部の項目名（`childIds` / `parentId`）を含む文だけを画面側で言い換える**。
+ *
+ * 全部の方法の写像を UI に持たない（`Record<RepairOptionId, string>` にしない）のは、
+ * 修復方法の一覧が U14 の側で増えたり並び替わったりしても、画面が型で壊れないようにする
+ * ため ―― 言い換えが要るものだけを部分的に持つ。
+ */
+export function repairOptionText(
+  option: RepairOption,
+  inc?: Inconsistency,
+  namer?: RepairNamer,
+): string {
+  // 孤立した歴史を「捨てる」方法は、中に何件の地物の記録があるかを言う（本体の取り込み）。
+  // 持ち主が居ないだけで中身はあるので、件数を見せないと「空のものを片付ける」と読める。
+  if (option.id === REPAIR_OPTION.DropOrphanHistory && inc !== undefined && namer !== undefined) {
+    const members = inc.featureIds.reduce(
+      (sum, id) => sum + (namer.historyMembers(id)?.length ?? 0),
+      0,
+    );
+    return REPAIR_OPTION_TEXT.dropOrphanHistoryWithCount(members);
+  }
+  return REPAIR_OPTION_TEXT_OVERRIDES[option.id] ?? option.label;
+}
+
+/** 件数つきの方法の文（{@link repairOptionText}）。 */
+export const REPAIR_OPTION_TEXT = {
+  dropOrphanHistoryWithCount: (members: number): string =>
+    members === 0
+      ? '持ち主の居ない、中身の無い歴史を読み込みから除外します。'
+      : `持ち主の居ない歴史（中に ${String(members)} 件の地物の記録）を、中身ごと読み込みから除外します（中の地物も消えます）。`,
+} as const;
+
+const REPAIR_OPTION_TEXT_OVERRIDES: Partial<Record<RepairOptionId, string>> = {
+  [REPAIR_OPTION.ReconcileChildIds]:
+    'まとめ役の下位領域の一覧を、各地物が指している親に合わせて作り直します。',
+};
+
+/**
+ * どの行も **最初の方法を選んだ状態**から始める（増分 8D / 設計書 §E.1 の V14 の手順 (b)）。
+ * 修復方法の並びは「おすすめ順で、先頭が既定」（U14 の `repairOptionsFor`）。方法が 1 つしか
+ * 無い行はラジオを出さないので、ここで選んでおかないと［修復して読み込む］が押せない。
+ */
+export function defaultRepairChoices(rows: readonly RepairRow[]): RepairChoices {
+  let choices = EMPTY_REPAIR_CHOICES;
+  for (const row of rows) {
+    const first = row.options[0];
+    if (first !== undefined) choices = setRepairChoice(choices, row.index, first.id);
+  }
+  return choices;
 }
 
 /** Japanese label per inconsistency kind (FR-115; all 7 kinds, 省略しない). */

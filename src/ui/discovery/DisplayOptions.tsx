@@ -97,6 +97,8 @@ export function DisplayOptions<S>(props: DisplayOptionsProps<S>): JSX.Element {
   const mode = useStore(store, (s) => s.mode);
   const activeTool = useStore(store, (s) => s.activeTool);
   const projectLoadNonce = useStore(store, (s) => s.projectLoadNonce);
+  // 増分 8E（G-12）: 赤道・0 度・180 度の強調（セッション限りの見え方）。
+  const gridEmphasisVisible = useStore(store, (s) => s.gridEmphasisVisible);
 
   // 開閉そのものは共通の器（`shell/OptionPopover`）が持つ。ここが `open` を控えるのは
   // **開いている間だけ数え直す**中身（種別の一覧・外れている知らせ）のためで、真実源は
@@ -455,6 +457,23 @@ export function DisplayOptions<S>(props: DisplayOptionsProps<S>): JSX.Element {
           >
             {FILTER_STRINGS.showAllHiddenLabel(hiddenCount)}
           </button>
+
+          {/* 増分 8E（G-12 / FR-13）: 緯経線グリッドの強調。**地物の表示条件とは別のもの**
+              なので、地物の「強調をすべて解除」では外れない。保存ファイルに書かず、
+              読むだけでも切り替えられる（グリッドの表示切替と同じ「セッション限りの見え方」）。 */}
+          <fieldset className="display-filter__grid" data-testid="display-filter-grid">
+            <legend>{FILTER_STRINGS.gridGroupLabel}</legend>
+            <label className="display-filter__kind" title={FILTER_STRINGS.gridEmphasisHint}>
+              <input
+                type="checkbox"
+                data-testid="display-filter-grid-emphasis"
+                checked={gridEmphasisVisible}
+                onChange={(e) => store.getState().setGridEmphasisVisible(e.target.checked)}
+              />
+              <span>{FILTER_STRINGS.gridEmphasisLabel}</span>
+            </label>
+            <p className="display-filter__emphasize-hint">{FILTER_STRINGS.gridEmphasisHint}</p>
+          </fieldset>
         </section>
       )}
     </OptionPopover>

@@ -85,6 +85,29 @@ export interface SurveyState {
   readonly lines: readonly SurveyLine[];
   /** Monotone id source for confirmed lines (transient, non-persisted). */
   readonly nextLineId: number;
+  /**
+   * **直前に右クリックで消した 1 本**（増分 8C の手直し / 反証 #2）。状態行の［戻す］と、
+   * 消した直後の Ctrl+Z がこれを元の位置へ戻す。覚えるのは最後の 1 本だけ（2 本の線のセット）。
+   *
+   * 捨てる契機（決めた範囲）: **線を増やす・減らす測量の操作**（点を置く・クリア）・
+   * 別の線を消す（その線に置き換わる）・戻した。ストアの側では、地物の編集・取り消し／やり直し・
+   * 道具の持ち替え・鍵の切り替え・読み込み／新規でも捨てる。
+   *
+   * **捨てないもの**: カーソルの移動（`updateHover`）、**下書きの取りやめ（Esc）と測るの入り切り
+   * （`U`・レールの「📏 測る」）**（増分 8C の再手直し / 再検証 #1・#2）。どれも線を 1 本も増減させない
+   * ので、覚えを捨てて守るもの（新しく測った線と戻す線の取り違え）が無い。逆に捨てると、始点を
+   * 置いた途中で線を消す → Ctrl+Z が下書き中で届かない → 案内どおり Esc → もう一度 Ctrl+Z、という
+   * いちばん自然な立て直しで、Ctrl+Z が関係のない地物の編集を取り消していた。
+   * 保存はしない（線そのものと同じく一時的な表示）。
+   */
+  readonly removed: RemovedSurveyLine | null;
+}
+
+/** 右クリックで消した線と、消す前に並んでいた位置（{@link SurveyState.removed}）。 */
+export interface RemovedSurveyLine {
+  readonly line: SurveyLine;
+  /** `lines` の中の位置（戻すときに同じ位置へ入れる。描く順・凡例の並びを変えないため）。 */
+  readonly index: number;
 }
 
 /** The initial survey state: mode off, nothing drafted, no lines. */
@@ -95,7 +118,16 @@ export function initialSurveyState(): SurveyState {
     draft: null,
     lines: [],
     nextLineId: 1,
+    removed: null,
   };
+}
+
+/**
+ * 消した線の覚えを捨てる（増分 8C の手直し）。**覚えが無ければ同じ参照を返す** ――
+ * 地物の編集のたびに測量の層を描き直さないため（測量の描画は `survey` の参照で動く）。
+ */
+export function forgetRemovedSurveyLine(state: SurveyState): SurveyState {
+  return state.removed === null ? state : { ...state, removed: null };
 }
 
 // --- Internal: discard ONLY the transient draft (keep confirmed lines) -------
@@ -119,6 +151,7 @@ function withDraftDiscarded(state: SurveyState): SurveyState {
  * FR-15). Idempotent.
  */
 export function enableSurveyMode(state: SurveyState): SurveyState {
+  // 消した線の覚えは捨てない（線を増減させない。`SurveyState.removed`）。
   return { ...withDraftDiscarded(state), active: true };
 }
 
@@ -129,6 +162,7 @@ export function enableSurveyMode(state: SurveyState): SurveyState {
  * empties both. Idempotent.
  */
 export function disableSurveyMode(state: SurveyState): SurveyState {
+  // 消した線の覚えは捨てない（線を増減させない。`SurveyState.removed`）。
   return { ...withDraftDiscarded(state), active: false };
 }
 
@@ -149,12 +183,14 @@ export function clickPoint(state: SurveyState, point: WorldCoordinate): SurveySt
   if (!state.active) {
     return state;
   }
+  // 点を置くのは測量の操作なので、消した線の覚えを捨てる（増分 8C の手直し）。
   if (state.draft === null) {
     // First click: start the draft.
     return {
       ...state,
       phase: SURVEY_PHASE.AwaitingEnd,
       draft: { start: point, hover: point },
+      removed: null,
     };
   }
   // Second click: confirm a line, then discard the draft (back to Idle).
@@ -169,6 +205,7 @@ export function clickPoint(state: SurveyState, point: WorldCoordinate): SurveySt
     draft: null,
     lines: [...state.lines, line],
     nextLineId: state.nextLineId + 1,
+    removed: null,
   };
 }
 
@@ -193,15 +230,18 @@ export function updateHover(state: SurveyState, point: WorldCoordinate): SurveyS
  * only; confirmed lines remain. No-op when idle.
  */
 export function cancelDraft(state: SurveyState): SurveyState {
+  // **消した線の覚えは捨てない**（増分 8C の再手直し / 再検証 #1）。始点を置いた途中は Ctrl+Z が
+  // 届かないので、案内どおり Esc で下書きをやめてから Ctrl+Z で線を戻す流れを残す。
   return withDraftDiscarded(state);
 }
 
 /**
  * Run the reset契約 on a tool / sub-tool switch within survey mode (教訓 5.2).
- * Same as cancel: draft only is discarded, confirmed lines remain.
+ * Same as cancel: draft only is discarded, confirmed lines remain. 道具の持ち替えなので、
+ * 消した線の覚えも捨てる（増分 8C の手直し）。
  */
 export function discardOnToolSwitch(state: SurveyState): SurveyState {
-  return withDraftDiscarded(state);
+  return forgetRemovedSurveyLine(withDraftDiscarded(state));
 }
 
 // --- Clear (empties BOTH slots) ---------------------------------------------
@@ -220,5 +260,60 @@ export function clearSurvey(state: SurveyState): SurveyState {
     phase: SURVEY_PHASE.Idle,
     draft: null,
     lines: [],
+    removed: null,
+  };
+}
+
+// --- Remove ONE confirmed line (増分 8C / 設計書 §E.1 V15) ------------------
+
+/**
+ * 確定した線を **1 本だけ**消す（増分 8C の中身 1 / 設計書 §E.1 の V15）。
+ *
+ * 1 回の測量は正距円筒の線と大円の線の 2 本を描くが、どちらも同じ `SurveyLine`
+ * （同じ id）から描いているので、ここで 1 件消せば **2 本が一緒に**消える。
+ *
+ * - 消すのは `lines` の中の 1 件だけ。測っている途中の `draft` には触らない
+ *   （右クリックで線を消しても、始点を押した途中の測量は続けられる）。
+ * - `nextLineId` は戻さない（`clearSurvey` と同じ理由: 一度使った id を再び使うと、
+ *   開いたままのメニューが握っている古い id が別の線を指してしまう）。
+ * - **その id の線が無ければ同じ参照をそのまま返す**（教訓 5.24: 何も変わらない確定は
+ *   何もしない）。メニューを開いてから［測量結果をクリア］を押した、など、凍結した
+ *   id が押すときにはもう無い場合がこれに当たる。
+ * - 消した線は `removed` に覚える（増分 8C の手直し / 反証 #2）。前に覚えていた線は捨てる
+ *   （戻せるのは直前に消した 1 本だけ）。
+ */
+export function removeSurveyLine(state: SurveyState, id: number): SurveyState {
+  const index = state.lines.findIndex((line) => line.id === id);
+  if (index < 0) {
+    return state;
+  }
+  return {
+    ...state,
+    lines: [...state.lines.slice(0, index), ...state.lines.slice(index + 1)],
+    removed: { line: state.lines[index]!, index },
+  };
+}
+
+/**
+ * 直前に消した線を **元の位置へ戻す**（増分 8C の手直し / 反証 #2。状態行の［戻す］と、
+ * 消した直後の Ctrl+Z）。覚えが無ければ同じ参照を返す。
+ *
+ * - 戻すのは同じ id の同じ線（id は使い回さないので、ほかの線と衝突しない）。
+ * - 位置は消す前の位置。その後に線が減っていても末尾を越えない。
+ * - 測っている途中の始点には触らない（消すときと同じ）。
+ * - 戻したら覚えを捨てる（2 回押しても 2 本にならない）。
+ */
+export function restoreRemovedSurveyLine(state: SurveyState): SurveyState {
+  const removed = state.removed;
+  if (removed === null) return state;
+  if (state.lines.some((line) => line.id === removed.line.id)) {
+    // 念のため（id は使い回さないので起きない）。重ねて入れない。
+    return { ...state, removed: null };
+  }
+  const at = Math.min(removed.index, state.lines.length);
+  return {
+    ...state,
+    lines: [...state.lines.slice(0, at), removed.line, ...state.lines.slice(at)],
+    removed: null,
   };
 }

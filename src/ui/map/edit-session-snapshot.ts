@@ -131,7 +131,15 @@ export function buildEditSnapshot(
     // its target (the reserved id is the session's dragged vertex, so decideSharePairAtRelease
     // resolves it exactly like a vertex-move).
     const sharePair = decideSharePairAtRelease(session);
-    return buildSnapshot({ feature: result.feature, vertices: [newVertex], sharePair });
+    // 増分 8A の手直し（反証 重 2）: 足した辺を隣と共有していれば、隣の輪にも同じ頂点を
+    // 入れる（`applyEditProposal` が行う）。そのための「どの辺に何を足したか」を渡す。
+    // クリックで足す（N-06）ときもドラッグで足す（FR-87）ときも同じ 1 本を通る。
+    return buildSnapshot({
+      feature: result.feature,
+      vertices: [newVertex],
+      sharePair,
+      edgeInsert: { startVertexId, endVertexId, vertexId: newVertexId },
+    });
   }
 
   // No other tool builds a snapshot here (drag-session is exhaustive over EDIT_TOOL).

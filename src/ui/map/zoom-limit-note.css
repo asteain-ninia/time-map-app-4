@@ -1,0 +1,25 @@
+/* 増分 8E（G-21 / 設計書 §B.5 の台帳 #29）: ズームボタンの脇の「上限です」。
+ *
+ * ズームのボタン列（`.map-view-controls`。右下から 16px 内側・幅 40px）の **左隣** に、
+ * 下端をそろえて出す。**押せない**（`pointer-events: none`）ので、地図の上に覆いを作らない
+ * （K-2）。文が長くても折り返して左へ伸びないよう、幅に上限を置く。 */
+.map-area__overlay > .map-zoom-limit-note,
+.map-zoom-limit-note {
+  pointer-events: none;
+}
+
+.map-zoom-limit-note {
+  position: absolute;
+  right: 64px;
+  bottom: 16px;
+  max-width: 220px;
+  margin: 0;
+  padding: 4px 8px;
+  z-index: 3;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--c-text, #222);
+  background: rgb(255 255 255 / 92%);
+  border: 1px solid var(--c-border-strong, #999);
+  border-radius: var(--radius, 4px);
+}

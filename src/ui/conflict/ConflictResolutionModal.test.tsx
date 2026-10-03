@@ -508,3 +508,92 @@ describe('重なる UI の入力層 (受け入れ基準 9, 教訓 5.14)', () => 
     expect(screen.getByTestId('conflict-row-c1')).toHaveAttribute('data-state', 'resolved');
   });
 });
+
+// 増分 8E（V13 ③⑤・N-17）: 色見本と言い換え。
+describe('色見本と冒頭の言い換え（増分 8E / N-17・V13）', () => {
+  function renderWithColors(colors: Record<string, string>): void {
+    render(
+      <ConflictResolutionModal<unknown>
+        pending={pendingOf([conflict('c1', FA, FB)])}
+        applyResolutions={vi.fn()}
+        shapesFor={shapesFor}
+        colorFor={(_c, fid) => colors[String(fid)]}
+        showGuide={false}
+      />,
+    );
+  }
+
+  it('冒頭の文はそのままに、「国境を持つ面」の言い換えが添えてある', () => {
+    renderWithColors({});
+    expect(screen.getByTestId('conflict-paused-banner')).toHaveTextContent('末端地物どうしの重なり');
+    expect(screen.getByTestId('conflict-paraphrase')).toHaveTextContent('国境を持つ面');
+  });
+
+  it('行とラジオに、地図の塗りの色の色見本が付く（色が引けない地物には付けない）', () => {
+    renderWithColors({ a: '#112233', b: '#445566' });
+    const row = screen.getByTestId('conflict-row-c1');
+    const swatches = within(within(row).getByTestId('conflict-row-features')).getAllByTestId(
+      'conflict-participant-swatch',
+    );
+    expect(swatches.map((s) => s.getAttribute('data-color'))).toEqual(['#112233', '#445566']);
+    // 文字としては従来どおり「A ／ B」と読める（色見本は読み上げない飾り）。
+    expect(within(row).getByTestId('conflict-row-features')).toHaveTextContent('名前-a ／ 名前-b');
+    const options = within(row).getAllByTestId('policy-choice-option');
+    expect(within(options[0]!).getByTestId('conflict-participant-swatch')).toHaveAttribute(
+      'data-color',
+      '#112233',
+    );
+  });
+
+  it('色が引けなければ色見本を出さない', () => {
+    renderWithColors({});
+    expect(screen.queryAllByTestId('conflict-participant-swatch')).toHaveLength(0);
+  });
+
+  // 増分 8E の手直し（設計適合 S2-4・GPT 重 2）: 色見本で見分けられないときは番号札。
+  it('2 つの色見本が同じなら、行・ラジオ・地図の下見に番号札（①②）が付く', () => {
+    renderWithColors({ a: '#4e79a7', b: '#4e79a7' });
+    const row = screen.getByTestId('conflict-row-c1');
+    const features = within(row).getByTestId('conflict-row-features');
+    expect(
+      within(features).getAllByTestId('conflict-participant-tag').map((t) => t.textContent),
+    ).toEqual(['①', '②']);
+    const options = within(row).getAllByTestId('policy-choice-option');
+    expect(within(options[0]!).getByTestId('conflict-participant-tag')).toHaveTextContent('①');
+    expect(within(options[1]!).getByTestId('conflict-participant-tag')).toHaveTextContent('②');
+    expect(screen.getByTestId('conflict-preview-c1')).toHaveAttribute('data-tags', '①②');
+  });
+
+  it('近い色（明るさが 1 段ちがう程度）でも番号札が付く', () => {
+    renderWithColors({ a: '#2e7d32', b: '#388e3c' });
+    expect(screen.getAllByTestId('conflict-participant-tag').length).toBeGreaterThan(0);
+  });
+
+  it('見分けられる色なら番号札を出さない', () => {
+    renderWithColors({ a: '#4e79a7', b: '#f28e2b' });
+    expect(screen.queryAllByTestId('conflict-participant-tag')).toHaveLength(0);
+    expect(screen.getByTestId('conflict-preview-c1')).toHaveAttribute('data-tags', '');
+  });
+
+  it('色見本を出さない宿主（colorFor なし）では番号札も出さない', () => {
+    render(
+      <ConflictResolutionModal<unknown>
+        pending={pendingOf([conflict('c1', FA, FB)])}
+        applyResolutions={vi.fn()}
+        shapesFor={shapesFor}
+        showGuide={false}
+      />,
+    );
+    expect(screen.queryAllByTestId('conflict-participant-tag')).toHaveLength(0);
+  });
+
+  it('凡例の各行にミニマップと同じ色の色見本があり、選ぶ前だけ灰色の行が出る', () => {
+    renderWithColors({});
+    expect(screen.getByTestId('conflict-legend-swatch-neutral')).toHaveAttribute('data-color', '#9e9e9e');
+    expect(screen.getByTestId('conflict-legend-swatch-priority')).toHaveAttribute('data-color', '#2e7d32');
+    expect(screen.getByTestId('conflict-legend-swatch-remaining')).toHaveAttribute('data-color', '#1565c0');
+    expect(screen.getByTestId('conflict-legend-swatch-overlap')).toHaveAttribute('data-color', '#c62828');
+    fireEvent.click(screen.getByTestId(`policy-c1-${String(FA)}`));
+    expect(screen.queryByTestId('conflict-legend-neutral')).toBeNull();
+  });
+});

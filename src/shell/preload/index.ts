@@ -3,7 +3,11 @@ import { contextBridge, ipcRenderer } from 'electron';
 import {
   IPC_CHANNEL,
   type AppPrefs,
+  type AppPrefsWriteResult,
   type AutoSaveConfig,
+  type BackupCount,
+  type BackupListing,
+  type BackupListRequest,
   type ConfigureAutoSaveResponse,
   type DiagnosticLogRecord,
   type LoadResponse,
@@ -130,8 +134,26 @@ export function buildApi(): TimeMapApi {
     // 初回起動のガイドを二度と出さない、のような **この PC の覚え書き**だけを置く。
     readAppPrefs: (): Promise<AppPrefs> =>
       ipcRenderer.invoke(IPC_CHANNEL.ReadAppPrefs) as Promise<AppPrefs>,
-    writeAppPrefs: (patch: Partial<AppPrefs>): Promise<AppPrefs> =>
-      ipcRenderer.invoke(IPC_CHANNEL.WriteAppPrefs, patch) as Promise<AppPrefs>,
+    writeAppPrefs: (patch: Partial<AppPrefs>): Promise<AppPrefsWriteResult> =>
+      ipcRenderer.invoke(IPC_CHANNEL.WriteAppPrefs, patch) as Promise<AppPrefsWriteResult>,
+    // 増分 8D: 世代の一覧と、一覧の id で開く口。描画プロセスはパスを一切扱わない
+    // （一覧は id しか運ばず、開くときも id しか渡せない）。頼み方は「元のファイルを選ばせる」
+    // の真偽だけで、ここで組み立て直す（描画プロセスの物をそのまま渡さない）。
+    listBackups: (request?: BackupListRequest): Promise<BackupListing> =>
+      (request?.pickSource === true
+        ? ipcRenderer.invoke(IPC_CHANNEL.ListBackups, { pickSource: true })
+        : ipcRenderer.invoke(IPC_CHANNEL.ListBackups)) as Promise<BackupListing>,
+    openBackup: (id: string): Promise<LoadResponse> =>
+      ipcRenderer.invoke(IPC_CHANNEL.OpenBackup, id) as Promise<LoadResponse>,
+    // 増分 8D の手直し: 地物数を後から埋める・1 回の終わり・数だけ・新規。
+    countBackupFeatures: (id: string): Promise<number | null> =>
+      ipcRenderer.invoke(IPC_CHANNEL.CountBackupFeatures, id) as Promise<number | null>,
+    endBackupChoice: (): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNEL.EndBackupChoice) as Promise<void>,
+    countBackups: (): Promise<BackupCount> =>
+      ipcRenderer.invoke(IPC_CHANNEL.CountBackups) as Promise<BackupCount>,
+    forgetSaveTarget: (): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNEL.ForgetSaveTarget) as Promise<void>,
   };
 }
 

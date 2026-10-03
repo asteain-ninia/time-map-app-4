@@ -36,3 +36,9 @@ export {
 } from './SurveyControls';
 
 export { SurveyOptionBar, type SurveyOptionBarProps } from './SurveyOptionBar';
+
+export {
+  type SurveyLineMenuItem,
+  surveyLineMenuItems,
+  formatMenuKm,
+} from './survey-menu';

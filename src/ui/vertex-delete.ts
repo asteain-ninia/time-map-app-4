@@ -28,9 +28,11 @@ import {
   PROCESS_STATUS,
   type EditProposal,
   type ProcessResult,
+  type RejectedResult,
   type Resolution,
 } from '../domain/consistency/index';
 import type { NextTargetPreference } from '../domain/selection/index';
+import { EDIT_OPERATION, tagRejectionOperation } from './ring-hierarchy-gate';
 
 /** The proposal-bound U35 apply-resolutions adapter (matches ApplyResolutions<S>). */
 type ApplyResolutionsFn<S> = (resolutions: readonly Resolution[]) => ProcessResult<S>;
@@ -234,6 +236,14 @@ export interface EditDeletePorts<S> {
   readonly clearVertexSelection: (ownerFeatureId: FeatureId) => void;
   /** The UNCHANGED U31 全錨 feature delete (no vertex selected). */
   readonly deleteFeatureAllAnchors: (featureId: FeatureId) => void;
+  /**
+   * 頂点の削除が確定の前に断られたとき、その理由を利用者へ知らせる口（増分 8E の手直し。
+   * 設計適合 S2-1・反証 2-1）。穴・飛び地の関門（`ring-hierarchy-gate`）が削除を断っても、
+   * 以前は結果を黙って捨てていたので、確認で［消す］を押したのに何も起きず理由も出なかった。
+   * 渡される結果には「頂点の削除だった」印が付いている（文の動詞を「消すと」にするため）。
+   * 渡されない宿主（単体試験の一部）では知らせない。
+   */
+  readonly onRejected?: (rejected: RejectedResult) => void;
 }
 
 /**
@@ -276,7 +286,14 @@ export function runEditDelete<S>(
       );
       return;
     }
-    if (result.status !== PROCESS_STATUS.Committed) return; // Rejected: keep selection.
+    if (result.status === PROCESS_STATUS.Rejected) {
+      // Rejected: keep selection, no commit — and SAY WHY (増分 8E の手直し).
+      ports.onRejected?.(
+        tagRejectionOperation(result, EDIT_OPERATION.DeleteVertex, selection.vertexIds.size),
+      );
+      return;
+    }
+    if (result.status !== PROCESS_STATUS.Committed) return;
 
     if (plan.kind === 'delete-feature') {
       // TIME-SLICE deletion: no preference (mirrors ring-edit onRingEditCommitted) —

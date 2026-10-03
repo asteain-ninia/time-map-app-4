@@ -18,6 +18,10 @@ import { describe, expect, it } from 'vitest';
 
 import { readSourceText } from '../../test-support/read-source-text';
 import { RAIL_GROUP_WIDTH } from '../time/rail-fold';
+import {
+  VERTEX_CANDIDATE_MAX_HEIGHT,
+  VERTEX_CANDIDATE_WIDTH,
+} from '../map/VertexCandidateList';
 import { ALL_TOOLS, TOOL_GROUPS } from './tools';
 
 // 改行は `readSourceText` が LF に揃える。この作業ツリーは CRLF と LF が混ざり、しかも
@@ -595,11 +599,15 @@ describe('地図セルの中に置く部品（設計書 §B.5 の台帳 #10〜#1
     expect(px(decl(ruleBody('.map-scale-bar'), 'height'), '縮尺バーの height')).toBe(20);
   });
 
-  it('頂点の候補一覧は一時部品で、幅は 216px（端で内側へ寄せる計算と同じ値）', () => {
+  it('頂点の候補一覧は一時部品で、幅と高さは端で内側へ寄せる計算と同じ値', () => {
+    // 増分 8A で 1 行に座標と共有の相手を書くようにしたので 216 → 280px に広げた。
+    // 数は部品の定数から読む（CSS と部品の 2 か所に書いた数が割れたら落ちる）。
     const box = ruleBody('.vertex-candidates');
     expect(decl(box, 'position')).toBe('absolute');
-    expect(px(decl(box, 'width'), '候補一覧の width')).toBe(216);
-    expect(px(decl(box, 'max-height'), '候補一覧の max-height')).toBe(180);
+    expect(px(decl(box, 'width'), '候補一覧の width')).toBe(VERTEX_CANDIDATE_WIDTH);
+    expect(px(decl(box, 'max-height'), '候補一覧の max-height')).toBe(
+      VERTEX_CANDIDATE_MAX_HEIGHT,
+    );
   });
 });
 

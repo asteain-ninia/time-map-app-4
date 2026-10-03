@@ -23,6 +23,8 @@ import { isFeatureVisibleUnderFilter } from '../filtered-display';
 import { keyboardZoomCamera, type ZoomDirection } from '../keyboard-zoom';
 import { createRedrawScheduler } from '../redraw-scheduler';
 import { redrawWatch, redrawWatchChanged } from '../redraw-watch';
+import { withRubberBandLayer } from '../rubber-band';
+import { withCandidateHoverLayer } from '../candidate-hover';
 import { cameraForBounds, cameraForFit } from '../../../render';
 import type { Camera as RenderCamera, ZoomRange } from '../../../render/camera';
 import { DEFAULT_LABEL_THRESHOLDS } from '../../../render/feature-layer';
@@ -52,6 +54,14 @@ export interface MountRenderOptions {
   readonly fitCameraToAllRef: MutableRefObject<(() => void) | null>;
   /** 拡大 / 縮小（ここで実体を入れる）。 */
   readonly zoomMapRef: MutableRefObject<((direction: ZoomDirection) => void) | null>;
+  /**
+   * 拡大 / 縮小を **押す前に** 知らせる口（増分 8E / G-21）。押す前の倍率と、いま効いている
+   * 上下限を渡すだけで、断るかどうかの判定は受け手（`map/zoom-limit-notice.ts`）が持つ。
+   * ズームの処理そのものは変えない（上限での振る舞いはこれまでどおりクランプ）。
+   */
+  readonly zoomCommandNoticeRef?: MutableRefObject<
+    ((direction: ZoomDirection, zoomBefore: number, range: ZoomRange) => void) | null
+  >;
   /** HB-1 観測フックへカメラを写す。 */
   readonly publishCameraHooks: (camera: RenderCamera) => void;
   /** HB-14 観測フックへ可視地物数を写す。 */
@@ -90,6 +100,7 @@ export function createMountRender(options: MountRenderOptions): MountRender {
     fitCameraToFeatureRef,
     fitCameraToAllRef,
     zoomMapRef,
+    zoomCommandNoticeRef,
     publishCameraHooks,
     publishVisibleCountHook,
     publishFrameHook,
@@ -142,6 +153,8 @@ export function createMountRender(options: MountRenderOptions): MountRender {
         spacing: coerceGridSpacing(ps.gridSpacingDeg),
         color: ps.gridColor,
         opacity: ps.gridOpacity,
+        // 増分 8E（G-12）: 表示の設定で外せる、赤道・0 度・180 度の強調。
+        emphasizeSpecialLines: store.getState().gridEmphasisVisible,
       };
     },
     // FR-13 グリッド ON/OFF 即時反映: derive the LIVE graticule visibility from the
@@ -177,7 +190,9 @@ export function createMountRender(options: MountRenderOptions): MountRender {
     // FR-110 視野内カウント: `view` はこのフレームを合成する camera/viewport そのもの。
     // ハンドルビルダーへ渡し、視野内の頂点だけを生成・カウントさせる (デカい地物も
     // ズームインすれば cap を下回り編集できる)。
-    editHandles: (view) => {
+    // 増分 8A（N-07）: 矩形選択の枠をこの層のいちばん上に足す（`withRubberBandLayer`）。
+    // 増分 8A の手直し: 候補一覧の行に乗っている頂点の輪も足す（`withCandidateHoverLayer`）。
+    editHandles: withCandidateHoverLayer(() => transients.candidateHover, withRubberBandLayer(() => transients.rubberBand, (view) => {
       const s = store.getState();
       // **増分 5b: 条件を「編集モードのとき」から「掴める道具のとき」へ変えた**
       // （設計書 §C.3 / 実装計画 §5 の 5b）。モードの 3 ボタンが消えて `mode` が
@@ -250,7 +265,7 @@ export function createMountRender(options: MountRenderOptions): MountRender {
         undefined,
         view,
       );
-    },
+    })),
     // HB3-4 観測フック: a live edit-drag preview is present iff a session is in flight
     // for the active feature in 編集 mode. ORed into the frame's `hasLivePreview` so a
     // behavioural E2E (and the __E2E__ hook) can assert the drag preview is live — the
@@ -343,6 +358,7 @@ export function createMountRender(options: MountRenderOptions): MountRender {
   // into the U16 store camera via onCameraChange exactly like a wheel zoom.
   zoomMapRef.current = (direction: ZoomDirection): void => {
     const { camera, viewport } = ports.readCamera();
+    zoomCommandNoticeRef?.current?.(direction, camera.zoom, ports.effectiveZoomRange());
     ports.writeCamera(
       keyboardZoomCamera(camera, viewport, direction, ports.effectiveZoomRange()),
     );

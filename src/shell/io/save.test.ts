@@ -130,3 +130,25 @@ describe('repeated saves keep ≤ maxGenerations backups (受け入れ基準3)',
     expect(backups.length).toBe(10);
   });
 });
+
+describe('一覧に出している世代は、フォルダの書き方が違っても守る（増分 8D の再手直し 1-1）', () => {
+  it('守るパスのフォルダの区切りが保存先と違っても、名前が合えば間引かない', async () => {
+    const { env, disk } = makeMemoryEnv();
+    const manifest = serialize(richValidProject());
+    for (let i = 0; i < 2; i++) {
+      await saveTmap(env, TARGET, { manifest, baseMapImage: baseMap, attachments: [] }, 2);
+    }
+    const oldest = [...disk.keys()].filter((p) => p.startsWith(`${TARGET}.bak.`)).sort()[0]!;
+    const oldestName = oldest.slice(oldest.lastIndexOf('/') + 1);
+    // 一覧の行のパスが `\` 区切りに正規化されていた場合（保存先は `/` のまま）。
+    const protectedPath = `${String.raw`\proj\other`}/${oldestName}`;
+    await saveTmap(
+      env,
+      TARGET,
+      { manifest, baseMapImage: baseMap, attachments: [] },
+      2,
+      new Set([protectedPath]),
+    );
+    expect(disk.has(oldest)).toBe(true);
+  });
+});

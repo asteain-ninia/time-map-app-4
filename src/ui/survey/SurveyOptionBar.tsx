@@ -15,7 +15,7 @@
 // `ToolOptionBar` は測量が ON のあいだ持たない（あちらの `holdsBar` が見ている）ので、
 // 持ち主が 2 つになることはない。
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -47,8 +47,16 @@ export function SurveyOptionBar<S>(props: SurveyOptionBarProps<S>): null {
 
   // 器が持ち直されたら押し直す（手直し 3 回目。理由は `shell/useToolBarChrome` の注記）。
   const optionBarEpoch = useOptionBarEpoch(optionBar);
+  // **書いた人の印**（統合 8A〜8D の継ぎ目の検証 2-1）。次の一手と確定欄は印つきで書き、
+  // 片付けも「自分が最後に書いたときだけ」空へ戻す（`useToolBarChrome` と同じ作法）。印なしで
+  // 書くと「最後に書いたのは誰でもない」になり、印を持たない片付け（`clearChromeIfMine(null)`）
+  // で測るの案内が消えうるうえ、測るの片付けがほかの書き手の文を無条件に消してしまう。
+  // 2-1 の症状そのもの（頂点の印の上限の知らせが上書きして片付ける）は `HandleCapNotice` の側で
+  // 「測っている間は出さない」にして止めている。
+  const writerRef = useRef<object>({});
   useEffect(() => {
     if (!active) return;
+    const writer = writerRef.current;
     optionBar.setToolName(SURVEY_STRINGS.toolName);
     optionBar.setTarget(
       null,
@@ -60,19 +68,23 @@ export function SurveyOptionBar<S>(props: SurveyOptionBarProps<S>): null {
     );
     optionBar.setNextStep(
       hasDraft ? SURVEY_STRINGS.guideAwaitingEnd : SURVEY_STRINGS.nextStepIdle,
+      [],
+      writer,
     );
-    optionBar.setCommit([
-      {
-        id: 'finish',
-        // T-1: 役割は「測量を終える」。入口のトグル（`survey-toggle`）とは別の
-        // ボタンなので、testid も別に持つ。
-        label: SURVEY_STRINGS.finishLabel,
-        onClick: () => store.getState().surveyDisable(),
-      },
-    ]);
+    optionBar.setCommit(
+      [
+        {
+          id: 'finish',
+          // T-1: 役割は「測量を終える」。入口のトグル（`survey-toggle`）とは別の
+          // ボタンなので、testid も別に持つ。
+          label: SURVEY_STRINGS.finishLabel,
+          onClick: () => store.getState().surveyDisable(),
+        },
+      ],
+      writer,
+    );
     return () => {
-      optionBar.setCommit([]);
-      optionBar.setNextStep(null);
+      optionBar.clearChromeIfMine(writer);
     };
   }, [optionBar, optionBarEpoch, store, active, hasDraft, lineCount]);
 

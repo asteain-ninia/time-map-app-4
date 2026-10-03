@@ -8,11 +8,14 @@
 //
 // 器は上書きの確認と同じ DraggablePanel + useModalKeydown で揃える（教訓 5.6: 同じ種類の
 // 判断は同じ形で聞く）。Esc と閉じるボタンは「やめる」＝安全側に倒す。
+//
+// **出ている間は鍵盤の持ち主を自分で名乗る**（`useModalRegistration`。設計書 §B.5 の台帳 #27。
+// 本体の取り込みで台帳に載せ、名乗りを足した。`FileOpsController` の `modalOpen` にも入る）。
 
 import { useCallback, useEffect, useRef } from 'react';
 
 import { DraggablePanel } from '../shell/DraggablePanel';
-import { useModalKeydown } from '../a11y/index';
+import { useModalKeydown, useModalRegistration } from '../a11y/index';
 import { PRE_SAVE_STRINGS } from './strings';
 
 export interface PreSaveConfirmDialogProps {
@@ -21,6 +24,8 @@ export interface PreSaveConfirmDialogProps {
   /** true = このまま保存する、false = やめる。Esc と閉じるは false。 */
   readonly onDecide: (confirmed: boolean) => void;
   readonly zIndex?: number;
+  /** 出ている間、鍵盤の持ち主を名乗る口（App は `toolModalChange('pre-save')`）。 */
+  readonly onModalChange?: ((open: boolean) => void) | undefined;
 }
 
 /** 板に並べる行の上限（それより多ければ「ほか n 件」で畳む）。 */
@@ -29,7 +34,8 @@ const MAX_LINES = 6;
 const INITIAL_POSITION = { x: 420, y: 260 } as const;
 
 export function PreSaveConfirmDialog(props: PreSaveConfirmDialogProps): JSX.Element {
-  const { lines, onDecide, zIndex } = props;
+  const { lines, onDecide, zIndex, onModalChange } = props;
+  useModalRegistration(onModalChange, true);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   const cancel = useCallback(() => onDecide(false), [onDecide]);

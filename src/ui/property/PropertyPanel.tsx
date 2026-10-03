@@ -563,6 +563,12 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   // 一度も対象が変わっていない状態で打ちかけを捨てていた（N-04 が効かない）。
   const [seed, setSeed] = useState<DraftSeed>({ key: editTargetKey, baseline, origin });
   const [draft, setDraft] = useState<PropertyEditValues>(baseline);
+  // 増分 8E の再手直し（G-15 / 再検証 3-1）: 「この下書きで 1 度、自動配色を OFF にしたか」。
+  // **下書きと同じ場所** に持ち、下書きを作り直すところ（`setDraft(baseline)` の 4 か所）で一緒に
+  // 消す。「見た目」の欄の部品に持たせると、選択を外す・居ない年へ動いたときに部品だけが外れて
+  // 覚えが消え、確認の［残す］で生き残った下書きの打った色が、次の ON → OFF で上書きされた。
+  const [autoColorWentManual, setAutoColorWentManual] = useState(false);
+  const markAutoColorWentManual = useCallback(() => setAutoColorWentManual(true), []);
   // 教訓 5.12: the save-failure / validation message is dedicated state. It is
   // cleared by ONLY three契機 — a same-operation re-save attempt, an explicit
   // dismiss, or a妥当値での再保存成功.
@@ -616,6 +622,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
       setPendingDiscard(null);
       setSeed({ key: editTargetKey, baseline, origin });
       setDraft(baseline);
+      setAutoColorWentManual(false); // 増分 8E の再手直し: 覚えも下書きと一緒に作り直す
       setSavedValues(null);
     }
   }
@@ -630,6 +637,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     } else {
       setSeed({ key: editTargetKey, baseline, origin });
       setDraft(baseline);
+      setAutoColorWentManual(false); // 増分 8E の再手直し: 覚えも下書きと一緒に作り直す
       setSavedValues(null);
     }
   } else if (
@@ -643,6 +651,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     // はずの名前が保存で復活した。捨てる契機の表は module 冒頭にある（K-5）。
     setSeed({ key: editTargetKey, baseline, origin });
     setDraft(baseline);
+    setAutoColorWentManual(false); // 増分 8E の再手直し: 覚えも下書きと一緒に作り直す
     setSavedValues(null);
   }
 
@@ -741,6 +750,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     setPendingDiscard(null);
     setSeed({ key: editTargetKey, baseline, origin });
     setDraft(baseline);
+    setAutoColorWentManual(false); // 増分 8E の再手直し: 覚えも下書きと一緒に作り直す
     setSavedValues(null);
     // 判断用のメッセージは残す（教訓 5.12: 3 つの契機に「対象の変更」は入らない）。
   }, [editTargetKey, baseline, origin]);
@@ -1125,6 +1135,8 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
               onSubmit={handleSubmitField}
               pristine={!dirty}
               onEscape={focusLedger}
+              autoColorWentManual={autoColorWentManual}
+              onAutoColorWentManual={markAutoColorWentManual}
               {...(props.paletteThemes ? { paletteThemes: props.paletteThemes } : {})}
               {...(areaKm2 !== undefined ? { areaKm2 } : {})}
               {...(lengthKm !== undefined ? { lengthKm } : {})}

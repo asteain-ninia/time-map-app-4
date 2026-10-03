@@ -14,6 +14,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
 
 import { BulkKindLabelDialog } from '../property/BulkKindLabelDialog';
+import { BackupListDialog } from '../file-ops/BackupListDialog';
+import { PreSaveConfirmDialog } from '../file-ops/PreSaveConfirmDialog';
 import { ImpactConfirmDialog } from '../shell/ImpactConfirmDialog';
 
 /** 名乗る口を持つ「本物の板」の部品名。足したらここへ書く（走査の母集合）。 */
@@ -24,6 +26,12 @@ const MODAL_COMPONENTS = [
   'DeleteConfirmDialog',
   // 項目 6: 時刻レールの右クリック（開いているあいだ鍵盤の持ち主は `modal`）。
   'RailContextMenu',
+  // 増分 8D: 以前の保存から開く（世代の一覧）。
+  'BackupListDialog',
+  // 増分 8E（G-10）: 背景地図の縦横比を聞く板。
+  'BasemapAspectDialog',
+  // 本体の増分 7（手直し 2 回目）: 保存の前の確認の板（台帳 #27。本体の取り込みで足した）。
+  'PreSaveConfirmDialog',
 ] as const;
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
@@ -84,6 +92,31 @@ describe('板の登録 — 出している場所は必ず名乗る口を渡す�
   });
 });
 
+/**
+ * **板ではないが鍵盤の持ち主を名乗る一時部品**（`popover` を名乗る。増分 8A）。名乗る口の
+ * 名前は `onOpenChange`（`shell/use-dismissable` が開閉を報せる）。地図の上に出る候補一覧が
+ * 名乗り漏れると、一覧が出ているのに Ctrl+Z などが背後の地図へ抜ける。
+ */
+const POPOVER_COMPONENTS = ['VertexCandidateList'] as const;
+
+describe('一時部品の登録 — 出している場所は必ず名乗る口を渡す（増分 8A）', () => {
+  it.each(POPOVER_COMPONENTS)('%s を出すすべての場所が onOpenChange を渡す', (component) => {
+    const offenders: string[] = [];
+    let found = 0;
+    for (const file of sourceFiles('src')) {
+      const source = readFileSync(file, 'utf8');
+      for (const tag of openingTags(source, component)) {
+        found += 1;
+        if (tag.includes('onOpenChange')) continue;
+        offenders.push(`${file}: ${tag.slice(0, 80)}`);
+      }
+    }
+    // 走査が空振りしていない（出している場所が 1 つは見つかる）。
+    expect(found).toBeGreaterThan(0);
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe('板の登録 — 部品は出ている間だけ名乗る', () => {
   it('ImpactConfirmDialog は出たら名乗り、外れたら取り消す', () => {
     const onModalChange = vi.fn();
@@ -111,6 +144,34 @@ describe('板の登録 — 部品は出ている間だけ名乗る', () => {
         count={3}
         onConfirm={() => undefined}
         onCancel={() => undefined}
+        onModalChange={onModalChange}
+      />,
+    );
+    expect(onModalChange).toHaveBeenCalledWith(true);
+    view.unmount();
+    expect(onModalChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('BackupListDialog は出たら名乗り、外れたら取り消す（増分 8D）', () => {
+    const onModalChange = vi.fn();
+    const view = render(
+      <BackupListDialog
+        listing={{ basis: 'none' }}
+        onChoose={() => undefined}
+        onModalChange={onModalChange}
+      />,
+    );
+    expect(onModalChange).toHaveBeenCalledWith(true);
+    view.unmount();
+    expect(onModalChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('PreSaveConfirmDialog は出たら名乗り、外れたら取り消す（本体の取り込みで足した）', () => {
+    const onModalChange = vi.fn();
+    const view = render(
+      <PreSaveConfirmDialog
+        lines={['南ケナ州（1200年）']}
+        onDecide={() => undefined}
         onModalChange={onModalChange}
       />,
     );

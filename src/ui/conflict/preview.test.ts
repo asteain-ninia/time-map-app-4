@@ -172,3 +172,33 @@ describe('buildConflictPreview (受け入れ基準 3)', () => {
     expect(a.camera).toEqual(b.camera);
   });
 });
+
+// 増分 8E の手直し（設計適合 S2-4）: 色見本で見分けられないときの番号札を下見にも描く。
+describe('buildConflictPreview — 番号札', () => {
+  type Label = { kind: 'label'; text: string; at: { lon: number; lat: number }; halo?: string };
+  const labels = (prims: readonly unknown[]): Label[] =>
+    prims.filter((p): p is Label => (p as { kind: string }).kind === 'label');
+
+  it('札を渡すと、各面の重なっていない部分の中ほどに縁取りつきの札を描く', () => {
+    const preview = buildConflictPreview(CONFLICT, SHAPES, {
+      viewport: VIEWPORT,
+      priorityFeatureId: undefined,
+      tags: { a: '①', b: '②' },
+    });
+    const [a, b] = labels(preview.primitives);
+    expect(a!.text).toBe('①');
+    expect(b!.text).toBe('②');
+    // A の重なっていない部分は経度 0〜5、B の重なっていない部分のいちばん大きい片は 10〜15。
+    expect(a!.at.lon).toBeLessThan(5);
+    expect(b!.at.lon).toBeGreaterThan(10);
+    expect(a!.halo).toBeDefined();
+  });
+
+  it('札を渡さなければ、文字は描かない（これまでどおり）', () => {
+    const preview = buildConflictPreview(CONFLICT, SHAPES, {
+      viewport: VIEWPORT,
+      priorityFeatureId: FA,
+    });
+    expect(labels(preview.primitives)).toEqual([]);
+  });
+});

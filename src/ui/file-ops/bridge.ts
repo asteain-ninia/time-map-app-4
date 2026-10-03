@@ -23,7 +23,13 @@ import type { LoadResponse, SaveRequest, SaveResponse, TimeMapApi } from '../../
 
 import { loadTransportFrom } from './load-adapter';
 import type { LoadStep, LoadTransport } from './load-flow';
-import { SAVE_OUTCOME, saveSucceeded, type FileCommandPorts, type SaveOutcome } from './file-commands';
+import {
+  SAVE_OUTCOME,
+  saveSucceeded,
+  type FileCommandPorts,
+  type ReflectInfo,
+  type SaveOutcome,
+} from './file-commands';
 import type { RepairChoices } from './repair-flow';
 import type { UnsavedChoice } from './unsaved-guard';
 import { zoomRangeOf, type ZoomRangeValue } from './zoom-limit';
@@ -82,11 +88,22 @@ export interface FileOpsHost {
   readonly promptRepair: (
     report: ConsistencyReport,
     isRetry: boolean,
+    project: DomainProject,
   ) => Promise<RepairChoices | null>;
-  /** Reflect a validated project into the store + adopt its save context (教訓 5.22). */
-  readonly reflectProject: (project: DomainProject, path: string) => void;
+  /**
+   * Reflect a validated project into the store + adopt its save context (教訓 5.22).
+   * `info.repaired` は修復ダイアログで直してから反映したか（増分 8D の手直し）。
+   */
+  readonly reflectProject: (project: DomainProject, path: string, info?: ReflectInfo) => void;
   /** Show a Japanese rejection / failure notice (FR-115). */
   readonly notify: (message: string) => void;
+  /**
+   * 修復で捨てた記録があれば、反映のあとで件数を知らせる（増分 7 の手直し 2 回目。「中身のある記録を
+   * 黙って捨てない」）。**ここで型に載せて `buildFileCommandPorts` で写す** ―― 本体（増分 7）では
+   * 宿主（`FileOpsController`）にだけあって、この型と写しに無かったので、知らせが一度も出ていなかった
+   * （統合ブランチの継ぎ目の検証 2-1）。省略可（知らせる先を持たない試験の宿主）。
+   */
+  readonly reportRepairDiscards?: (count: number) => void;
   /**
    * 未保存警告の「保存して続行」から呼ばれる保存（A3）。**上書き確認を通す**ので
    * `save` とは別の口にしてある: これまでこの枝だけが確認を素通りして、読み込み元の
@@ -213,6 +230,15 @@ export function buildFileCommandPorts(host: FileOpsHost): FileCommandPorts {
     autoSave: () => runSave('save', 'auto'),
     load: () => loadVia(() => host.api.load()),
     loadDropped: (droppedPath: string) => loadVia(() => host.api.loadDropped(droppedPath)),
+    // 増分 8D: 世代の一覧と、一覧の id で開く口。開いた結果は普通の読み込みと同じ
+    // 変換（loadTransportFrom）を通り、同じ completeLoad へ合流する（教訓 5.6）。
+    listBackups: () => host.api.listBackups(),
+    openBackup: (id: string) => loadVia(() => host.api.openBackup(id)),
+    // 増分 8D の手直し: 1 回の終わりを主プロセスへ（一覧の世代を間引きの対象に戻す）。
+    // 待たない ―― 次の保存はこのあとに送られるので、主プロセスは先にこれを受け取る。
+    endBackupChoice: () => {
+      void host.api.endBackupChoice().catch(() => undefined);
+    },
     toProject,
     checkConsistency: (project: DomainProject, calendar: Calendar): ConsistencyReport =>
       checkConsistency(project, calendar),
@@ -220,6 +246,9 @@ export function buildFileCommandPorts(host: FileOpsHost): FileCommandPorts {
     promptRepair: host.promptRepair,
     reflectProject: host.reflectProject,
     notify: host.notify,
+    ...(host.reportRepairDiscards === undefined
+      ? {}
+      : { reportRepairDiscards: host.reportRepairDiscards }),
   };
 }
 

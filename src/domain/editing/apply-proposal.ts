@@ -26,6 +26,7 @@ import {
   createAnchor,
   createAnchorSnapshot,
   type Anchor,
+  type AnchorSnapshot,
 } from '../anchor';
 import {
   RING_KIND,
@@ -38,8 +39,10 @@ import {
   createAnchorEntry,
   applyPastEdit,
   resolveAt,
+  withEntrySnapshot,
   type AnchorSeries,
 } from '../anchor-series';
+import { compare as compareTime } from '../time/normalized';
 import type { Calendar } from '../time/calendar';
 import type { TimePoint } from '../time/time-point';
 import { applyCarryForward, carriedAttributesOf } from './carry-forward';
@@ -417,7 +420,132 @@ export function applySplitProposal(
     calendar,
   );
 
+  // 5. **T より後ろの錨へも引き継ぐ**（統合 8A〜8D の継ぎ目の検証 2-3）。上の 3・4 は T の時点で
+  // 効いている錨しか触らないので、隣が分けた年より後ろに錨を持つと、そこで隣は切り口を持たず
+  // （片の切り口の点が隣の辺の途中に乗る T 字）、共有頂点も古い id のまま引く（id での共有が
+  // 切れ、あとで片の頂点を動かすと隣が付いてこない）。辺に足した頂点（増分 8A）と同じ歩き方
+  // （{@link carryIntoLaterAnchors}）で、後ろの錨へ同じ付け替えと切り口を入れる。
+  //
+  // **引き継ぐのは、継承先の形が分けた結果のままでいる間だけ**: 継承先の履歴に T より後ろの錨が
+  // あれば、そこからは記録どおり分ける前の形（古い id）に戻る（FR-55）。その先の隣まで新しい id
+  // にすると、今度はそこで継承先との共有が切れる。8A は押した地物の後ろの錨も書き換えるので
+  // この区切りが要らないが、分割は継承先の後ろの錨を書き換えないので、区切りで揃える。
+  const carryUntil =
+    existing === undefined ? null : nextEntryStartAfter(existing.history.series, anchorTime, calendar);
+  histories = carrySplitIntoLaterAnchors(
+    histories,
+    snapshot,
+    vertices,
+    anchorTime,
+    carryUntil,
+    calendar,
+  );
+
   return withHistories(root, histories);
+}
+
+/** 系列の中で、開始が `time` より後ろの最初の錨の開始（無ければ null）。 */
+function nextEntryStartAfter(
+  series: AnchorSeries,
+  time: TimePoint,
+  calendar: Calendar,
+): TimePoint | null {
+  let best: TimePoint | null = null;
+  for (const entry of series.entries) {
+    if (compareTime(entry.start, time, calendar) <= 0) continue;
+    if (best === null || compareTime(entry.start, best, calendar) < 0) best = entry.start;
+  }
+  return best;
+}
+
+/**
+ * 分割の「共有頂点の付け替え」（手順 3）と「共有辺の切り口」（手順 4）を、**T より後ろの錨**へ
+ * 引き継ぐ（統合 8A〜8D の継ぎ目の検証 2-3。歩き方は 8A の辺への挿入と同じ
+ * {@link carryIntoLaterAnchors}）。
+ *
+ * 各履歴の後ろの錨を古い順に見て、
+ * - **付け替え**: 写しが引く古い id のうち、その錨での体の座標が分けた結果の新しい体と同じもの
+ *   だけを新しい id へ付け替える（座標が違えば、記録された歴史でその頂点が動いている ―― 付け
+ *   替えると同じ id の体が年ごとに食い違う）。
+ * - **切り口**: 切られた辺の両端（古い id か新しい id）が続けて並ぶ輪・線へ、切り口の点を入れる
+ *   （T の時点と同じ {@link insertSeamsIntoFeature}）。
+ * - どちらも起きなかった錨で、その履歴は打ち切る（8A の「a と b が続く輪が無い錨で打ち切る」と
+ *   同じ。記録された歴史で境目が変わったので、それより先へは持ち込まない）。
+ * - `until`（継承先の次の錨の開始）から先へは持ち込まない（呼び出し側の注記）。
+ *
+ * 継承先そのものは触らない（継承先の後ろの錨は `until` で外れる。念のため id でも外す）。
+ * 純関数。変化の無い履歴は同じ値を返す。
+ */
+function carrySplitIntoLaterAnchors(
+  histories: readonly FeatureHistory[],
+  snapshot: SplitSnapshot,
+  splitVertices: readonly Vertex[],
+  anchorTime: TimePoint,
+  until: TimePoint | null,
+  calendar: Calendar,
+): FeatureHistory[] {
+  const remap = snapshot.vertexRemap;
+  const groups =
+    snapshot.sharedEdgeCuts.length === 0
+      ? []
+      : groupSharedEdgeCuts(snapshot.sharedEdgeCuts, splitVertices);
+  if (remap.size === 0 && groups.length === 0) return [...histories];
+  const newBodies = new Map<VertexId, Vertex>(splitVertices.map((v) => [v.id, v]));
+  const inheritorId = snapshot.inheritorFeatureId;
+  const seamEdges = groups.map((group) => ({
+    group,
+    startIds: endpointVariants(group.edgeStartVertexId, remap),
+    endIds: endpointVariants(group.edgeEndVertexId, remap),
+    seamIds: new Set(group.seams.map((s) => s.vertex.id)) as ReadonlySet<VertexId>,
+  }));
+
+  const rewrite = (snap: AnchorSnapshot): AnchorSnapshot | null | typeof STOP_CARRYING => {
+    // (a) 付け替え: 座標が同じ古い id だけ（A5 の作法: 地物ごとに自分の id を 1 度だけ歩く）。
+    const local = new Map<VertexId, VertexId>();
+    for (const f of snap.features) {
+      if (f.id === inheritorId) continue;
+      for (const id of referencedVertexIds(f)) {
+        const to = remap.get(id);
+        if (to === undefined || to === id || local.has(id)) continue;
+        const oldBody = getVertex(snap.vertices, id);
+        const newBody = newBodies.get(to);
+        if (oldBody === undefined || newBody === undefined) continue;
+        if (quantizedEqual(oldBody.coordinate, newBody.coordinate)) local.set(id, to);
+      }
+    }
+    let features: readonly Feature[] = snap.features;
+    let store: VertexStore = snap.vertices;
+    let touched = false;
+    if (local.size > 0) {
+      features = features.map((f) => (f.id === inheritorId ? f : repointThroughRemap(f, local)));
+      store = remapVertexStore(snap.vertices, splitVertices, features);
+      touched = true;
+    }
+    // (b) 切り口: 両端が続けて並ぶ輪・線へ（T の時点と同じ並べ方）。
+    for (const { group, startIds, endIds, seamIds } of seamEdges) {
+      const takes = features.some(
+        (f) => f.id !== inheritorId && featureHasSharedEdge(f, startIds, endIds, seamIds),
+      );
+      if (!takes) continue;
+      const withSeams = createVertexStore([
+        ...store.byId.values(),
+        ...group.seams.map((s) => s.vertex),
+      ]);
+      features = features.map((f) =>
+        f.id === inheritorId
+          ? f
+          : insertSeamsIntoFeature(f, startIds, endIds, group.seams, withSeams),
+      );
+      store = withSeams;
+      touched = true;
+    }
+    return touched ? createAnchorSnapshot(features, store) : STOP_CARRYING;
+  };
+
+  return histories.map((history) => {
+    const series = carryIntoLaterAnchors(history.series, anchorTime, until, calendar, rewrite);
+    return series === history.series ? history : { featureId: history.featureId, series };
+  });
 }
 
 /**
@@ -639,7 +767,8 @@ interface SharedEdgeCutGroup {
  * Group every共有辺途中切断点 by the ORIGINAL edge it crosses — keyed by the target
  * feature id plus the edge's two endpoint vertex ids (order-independent), so two cuts
  * on the SAME shared edge end up in one group. Each cut's minted seam vertex (matched
- * by quantized coordinate) is collected; cuts with no minted seam are dropped. Groups
+ * by quantized coordinate) is collected; a cut with no minted seam THROWS (増分 8B の
+ * 再手直し — it used to be dropped silently, leaving a T-junction on the neighbour). Groups
  * and their seams preserve the geometry layer's emission order; the splice orders them
  * along the edge afterwards (so the absolute key order here does not matter). Pure.
  */
@@ -651,7 +780,16 @@ function groupSharedEdgeCuts(
   const order: string[] = [];
   for (const cut of cuts) {
     const seam = findVertexAtCoordinate(splitVertices, cut.cutCoordinate);
-    if (seam === undefined) continue; // no minted seam vertex → nothing to share.
+    // **黙って捨てない**（増分 8B の再手直し / 再検証 3-1）。切り口は分割の片の頂点から
+    // 作るので、ここで片の頂点が見つからないのは作り方の不具合である。捨てると隣の辺に
+    // 点が入らず、境目に T 字のつなぎ目が黙って残る（あとで隣の頂点を動かすと裂ける）。
+    // 投げれば、検査では落ち、本番では U13 の守り（`runGuarded`）が「内部エラー」の
+    // 断り（＋開発者へ報告の案内）に変えて、確定させない。
+    if (seam === undefined) {
+      throw new Error(
+        `U44: split shared-edge cut at (${String(cut.cutCoordinate.lon)}, ${String(cut.cutCoordinate.lat)}) has no piece vertex (FR-95; the neighbour edge would keep a T-junction)`,
+      );
+    }
     // Order-independent edge key: the same physical edge yields the same key whether the
     // geometry recorded it as (start,end) or (end,start).
     const lo = idToString(cut.edgeStartVertexId) <= idToString(cut.edgeEndVertexId)
@@ -1630,7 +1768,224 @@ export function applyEditProposal(
       ? h // 対象の履歴は上で引き継ぎ済み。
       : carryVertexForwardIn(h, anchorTime, vertexCarries, calendar),
   );
+  // **辺に足した頂点を、その辺を共有するすべての地物にも入れる**（増分 8A の手直し・反証 重 2）。
+  // 上の 2 本は「既に引かれている頂点の体」を配るだけなので、まだ誰も引いていない新しい
+  // 頂点は届かない。対象の履歴も含めて全履歴を見る ―― まとめ役の子どうしのように、隣が
+  // 同じ錨の写しの中に居ることがあるため。判定は輪ごとで、押した地物の別の輪（隣り合う
+  // 穴どうし）にも入る。**T より後ろの錨へも、a と b がまだ続けて並ぶ輪には同じ頂点を
+  // 入れる**（再検証 重 2-1。押した地物の後ろの錨にも、隣の後ろの錨にも。錨の切れ目が
+  // 隣どうしで違うと、入れないままでは後ろの年に T 字が残る）。
+  if (snapshot.edgeInsert !== undefined) {
+    histories = applyEdgeInsertToHistories(
+      histories,
+      snapshot.edgeInsert,
+      snapshot.sharePair,
+      movedVertices,
+      anchorTime,
+      calendar,
+    );
+  }
   return withHistories(root, histories);
+}
+
+/**
+ * 辺に足した頂点を、**同じ辺（両端の id が続けて並ぶ辺。向きは問わない）を引いている
+ * ほかの地物**の輪・線にも入れる（増分 8A の手直し・反証 重 2）。並べ方の規則は分割の
+ * 「共有辺の途中を切る」（FR-95。{@link insertSeamsIntoFeature}）と同じ 1 本を使う。
+ *
+ * - 入れる id は、確定で吸着が共有に変わったなら **共有先の id**（`applySharePair` が押した
+ *   地物の中で付け替えるのと同じ id）、そうでなければ足した頂点の id。
+ * - 判定は **輪（線）ごと**。その id を既に引いている輪には入れない（同じ頂点を 2 度
+ *   引かせない）。押した地物も対象で、同じ辺を引く別の輪（隣り合う穴どうし）にも入る。
+ * - T の時点で効いている錨に入れ、さらに **T より後ろの錨へも引き継ぐ**（a と b が続けて
+ *   並ぶ輪が無い錨に来たら、その履歴はそこで打ち切る）。
+ * - 頂点の体は、その写しに同じ id の体が無いときだけ足す（共有先の体は正しい座標を持つ）。
+ *
+ * 純関数。変化の無い履歴は同じ値を返す。
+ */
+function applyEdgeInsertToHistories(
+  histories: readonly FeatureHistory[],
+  insert: { readonly startVertexId: VertexId; readonly endVertexId: VertexId; readonly vertexId: VertexId },
+  sharePair: { readonly dragged: VertexId; readonly target: VertexId } | undefined,
+  movedVertices: readonly Vertex[],
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): FeatureHistory[] {
+  const added = movedVertices.find((v) => v.id === insert.vertexId);
+  if (added === undefined) return [...histories];
+  const insertedId =
+    sharePair !== undefined && sharePair.dragged === insert.vertexId ? sharePair.target : insert.vertexId;
+  const body = insertedId === added.id ? added : createVertex(insertedId, added.coordinate);
+  const seam: SeamInsertion = { vertex: body, coordinate: body.coordinate };
+  const startIds: ReadonlySet<VertexId> = new Set([insert.startVertexId]);
+  const endIds: ReadonlySet<VertexId> = new Set([insert.endVertexId]);
+  const seamIds: ReadonlySet<VertexId> = new Set([insertedId]);
+  // 判定は **輪（線）ごと**（再検証 重 2-2）。押した地物も対象に含める ―― 押した地物が
+  // 同じ辺を 2 つの輪で引いている（隣り合う穴どうし）と、もう片方の輪にも入れる必要がある。
+  // 押した輪は既に a・新・b と並んでいて a–b の辺を持たないので、二重には入らない。
+  const withBody = (store: VertexStore): VertexStore =>
+    getVertex(store, insertedId) === undefined
+      ? createVertexStore([...store.byId.values(), body])
+      : store;
+  const insertInto = (features: readonly Feature[], store: VertexStore): readonly Feature[] | null => {
+    let changed = false;
+    const next = features.map((f) => {
+      const out = insertEdgeVertexIntoContainers(f, startIds, endIds, seamIds, seam, store);
+      if (out !== f) changed = true;
+      return out;
+    });
+    return changed ? next : null;
+  };
+
+  return histories.map((history) => {
+    let series = history.series;
+    // (1) T の時点で効いている錨（無ければ T に錨を立てる）。
+    const resolution = resolveAt(series, anchorTime, calendar);
+    if (
+      resolution.kind === 'present' &&
+      resolution.entry.anchor.snapshot.features.some((f) =>
+        containersTakingEdgeVertex(f, startIds, endIds, seamIds),
+      )
+    ) {
+      series = applyPastEdit(
+        series,
+        anchorTime,
+        (effective): Anchor => {
+          const effBase =
+            effective.kind === 'present'
+              ? effective.entry.anchor.snapshot
+              : createAnchorSnapshot([], createVertexStore([]));
+          const store = withBody(effBase.vertices);
+          const features = insertInto(effBase.features, store) ?? effBase.features;
+          return anchorFor(features, store, history.featureId, anchorTime);
+        },
+        calendar,
+      );
+    }
+    // (2) **T より後ろの錨へも引き継ぐ**（再検証 重 2-1。共有頂点の移動を後ろの錨へ引き継ぐ
+    // 増分 3 の決定 (2) と同じ考え方）。入れないと、隣どうしで錨の切れ目が違うとき、後ろの
+    // 年で片方にだけ頂点がある T 字が残り、足した頂点を動かすとそこで境界が裂ける。
+    // 古い順に歩き、**a と b がまだ続けて並ぶ輪**へ同じ頂点を入れる。a と b が続く輪が 1 つも
+    // 無い錨に来たら、その履歴はそこで打ち切る（記録された歴史でその辺が変わったので、
+    // それより先へは持ち込まない）。クリックで足した頂点は辺の上にあるので、後ろの年の形は
+    // 変わらない（「保存は見ている年に効かせる」と矛盾しない）。
+    series = carryIntoLaterAnchors(series, anchorTime, null, calendar, (snap) => {
+      if (!snap.features.some((f) => containersHaveEdge(f, startIds, endIds, seamIds))) {
+        return STOP_CARRYING;
+      }
+      const store = withBody(snap.vertices);
+      const features = insertInto(snap.features, store);
+      return features === null ? null : createAnchorSnapshot(features, store);
+    });
+    return series === history.series ? history : { featureId: history.featureId, series };
+  });
+}
+
+/** {@link carryIntoLaterAnchors} の 1 錨ぶんの書き換えが「ここで打ち切る」と言うための印。 */
+const STOP_CARRYING = Symbol('stop-carrying');
+
+/**
+ * **T より後ろの錨へ、同じ書き換えを古い順に引き継ぐ**歩き方（増分 8A の手直しで辺に足した
+ * 頂点のために作り、統合の手直しで分割の切り口・頂点の付け替えにも使う。継ぎ目の検証 2-3）。
+ *
+ * - 開始が T より後ろ（`until` があればそれより前）の錨だけを、古い順に `rewrite` へ渡す。
+ * - `rewrite` は新しい写し（書き換える）・`null`（この錨は変えずに次へ）・{@link STOP_CARRYING}
+ *   （この錨から先へは持ち込まない ―― 記録された歴史でその辺・頂点が変わった）を返す。
+ * - 錨の開始・終わり・id は変えない（写しだけ差し替える）。変化が無ければ同じ系列を返す。
+ *
+ * 純関数。
+ */
+function carryIntoLaterAnchors(
+  series: AnchorSeries,
+  anchorTime: TimePoint,
+  until: TimePoint | null,
+  calendar: Calendar,
+  rewrite: (snapshot: AnchorSnapshot) => AnchorSnapshot | null | typeof STOP_CARRYING,
+): AnchorSeries {
+  let carrying = true;
+  const entries = series.entries.map((entry) => {
+    if (!carrying) return entry;
+    if (compareTime(entry.start, anchorTime, calendar) <= 0) return entry;
+    if (until !== null && compareTime(entry.start, until, calendar) >= 0) {
+      carrying = false;
+      return entry;
+    }
+    const next = rewrite(entry.anchor.snapshot);
+    if (next === STOP_CARRYING) {
+      carrying = false;
+      return entry;
+    }
+    return next === null ? entry : withEntrySnapshot(entry, next);
+  });
+  return entries.some((e, i) => e !== series.entries[i]) ? { entries } : series;
+}
+
+/** 地物の輪・線のうち、a–b の辺（向きは問わない）をまだ持っているものがあるか。 */
+function containersHaveEdge(
+  feature: Feature,
+  startIds: ReadonlySet<VertexId>,
+  endIds: ReadonlySet<VertexId>,
+  seamIds: ReadonlySet<VertexId>,
+): boolean {
+  return vertexIdLists(feature).some(
+    ({ ids, closed }) => edgeIndexFor(ids, startIds, endIds, seamIds, closed) >= 0,
+  );
+}
+
+/** a–b の辺を持ち、足す頂点をまだ引いていない輪・線があるか（＝入れる先がある）。 */
+function containersTakingEdgeVertex(
+  feature: Feature,
+  startIds: ReadonlySet<VertexId>,
+  endIds: ReadonlySet<VertexId>,
+  seamIds: ReadonlySet<VertexId>,
+): boolean {
+  return vertexIdLists(feature).some(
+    ({ ids, closed }) =>
+      edgeIndexFor(ids, startIds, endIds, seamIds, closed) >= 0 &&
+      !ids.some((id) => seamIds.has(id)),
+  );
+}
+
+/**
+ * 地物の輪・線のうち、a–b の辺を持ち、足す頂点をまだ引いていないものへ頂点を入れる
+ * （輪ごとの判定。並べ方は {@link spliceSeamsAfter}）。何も入らなければ同じ値を返す。
+ */
+function insertEdgeVertexIntoContainers(
+  feature: Feature,
+  startIds: ReadonlySet<VertexId>,
+  endIds: ReadonlySet<VertexId>,
+  seamIds: ReadonlySet<VertexId>,
+  seam: SeamInsertion,
+  store: VertexStore,
+): Feature {
+  const spliced = (ids: readonly VertexId[], closed: boolean): VertexId[] | null => {
+    if (ids.some((id) => seamIds.has(id))) return null; // 同じ輪に 2 度引かせない。
+    const idx = edgeIndexFor(ids, startIds, endIds, seamIds, closed);
+    return idx < 0 ? null : spliceSeamsAfter(ids, idx, [seam], store);
+  };
+  switch (feature.kind) {
+    case FEATURE_KIND.Line: {
+      const ids = spliced(feature.vertexIds, false);
+      return ids === null ? feature : (withLineVertexIds(feature as LineFeature, ids) as Feature);
+    }
+    case FEATURE_KIND.Leaf: {
+      const rings = (feature as LeafFeature).shape.rings;
+      let changed = false;
+      const nextRings: Ring[] = rings.map((ring) => {
+        const ids = spliced(ring.vertexIds, true);
+        if (ids === null) return ring;
+        changed = true;
+        return ring.kind === RING_KIND.Territory
+          ? withTerritoryRingVertexIds(ring, ids)
+          : withHoleRingVertexIds(ring, ids);
+      });
+      return changed
+        ? (withLeafShape(feature as LeafFeature, createShape(nextRings)) as Feature)
+        : feature;
+    }
+    default:
+      return feature;
+  }
 }
 
 /** 1 つの履歴に頂点の引き継ぎを掛ける（変化が無ければ同じ値を返す）。 */

@@ -26,7 +26,7 @@
 // coordinate TRUTH stays in the readout; only which projection is SHOWN is local).
 // All user-visible text comes from SURVEY_STRINGS (教訓 5.19).
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -35,7 +35,7 @@ import type { CoordinateDisplay } from '../../domain/survey/coords-format';
 import { OptionPopover } from '../shell/OptionPopover';
 import type { SessionStore } from '../state/store';
 
-import { currentMeasurement } from './survey-batch';
+import { DEFAULT_SURVEY_STYLE, currentMeasurement } from './survey-batch';
 import { SURVEY_STRINGS, formatDistanceKm } from './strings';
 
 /** Which coordinate form(s) the readout shows (FR-16 切替; UI-local). */
@@ -157,14 +157,36 @@ export function SurveyMeasurementPanel<S>(
           に残っている**（.survey-controls__distance の min-width がそれ）。 */}
       {(survey.active || readout !== null) && (
         <div className="survey-controls__readout" data-testid="survey-readout">
+          {/* 増分 8C / N-52: 距離のラベル（「正距円筒」「大円」）の下に **地図の線と同じ色・
+              同じ線種の線**を引く。これが 2 本の線の凡例である（正距円筒＝実線・大円＝破線）。
+              **見本を文字の横へ並べない**のは、帯の幅に余りが無いからである ―― 1280px で
+              設定欄の予算は 540px、測量の読み取りは見本なしで約 500px あり、横に 2 つ並べると
+              読み取りごと「≫」へ畳まれて距離が読めなくなった（実測）。下線なら幅は 1px も
+              増えない（K-3 / 教訓 5.69）。 */}
           <span className="survey-controls__distance" data-testid="survey-eq-distance">
-            {SURVEY_STRINGS.equirectangularShort}:{' '}
+            <LegendLabel
+              testId="survey-legend-eq"
+              stroke={DEFAULT_SURVEY_STYLE.equirectangularStroke}
+              dashPx={null}
+              title={SURVEY_STRINGS.legendEquirectangular}
+            >
+              {SURVEY_STRINGS.equirectangularShort}
+            </LegendLabel>
+            :{' '}
             {readout !== null
               ? formatDistanceKm(readout.equirectangularKm)
               : SURVEY_STRINGS.noValue}
           </span>
           <span className="survey-controls__distance" data-testid="survey-gc-distance">
-            {SURVEY_STRINGS.greatCircleShort}:{' '}
+            <LegendLabel
+              testId="survey-legend-gc"
+              stroke={DEFAULT_SURVEY_STYLE.greatCircleStroke}
+              dashPx={DEFAULT_SURVEY_STYLE.greatCircleDashPx}
+              title={SURVEY_STRINGS.legendGreatCircle}
+            >
+              {SURVEY_STRINGS.greatCircleShort}
+            </LegendLabel>
+            :{' '}
             {readout !== null
               ? formatDistanceKm(readout.greatCircleKm)
               : SURVEY_STRINGS.noValue}
@@ -210,6 +232,52 @@ export function SurveyMeasurementPanel<S>(
         </div>
       )}
     </div>
+  );
+}
+
+// --- 線の凡例（増分 8C / N-52）---------------------------------------------
+
+/**
+ * 距離のラベルに、地図に描いている測量の線 1 本ぶんの見本を **下線として**引く。
+ * 色・太さ・破線の刻みは描画と同じ `DEFAULT_SURVEY_STYLE` から取り（写しの値を持たない
+ * ―― 教訓 5.29）、CSS の変数で渡す（線を描くのは `survey.css` の
+ * `.survey-controls__legend`）。ラベルの文字はそのまま ―― 距離の観測
+ * （`survey-*-distance` の文字列）も、読み取りの幅も変わらない。
+ */
+function LegendLabel(props: {
+  readonly testId: string;
+  readonly stroke: string;
+  /** 破線の刻み `[線, すき間]`（px）。`null` は実線。 */
+  readonly dashPx: readonly number[] | null;
+  /** 指を載せると出る説明（どちらの線か）。 */
+  readonly title: string;
+  readonly children: string;
+}): JSX.Element {
+  const { testId, stroke, dashPx, title, children } = props;
+  const dash = dashPx?.[0] ?? 0;
+  const gap = dashPx?.[1] ?? 0;
+  const vars: Record<string, string> = {
+    '--survey-legend-color': stroke,
+    '--survey-legend-width': `${String(DEFAULT_SURVEY_STYLE.lineWidthPx)}px`,
+  };
+  if (dashPx !== null) {
+    vars['--survey-legend-dash'] = `${String(dash)}px`;
+    vars['--survey-legend-period'] = `${String(dash + gap)}px`;
+  }
+  return (
+    <span
+      className={
+        dashPx === null
+          ? 'survey-controls__legend'
+          : 'survey-controls__legend survey-controls__legend--dashed'
+      }
+      data-testid={testId}
+      data-dash={dashPx === null ? 'solid' : 'dashed'}
+      title={title}
+      style={vars as CSSProperties}
+    >
+      {children}
+    </span>
   );
 }
 

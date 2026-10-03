@@ -43,7 +43,10 @@ import {
   clickPoint as surveyClickPointTransition,
   disableSurveyMode,
   enableSurveyMode,
+  forgetRemovedSurveyLine,
   initialSurveyState,
+  removeSurveyLine as surveyRemoveLineTransition,
+  restoreRemovedSurveyLine,
   updateHover as surveyUpdateHoverTransition,
   type SurveyState,
 } from '../../domain/survey/index';
@@ -208,6 +211,14 @@ export interface SessionStoreState<S> {
    * 「セッション限りの見え方」）。
    */
   readonly gridVisibleOverride: boolean | null;
+  /**
+   * 緯経線グリッドの **赤道・0 度・180 度の強調** を見せるか（増分 8E / G-12。FR-13）。
+   *
+   * 既定は見せる（FR-13 の「強調表示する」）。表示の設定（「表示 ▾」）から外せる。
+   * `gridVisibleOverride` と同じ **セッション限りの見え方** で、保存ファイルに書かず、
+   * 未保存の印も立てない（読むだけでも切り替えられる。教訓 5.36 の第 3 の区分）。
+   */
+  readonly gridEmphasisVisible: boolean;
 
   /**
    * 作図中の吸着の設定（増分 3 / 設計書 §C.4 の「吸着 ▾」／§N-6）。
@@ -479,8 +490,22 @@ export interface SessionStoreActions<S> {
   surveyUpdateHover(point: WorldCoordinate): void;
   /** Cancel the in-progress draft (Escape / mode switch); lines + active kept. */
   surveyCancelDraft(): void;
-  /** Clear ALL survey results (確定線 + draft) — the only line-emptying path. */
+  /**
+   * 測量の結果（確定線＋下書き）を **全部一度に** 消す唯一の経路（［測量結果をクリア］）。
+   * 1 本だけ消すのは {@link surveyRemoveLine}。
+   */
   surveyClear(): void;
+  /**
+   * 確定した線を 1 本だけ消す（増分 8C / 設計書 §E.1 V15。右クリック「この線を消す」）。
+   * 測っている途中の始点には触らない。無い id なら何もしない（同じ参照のまま）。
+   * 消した線は `survey.removed` に覚え、{@link surveyRestoreRemovedLine} で戻せる。
+   */
+  surveyRemoveLine(lineId: number): void;
+  /**
+   * 直前に消した線を元の位置へ戻す（増分 8C の手直し。状態行の［戻す］と、消した直後の
+   * Ctrl+Z）。覚えが無ければ何もしない。戻したら `true`。
+   */
+  surveyRestoreRemovedLine(): boolean;
 
   // display-control filter (FR-113, U41) — session-only, no projectDirty / domain touch
   /** FR-113 種別軸: toggle a kind (点/線/面) on the display filter. */
@@ -549,6 +574,11 @@ export interface SessionStoreActions<S> {
    */
   setGridVisibleOverride(next: boolean | null): void;
   /**
+   * 赤道・0 度・180 度の強調を見せるか（増分 8E / G-12）。**保存ファイルに書かない**
+   * （{@link SessionState.gridEmphasisVisible}）。
+   */
+  setGridEmphasisVisible(next: boolean): void;
+  /**
    * 作図中の吸着の設定を部分更新する（増分 3 / 設計書 §C.4）。
    * **`projectDirty` を立てない・保存ファイルに書かない**（{@link SessionState.snapSettings}）。
    */
@@ -616,6 +646,12 @@ export interface SessionStoreActions<S> {
        * 捨てたあとに戻す。渡さない（＝新規・古いファイル）なら束は無い。
        */
       readonly ledgerBundle?: Bundle | null;
+      /**
+       * 反映する中身が **どのファイルにも無い**（増分 8D の手直し: 世代から開いて修復した）。
+       * 真なら clean の基準点を作らず、未保存（dirty）で始める ―― 閉じるときに確認が出る。
+       * 取り消し・やり直しで元の形へ戻しても clean にはならない（基準点が無いので）。
+       */
+      readonly notOnDisk?: boolean;
     },
   ): void;
   /** Clear the project-dirty flag (called after a save by the persistence unit). */
@@ -693,6 +729,19 @@ function toolPatch(
   const locked = state.mode === EDIT_MODE.View;
   const next = locked ? null : tool;
   return { activeTool: next, mode: modeForTool(locked, next) };
+}
+
+/**
+ * **消した測量の線の覚えを捨てる差分**（増分 8C の手直し / 反証 #2）。地物の編集・取り消し／
+ * やり直し・道具の持ち替え・鍵の切り替えで、「直前に消した線を戻す」を終わらせる ――
+ * そのあとの Ctrl+Z は地物の取り消しに戻る。覚えが無ければ空の差分（`survey` の参照を変えず、
+ * 測量の層を描き直させない）。
+ */
+function forgetRemovedSurveyPatch(state: {
+  readonly survey: SurveyState;
+}): { readonly survey?: SurveyState } {
+  const next = forgetRemovedSurveyLine(state.survey);
+  return next === state.survey ? {} : { survey: next };
 }
 
 function selectionPatch(selection: SelectionState): SelectionPatch {
@@ -1240,6 +1289,8 @@ export function createSessionStore<S>(
     activeTool: init.activeTool ?? null,
     // 起動直後は上書きなし（＝プロジェクト設定に従う）。
     gridVisibleOverride: null,
+    // 増分 8E（G-12）: 起動直後は FR-13 の既定どおり強調して描く。
+    gridEmphasisVisible: true,
     snapSettings: DEFAULT_SNAP_SETTINGS,
     currentTime: init.currentTime ?? DEFAULT_TIMELINE_MIN,
     lastTimeChangeSource: null,
@@ -1300,6 +1351,8 @@ export function createSessionStore<S>(
         domain: nextDomain,
         projectDirty: true,
         displayControl: nextDisplayControl,
+        // 地物の編集をしたら、消した測量の線を戻す覚えは捨てる（増分 8C の手直し）。
+        ...forgetRemovedSurveyPatch(get()),
         ...(nextProjectSettings !== curProjectSettings
           ? { projectSettings: nextProjectSettings }
           : {}),
@@ -1406,6 +1459,8 @@ export function createSessionStore<S>(
         displayControl: nextDisplayControl,
         // 手直し B5: 「いま取り消し／やり直しが起きた」の印。一覧の追従だけが読む。
         undoRedoNonce: get().undoRedoNonce + 1,
+        // 地物の取り消し／やり直しも、消した測量の線を戻す覚えを捨てる（増分 8C の手直し）。
+        ...forgetRemovedSurveyPatch(get()),
         ...(nextProjectSettings !== curProjectSettings
           ? { projectSettings: nextProjectSettings }
           : {}),
@@ -1607,6 +1662,8 @@ export function createSessionStore<S>(
       set({
         ...patch,
         ...(acrossViewOnly ? {} : selectionPatch(EMPTY_SELECTION)),
+        // 鍵の切り替え・道具を外すのも持ち替えなので、消した線の覚えを捨てる（増分 8C の手直し）。
+        ...forgetRemovedSurveyPatch(get()),
       });
     },
 
@@ -1652,6 +1709,8 @@ export function createSessionStore<S>(
         ...selectionPatch(
           preserveSelection ?? selectionAcrossToolSwitch(get(), patch.activeTool),
         ),
+        // 道具の持ち替えで、消した測量の線を戻す覚えを捨てる（増分 8C の手直し）。
+        ...forgetRemovedSurveyPatch(get()),
       });
     },
 
@@ -1849,6 +1908,20 @@ export function createSessionStore<S>(
       if (next !== cur) set({ survey: next });
     },
 
+    surveyRemoveLine(lineId) {
+      const cur = get().survey;
+      const next = surveyRemoveLineTransition(cur, lineId);
+      if (next !== cur) set({ survey: next });
+    },
+
+    surveyRestoreRemovedLine() {
+      const cur = get().survey;
+      const next = restoreRemovedSurveyLine(cur);
+      if (next === cur) return false;
+      set({ survey: next });
+      return true;
+    },
+
     // -- display-control filter (FR-113, U41): INDEPENDENT session axis ------
     // Every setter writes ONLY `filter` (never domain / selection / projectDirty /
     // displayControl), so a filter change cannot disturb an in-progress edit and is
@@ -2037,6 +2110,12 @@ export function createSessionStore<S>(
     setGridVisibleOverride(next) {
       if (get().gridVisibleOverride === next) return;
       set({ gridVisibleOverride: next });
+    },
+
+    /** 赤道・0 度・180 度の強調の見え方（増分 8E / G-12）。保存ファイルに書かない。 */
+    setGridEmphasisVisible(next) {
+      if (get().gridEmphasisVisible === next) return;
+      set({ gridEmphasisVisible: next });
     },
 
     /**
@@ -2258,7 +2337,10 @@ export function createSessionStore<S>(
       const effectiveProject =
         settings.projectSettings ?? get().projectSettings;
       const effectiveApp = settings.appSettings ?? get().appSettings;
-      savedDomain = nextDomain;
+      // 増分 8D の手直し: 中身がどのファイルにも無い（世代から開いて修復した）なら、clean の
+      // 基準点を作らない（savedDomain = null は「一度も保存していない」＝決して clean にならない）。
+      const notOnDisk = settings.notOnDisk === true;
+      savedDomain = notOnDisk ? null : nextDomain;
       savedProjectSettings = effectiveProject;
       savedAppSettings = effectiveApp;
       // Clean baseline: a LOAD / NEW installs a fresh base-map bytes baseline — clear the
@@ -2309,7 +2391,7 @@ export function createSessionStore<S>(
           ? { appSettings: settings.appSettings }
           : {}),
         // -- clean baseline + derived range/time (both halves cleared dirty) --
-        projectDirty: false,
+        projectDirty: notOnDisk,
         ...timelinePatch,
       });
     },

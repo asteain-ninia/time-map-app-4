@@ -797,6 +797,58 @@ export async function projectStats(page: Page): Promise<ProjectStats> {
   });
 }
 
+/** 末端地物の中身の問い合わせ (src/ui/e2e/leaf-report.ts の LeafReportQuery の写し)。 */
+export interface LeafReportQuery {
+  readonly ids?: readonly string[];
+  readonly names?: readonly string[];
+  readonly probes?: readonly { readonly lon: number; readonly lat: number }[];
+}
+
+/** 末端地物 1 件の中身 (src/ui/e2e/leaf-report.ts の LeafReportEntry の写し)。 */
+export interface LeafReportEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly kindLabel: string | null;
+  readonly color: unknown;
+  readonly anchorStartYears: readonly number[] | null;
+  readonly areaKm2: number | null;
+  readonly polygonCount: number;
+  readonly ringCount: number;
+}
+
+/** src/ui/e2e/leaf-report.ts の LeafReport の写し。 */
+export interface LeafReport {
+  readonly entries: readonly LeafReportEntry[];
+  readonly totalAreaKm2: number;
+  readonly maxPairOverlapKm2: number;
+  readonly probeOwners: readonly (string | null)[];
+}
+
+/**
+ * **いま見ている年**の末端地物を id か名前で選んで、中身をドメインの値で読む (T-2 の隠し観測。
+ * 増分 8B の手直し)。分割の検査が一覧の件数や板の文といった表示だけに頼らないための口。
+ */
+export async function leafReport(page: Page, query: LeafReportQuery): Promise<LeafReport> {
+  await page.waitForFunction(
+    () =>
+      typeof (globalThis as { __E2E_HARNESS__?: { getLeafReport?: unknown } }).__E2E_HARNESS__
+        ?.getLeafReport === 'function',
+    undefined,
+    { timeout: 15_000 },
+  );
+  return page.evaluate((q) => {
+    const harness = (
+      globalThis as {
+        __E2E_HARNESS__?: { getLeafReport?: (query: LeafReportQuery) => LeafReport };
+      }
+    ).__E2E_HARNESS__;
+    if (harness?.getLeafReport === undefined) {
+      throw new Error('window.__E2E_HARNESS__.getLeafReport が無い (E2E_TEST=1 で起動したか)');
+    }
+    return harness.getLeafReport(q);
+  }, query);
+}
+
 /**
  * アプリを起動し、指定の .gimoza (絶対パス) を読み込んだ状態で返す。読み込めなければ
  * その場で失敗する ('loaded' 以外は許さない — 不整合ファイルで修復ダイアログが出た場合も
@@ -1081,4 +1133,160 @@ export async function loadSyntheticNested(
     },
     { n: childCount, ys: years },
   );
+}
+
+// ---------------------------------------------------------------------------
+// 増分 8A — 頂点の候補一覧（設計書 §B.5 の台帳 #12）と、頂点の印の観測
+// ---------------------------------------------------------------------------
+
+/** 世界座標（経緯度）。 */
+export interface WorldPos {
+  readonly lon: number;
+  readonly lat: number;
+}
+
+/** 最後に描いたフレームの頂点の印の世界座標（`__E2E__.getVertexHandlePositions`）。 */
+export async function vertexHandlePositions(page: Page): Promise<WorldPos[]> {
+  return page.evaluate(() => {
+    const e2e = (window as unknown as {
+      __E2E__?: { getVertexHandlePositions: () => { lon: number; lat: number }[] };
+    }).__E2E__;
+    return e2e === undefined ? [] : e2e.getVertexHandlePositions();
+  });
+}
+
+/**
+ * 増分 8A の手直し（GPT #3）: いま見ている年の **確定済みの** 地物 `featureId` が引いている頂点を
+ * id → 座標で読む（`__E2E__.getCommittedVertices`）。頂点の印には id が無いので、
+ * 「どの頂点が動いたか」を id で照合するときに使う。
+ */
+export async function committedVertices(
+  page: Page,
+  featureId: string,
+): Promise<Map<string, WorldPos>> {
+  const rows = await page.evaluate((id) => {
+    const e2e = (window as unknown as {
+      __E2E__?: {
+        getCommittedVertices: (f: string) => { id: string; lon: number; lat: number }[];
+      };
+    }).__E2E__;
+    return e2e === undefined ? [] : e2e.getCommittedVertices(id);
+  }, featureId);
+  return new Map(rows.map((r) => [r.id, { lon: r.lon, lat: r.lat }]));
+}
+
+/** いま選んでいる頂点の id の全部（`__E2E__.getSelectedVertexIds`。並びは問わないので整列して返す）。 */
+export async function selectedVertexIds(page: Page): Promise<string[]> {
+  const ids = await page.evaluate(() => {
+    const e2e = (window as unknown as {
+      __E2E__?: { getSelectedVertexIds: () => string[] };
+    }).__E2E__;
+    return e2e === undefined ? [] : e2e.getSelectedVertexIds();
+  });
+  return [...ids].sort();
+}
+
+/** `before` の頂点のうち、`after` で座標が変わった・引かれなくなったものの id（整列）。 */
+export function changedVertexIds(
+  before: ReadonlyMap<string, WorldPos>,
+  after: ReadonlyMap<string, WorldPos>,
+): string[] {
+  const out: string[] = [];
+  for (const [id, p] of before) {
+    const q = after.get(id);
+    if (q === undefined || q.lon !== p.lon || q.lat !== p.lat) out.push(id);
+  }
+  return out.sort();
+}
+
+/** いま描いているカメラ（地図の入力層の `data-zoom` / `data-pan-x` / `data-pan-y`）。 */
+export async function liveCamera(
+  page: Page,
+): Promise<{ zoom: number; centerLon: number; centerLat: number }> {
+  const layer = page.getByTestId('map-input-layer');
+  return {
+    zoom: Number((await layer.getAttribute('data-zoom')) ?? '0'),
+    centerLon: Number((await layer.getAttribute('data-pan-x')) ?? '0'),
+    centerLat: Number((await layer.getAttribute('data-pan-y')) ?? '0'),
+  };
+}
+
+/** 世界座標 → 窓の座標（描画と同じ式。`render/vtransform.ts` の `worldToScreen`）。 */
+export async function worldToClient(page: Page, world: WorldPos): Promise<{ x: number; y: number }> {
+  const cam = await liveCamera(page);
+  const box = (await page.getByTestId('map-input-layer').boundingBox())!;
+  return {
+    x: box.x + box.width / 2 + (world.lon - cam.centerLon) * cam.zoom,
+    y: box.y + box.height / 2 - (world.lat - cam.centerLat) * cam.zoom,
+  };
+}
+
+/**
+ * **頂点の候補一覧を出す**（K-2 の走査と中身の検査の入口）。合成地物 1 件（一辺 0.05° の
+ * 小さな四角）を載せ、一覧から選んで視点を合わせる ―― ズームの上限でも四角は数 px なので、
+ * 真ん中を押せば 4 隅が全部掴める距離に入る。押した窓の座標を返す。
+ */
+export async function openVertexCandidatesOnTinySquare(
+  page: Page,
+): Promise<{ x: number; y: number }> {
+  await loadSyntheticProject(page, 1);
+  await leaveViewMode(page);
+  await page.getByTestId('sidebar-tab-list').click();
+  await page.getByTestId('unified-list-filter').fill('合成地物0000');
+  await page.getByTestId('feature-list-item-syn-0000').click();
+  await expect(page.getByTestId('app-active-feature')).toHaveText('syn-0000');
+  await expect.poll(async () => (await vertexHandlePositions(page)).length).toBe(4);
+  const handles = await vertexHandlePositions(page);
+  const centre = {
+    lon: handles.reduce((s, h) => s + h.lon, 0) / handles.length,
+    lat: handles.reduce((s, h) => s + h.lat, 0) / handles.length,
+  };
+  const at = await worldToClient(page, centre);
+  await page.mouse.click(at.x, at.y);
+  await expect(page.getByTestId('vertex-candidates')).toBeVisible();
+  return at;
+}
+
+/**
+ * **保存の前の確認の板**（設計書 §B.5 の台帳 #27。増分 7 の手直し 2 回目）を開く。本体の取り込みで、
+ * 台帳の K-2 走査（`inc5-shell.spec.ts`）と「板 × 打鍵」（`inc7-fix-ui.spec.ts`）に載せるために足した。
+ * 手順は `inc7-fix2.spec.ts` の A-4 と同じ: 外の国を 1000 年に連邦の下へ入れ、連邦の開始年を
+ * 900 年へ動かす（900〜1000 年の下位領域の一覧に、まだ居ない外の国が載る＝年をまたぐ食い違い）。
+ * そのうえで Ctrl+S を押す。板は **行き先を決める前** に出るので、保存の行き先の差し替えは要らない。
+ */
+export async function openPreSaveBoard(page: Page): Promise<void> {
+  const parentId = 'syn-nest-parent';
+  const parentName = '合成の連邦';
+  const outsiderId = 'syn-nest-outsider';
+  const outsiderName = '合成の外の国';
+  const reveal = async (name: string, featureId: string): Promise<void> => {
+    await page.getByTestId('sidebar-tab-list').click();
+    await page.getByTestId('unified-list-filter').fill(name);
+    await expect(page.getByTestId(`feature-list-item-${featureId}`)).toBeVisible();
+  };
+  await loadSyntheticNested(page, 2, [1000]);
+  await enterEditMode(page);
+  await jumpToYear(page, 1000);
+  await reveal(outsiderName, outsiderId);
+  await page.getByTestId(`ledger-mark-${outsiderId}`).check();
+  await page.getByTestId('tool-edit.reparent').click();
+  await page.getByTestId('reparent-confirm').click();
+  await page.getByTestId(`reparent-parent-existing-pick-item-${parentId}`).click();
+  await page.getByTestId('reparent-options-confirm').click();
+  await expect(page.getByTestId('reparent-options-dialog')).toHaveCount(0);
+  await page.getByTestId('tool-edit.select').click();
+  await reveal(parentName, parentId);
+  await page.getByTestId(`feature-list-item-${parentId}`).click();
+  await expect(page.getByTestId('app-active-feature')).toHaveText(parentId);
+  await page.getByTestId('sidebar-tab-properties').click();
+  await openPropertySection(page, 'anchor-section');
+  await clickClearOfStickyBars(page.getByTestId('anchor-interval-summary-syn-nest-a-1000'));
+  await page.getByTestId('anchor-interval-start-syn-nest-a-1000-year').fill('900');
+  await clickClearOfStickyBars(page.getByTestId('anchor-interval-start-syn-nest-a-1000-confirm'));
+  await jumpToYear(page, 900);
+  await reveal(parentName, parentId);
+  await page.getByTestId('unified-list-filter').fill('');
+  await page.getByTestId('ledger-scroller').click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press('Control+s');
+  await expect(page.getByTestId('pre-save-dialog')).toBeVisible();
 }

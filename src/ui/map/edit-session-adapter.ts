@@ -183,6 +183,14 @@ export interface EditSessionAdapterDeps<S> {
    * that the wasDrag guard discards ends with a `null` preview like any release.
    */
   readonly onPreview?: (session: DragSession | null) => void;
+  /**
+   * 増分 8A（N-06）: 辺の中点の印を **クリック** したときに頂点を置く座標（その辺の中点）。
+   * 渡すと、辺を足す操作（EdgeAdd）の押下を動かさずに離したとき、ここが返す座標へ頂点を
+   * 1 つ足して確定する（ドラッグで足すときと同じ `confirmRelease` の 1 本＝取り消し 1 単位）。
+   * undefined を返したら（辺がもう無い等）何もしない。渡さなければ従来どおり、クリックは
+   * 編集にならない。
+   */
+  readonly edgeClickPoint?: (session: DragSession) => WorldCoordinate | undefined;
 
   // --- slide / snap LIGHT PATH deps (受け入れ基準6 / 12) ---------------------
   //
@@ -436,6 +444,31 @@ export function createEditSessionPort<S>(deps: EditSessionAdapterDeps<S>): EditS
       // which quantizes to a non-zero world delta, can never commit a ghost edit /
       // ghost undo (受け入れ基準9 / 教訓5.24). Only a real drag reaches confirmRelease.
       if (!wasDrag) {
+        // 増分 8A（N-06）: 辺の中点の印のクリックは「その辺の中点に頂点を足す」。
+        // 足す座標は押した点ではなく辺のちょうど中点（形を変えない）。確定は下の
+        // ドラッグと同じ 1 本で、取り消し 1 単位になる。
+        const at =
+          session.target.tool === EDIT_TOOL.EdgeAdd
+            ? deps.edgeClickPoint?.(session)
+            : undefined;
+        if (at !== undefined) {
+          const placed = updateDrag(session, { preview: at });
+          const rings = deps.movingRings?.(placed);
+          const outcome = confirmRelease<S>({
+            session: placed,
+            anchorTime: deps.anchorTime(),
+            snapshot: deps.buildSnapshot(placed),
+            current: deps.currentState(),
+            ports: deps.ports,
+            // 押した点と中点がたまたま同じでも、頂点を足すのは変化である。
+            forceChanged: true,
+            ...(rings === undefined ? {} : { movingRings: rings }),
+          });
+          session = discardDrag();
+          notifyPreview();
+          deps.onReleased(outcome);
+          return;
+        }
         session = discardDrag(); // 全経路破棄 (教訓5.2) — click leaves no transient.
         notifyPreview(); // HB3-4: clear any preview the press opened (null).
         return;

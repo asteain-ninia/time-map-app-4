@@ -7,7 +7,7 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createSessionStore } from '../state/store';
 import { DEFAULT_PROJECT_SETTINGS } from '../state/settings';
@@ -104,6 +104,38 @@ describe('直前の結果（設計書 §H.5 / 教訓 5.12）', () => {
     fireEvent.click(screen.getByTestId('statusbar-result-dismiss'));
     expect(screen.getByTestId('statusbar-result')).toHaveTextContent(STATUS_STRINGS.noResult);
     expect(messageStore.get()).toBeNull();
+  });
+
+  // 増分 8C の手直し（反証 #2）:「測量の線を消しました［戻す］」。
+  it('結果にボタンが添えてあれば文の後ろに出し、押すとその操作を呼ぶ。外せば文だけ残る', () => {
+    const { messageStore } = renderStatus();
+    const run = vi.fn();
+    const action = { label: '戻す', run };
+    act(() => messageStore.set('測量の線を消しました', 'success', action));
+    const button = screen.getByTestId('statusbar-result-action');
+    expect(button).toHaveTextContent('戻す');
+    fireEvent.click(button);
+    expect(run).toHaveBeenCalledTimes(1);
+    act(() => messageStore.dropAction(action));
+    expect(screen.queryByTestId('statusbar-result-action')).toBeNull();
+    expect(screen.getByTestId('statusbar-result')).toHaveTextContent('測量の線を消しました');
+  });
+
+  // 増分 8C の再手直し（再検証 #3）: 焦点が状態行に残ると、地図に焦点があるときだけ効く打鍵が効かない。
+  it('ボタンを押したら焦点を手放す（本文へ戻る）', () => {
+    const { messageStore } = renderStatus();
+    act(() => messageStore.set('測量の線を消しました', 'success', { label: '戻す', run: () => undefined }));
+    const button = screen.getByTestId('statusbar-result-action');
+    button.focus();
+    expect(document.activeElement).toBe(button);
+    fireEvent.click(button);
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('ボタンの無い結果ではボタンを出さない', () => {
+    const { messageStore } = renderStatus();
+    act(() => messageStore.success('保存しました（a.gimoza）'));
+    expect(screen.queryByTestId('statusbar-result-action')).toBeNull();
   });
 });
 

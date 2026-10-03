@@ -16,7 +16,9 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
+
+import { openSettingsAndReplace, stubImagePicker, writePng } from './basemap-image-helpers';
 
 import {
   DEFAULT_FACE_HALF,
@@ -32,6 +34,7 @@ import {
   railMarkPositions,
   railView,
   clickClearOfStickyBars,
+  openPreSaveBoard,
   type LaunchedApp,
 } from './helpers';
 
@@ -226,6 +229,8 @@ const BOARD_IDS = [
   'bulk-kind-dialog',
   'delete-impact',
   'delete-confirm',
+  'basemap-aspect-dialog',
+  'pre-save-dialog',
 ] as const;
 
 async function openBoards(page: Page): Promise<string[]> {
@@ -238,8 +243,8 @@ async function openBoards(page: Page): Promise<string[]> {
 
 interface BoardCase {
   readonly board: (typeof BOARD_IDS)[number];
-  /** 板を開くまで（開いた状態で返す）。 */
-  readonly open: (page: Page) => Promise<void>;
+  /** 板を開くまで（開いた状態で返す）。`app` は main 側の差し替えが要る板だけが使う。 */
+  readonly open: (page: Page, app: ElectronApplication) => Promise<void>;
 }
 
 const BOARD_CASES: readonly BoardCase[] = [
@@ -301,6 +306,20 @@ const BOARD_CASES: readonly BoardCase[] = [
       await page.mouse.click(cx, cy - r / 2);
     },
   },
+  // 増分 8E の手直し（設計適合 S2-2）: 縦横比の板（台帳 #30）。設定の板の上に出る。
+  {
+    board: 'basemap-aspect-dialog',
+    open: async (page, app) => {
+      const dir = mkdtempSync(join(tmpdir(), 'tmap-e2e-board-keys-aspect-'));
+      await stubImagePicker(app, await writePng(page, dir, 300, 200));
+      await openSettingsAndReplace(page);
+    },
+  },
+  // 本体の取り込みで足した: 保存の前の確認の板（台帳 #27）。
+  {
+    board: 'pre-save-dialog',
+    open: (page) => openPreSaveBoard(page),
+  },
 ];
 
 test.describe('B — 板が出ている間、Ctrl+Z / Ctrl+S / Delete / Enter は背後へ抜けない', () => {
@@ -312,8 +331,8 @@ test.describe('B — 板が出ている間、Ctrl+Z / Ctrl+S / Delete / Enter �
       let launched: LaunchedApp | null = null;
       try {
         launched = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: savePath } });
-        const { page } = launched;
-        await c.open(page);
+        const { app, page } = launched;
+        await c.open(page, app);
         await expect(page.getByTestId(c.board)).toBeVisible();
         await expect(page.getByTestId('app-focus-owner')).toHaveText('modal');
 
