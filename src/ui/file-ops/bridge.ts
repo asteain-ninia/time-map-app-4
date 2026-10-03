@@ -200,6 +200,10 @@ export function buildFileCommandPorts(host: FileOpsHost): FileCommandPorts {
     autoSave: () => runSave('save', 'auto'),
     load: () => loadVia(() => host.api.load()),
     loadDropped: (droppedPath: string) => loadVia(() => host.api.loadDropped(droppedPath)),
+    // 増分 8D: 世代の一覧と、一覧の id で開く口。開いた結果は普通の読み込みと同じ
+    // 変換（loadTransportFrom）を通り、同じ completeLoad へ合流する（教訓 5.6）。
+    listBackups: () => host.api.listBackups(),
+    openBackup: (id: string) => loadVia(() => host.api.openBackup(id)),
     toProject,
     checkConsistency: (project: DomainProject, calendar: Calendar): ConsistencyReport =>
       checkConsistency(project, calendar),

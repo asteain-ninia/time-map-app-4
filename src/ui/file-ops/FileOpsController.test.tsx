@@ -1882,3 +1882,180 @@ describe('E2E 専用の投入口 window.__E2E_HARNESS__.loadProject（E2E_TEST=1
     expect(store.getState().domain).toBe(before);
   });
 });
+
+// --- 増分 8D: 以前の保存から開く（設計書 §E.1 の V14・§J.4 の #9）-------------------
+
+describe('増分 8D: 以前の保存から開く — 世代は保存先にならない', () => {
+  const ENTRY: BackupEntry = {
+    id: 'b-1',
+    savedAtMs: Date.UTC(2026, 9, 3, 5, 3, 0),
+    byteSize: 2048,
+    featureCount: 3,
+    sourceName: 'w.gimoza',
+  };
+
+  /** 世代から開いた読み込みの応答（path は世代そのもの）。 */
+  function restoredLoad(): LoadResponse {
+    return {
+      ok: true,
+      path: '/d/w.gimoza.bak.0001790000000000-0000',
+      manifest: serialize(buildEmptyProject()),
+      baseMapImage: new Uint8Array(),
+      attachments: [],
+      commitToken: 'tok-backup',
+      restoredFrom: { sourceName: 'w.gimoza', savedAtMs: ENTRY.savedAtMs },
+    };
+  }
+
+  async function openFirstBackup(registry: CommandRegistry): Promise<void> {
+    await act(async () => {
+      registry.dispatch(COMMAND_ID.FileOpenBackup);
+    });
+    const row = await screen.findByTestId('backup-row');
+    await act(async () => {
+      fireEvent.click(row);
+    });
+  }
+
+  it('メニューの口が登録され、一覧の行を押すとその id で開いて reflect する（未保存が無ければ確認なし）', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const api = makeApi({
+      listBackups: vi.fn(async () => [ENTRY]),
+      openBackup: vi.fn(async () => restoredLoad()),
+    });
+    const before = store.getState().domain;
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+    expect(registry.isRegistered(COMMAND_ID.FileOpenBackup)).toBe(true);
+
+    await openFirstBackup(registry);
+    await waitFor(() => expect(api.openBackup).toHaveBeenCalledWith('b-1'));
+    await waitFor(() => expect(store.getState().domain).not.toBe(before));
+    expect(screen.queryByTestId('unsaved-dialog')).toBeNull();
+    expect(screen.queryByTestId('backup-dialog')).toBeNull();
+    // 確定の印は主プロセスへ返す（主プロセスの側が保存先を未確定へ戻す）。
+    await waitFor(() => expect(api.commitLoadedPath).toHaveBeenCalledWith('tok-backup'));
+  });
+
+  it('開いた直後の保存は「名前を付けて保存」へ落ちる（世代そのものへは書かない）・自動保存も動かない', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const onSaveStatusChange = vi.fn();
+    const api = makeApi({
+      listBackups: vi.fn(async () => [ENTRY]),
+      openBackup: vi.fn(async () => restoredLoad()),
+    });
+    render(
+      <FileOpsController
+        store={store}
+        registry={registry}
+        api={api}
+        calendar={CAL}
+        onSaveStatusChange={onSaveStatusChange}
+      />,
+    );
+    await openFirstBackup(registry);
+    await waitFor(() =>
+      expect(onSaveStatusChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          savePath: null,
+          autoSaveArmed: false,
+          restoredFrom: { sourceName: 'w.gimoza', savedAtMs: ENTRY.savedAtMs },
+        }),
+      ),
+    );
+
+    await dispatchSave(registry);
+    await waitFor(() => expect(api.saveAs).toHaveBeenCalledTimes(1));
+    expect(api.save).not.toHaveBeenCalled();
+    // 上書き確認は出ない（行き先を決めるのはネイティブの保存ダイアログ）。
+    expect(screen.queryByTestId('overwrite-dialog')).toBeNull();
+    // 書けたら「世代から復旧」の印は消え、書いた先が保存先になる。
+    await waitFor(() =>
+      expect(onSaveStatusChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ savePath: '/tmp/p.gimoza', restoredFrom: null }),
+      ),
+    );
+  });
+
+  it('未保存の変更があれば、行を押したあとに未保存の確認が出る。キャンセルなら世代を読まない', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const api = makeApi({
+      listBackups: vi.fn(async () => [ENTRY]),
+      openBackup: vi.fn(async () => restoredLoad()),
+    });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+    act(() => {
+      store.getState().updateProjectSetting('projectName', '変更あり');
+    });
+
+    await openFirstBackup(registry);
+    // 一覧は閉じ、未保存の確認（「開く」と同じ器）が出る。
+    expect(await screen.findByTestId('unsaved-dialog')).toBeTruthy();
+    expect(screen.queryByTestId('backup-dialog')).toBeNull();
+    expect(api.openBackup).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('unsaved-cancel'));
+    });
+    expect(api.openBackup).not.toHaveBeenCalled();
+    expect(store.getState().projectDirty).toBe(true);
+  });
+
+  it('世代を開いたあとで普通のファイルを開けば「世代から復旧」の印は残らない', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const onSaveStatusChange = vi.fn();
+    const api = makeApi({
+      listBackups: vi.fn(async () => [ENTRY]),
+      openBackup: vi.fn(async () => restoredLoad()),
+      load: vi.fn(async () => okLoad()),
+    });
+    render(
+      <FileOpsController
+        store={store}
+        registry={registry}
+        api={api}
+        calendar={CAL}
+        onSaveStatusChange={onSaveStatusChange}
+      />,
+    );
+    await openFirstBackup(registry);
+    await waitFor(() => expect(api.openBackup).toHaveBeenCalled());
+    await act(async () => {
+      registry.dispatch(COMMAND_ID.FileOpen);
+    });
+    await waitFor(() =>
+      expect(onSaveStatusChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ savePath: '/tmp/loaded.gimoza', restoredFrom: null }),
+      ),
+    );
+  });
+
+  it('世代が無ければ空の案内を出し、［やめる］で閉じる。板が出ている間は鍵盤の持ち主を名乗る', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const onBackupListModalChange = vi.fn();
+    const api = makeApi();
+    render(
+      <FileOpsController
+        store={store}
+        registry={registry}
+        api={api}
+        calendar={CAL}
+        onBackupListModalChange={onBackupListModalChange}
+      />,
+    );
+    await act(async () => {
+      registry.dispatch(COMMAND_ID.FileOpenBackup);
+    });
+    expect(await screen.findByTestId('backup-empty')).toBeTruthy();
+    expect(onBackupListModalChange).toHaveBeenLastCalledWith(true);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('backup-cancel'));
+    });
+    expect(screen.queryByTestId('backup-dialog')).toBeNull();
+    expect(onBackupListModalChange).toHaveBeenLastCalledWith(false);
+    expect(api.openBackup).not.toHaveBeenCalled();
+  });
+});

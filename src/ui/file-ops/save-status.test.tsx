@@ -303,6 +303,7 @@ describe('保存の素性と結果をホストへ上げる（V12 の ①②③�
       savedAtMs: null,
       autoSaveArmed: false,
       destinationRetracted: false,
+      restoredFrom: null,
     });
     // 読み込み後は保存先が確定し、まだこのセッションでは保存していない。
     const afterLoad = seen[seen.length - 1]!;

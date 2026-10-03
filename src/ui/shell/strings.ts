@@ -104,6 +104,7 @@ export const MENU_TITLES = {
 export const MENU_ITEM_LABELS = {
   'file.new': '新規作成',
   'file.open': '開く',
+  'file.openBackup': '以前の保存から開く',
   'file.save': '保存',
   'file.saveAs': '名前を付けて保存',
   'edit.undo': '元に戻す',
@@ -435,6 +436,7 @@ export const DISPLAY_CONTROL_STRINGS = {
 export const TOOLTIPS: Readonly<Record<string, string>> = {
   'file.new': '新しいプロジェクトを作成します',
   'file.open': 'プロジェクトファイルを開きます',
+  'file.openBackup': '保存のたびに残る世代から選んで開きます（元のファイルは上書きしません）',
   'file.save': '現在のプロジェクトを保存します',
   'file.saveAs': '名前を付けて保存します',
   'edit.undo': '直前の操作を取り消します',

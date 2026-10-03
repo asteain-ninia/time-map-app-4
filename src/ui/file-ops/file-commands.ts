@@ -19,6 +19,7 @@ import type {
   ConsistencyReport,
   DomainProject,
 } from '../../domain/persistence/index';
+import type { BackupEntry } from '../../shell/ipc/contract';
 
 import { classifyLoad, LOAD_STEP, type LoadStep, type LoadTransport } from './load-flow';
 import { runUnsavedGuard, type UnsavedGuardPorts } from './unsaved-guard';
@@ -91,6 +92,13 @@ export interface FileCommandPorts {
   readonly load: () => Promise<LoadTransport>;
   /** D&D load: hand the dropped path to main. Resolves the transport result. */
   readonly loadDropped: (droppedPath: string) => Promise<LoadTransport>;
+  /**
+   * いまの保存先の世代の一覧（増分 8D）。主プロセスがパスを伏せて id だけを返す。
+   * 読めなければ空（一覧の板は「戻せる世代はまだありません」を出す）。
+   */
+  readonly listBackups: () => Promise<readonly BackupEntry[]>;
+  /** 一覧の id で世代を開く（増分 8D）。保存先は確定しない。 */
+  readonly openBackup: (id: string) => Promise<LoadTransport>;
 
   // -- U14 consistency check (FR-106) ----------------------------------------
   /** Deserialize the parsed manifest to a domain project (persistence-internal seam). */
@@ -224,6 +232,34 @@ export async function openCommand(ports: FileCommandPorts): Promise<void> {
 export async function dropLoadCommand(ports: FileCommandPorts, droppedPath: string): Promise<void> {
   if (!(await runUnsavedGuard(ports.guard))) return;
   const transport = await ports.loadDropped(droppedPath);
+  await completeLoad(ports, transport);
+}
+
+/**
+ * 「以前の保存から開く」（増分 8D / 設計書 §E.1 の V14 の手順 (a)・§J.4 の #9）。
+ *
+ * 順序は設計書のとおり: 世代の一覧を出す → 行を選ぶ → **①未保存の確認**（「開く」と同じ
+ * 器）→ **②`openBackup` で読む** → 修復が要れば修復 → reflect（**③取り消し履歴はプロジェクト
+ * 参照が変わるので現行どおり捨てられる**）。**④保存先を確定させない**のは reflect の側
+ * （保存文脈）と主プロセスの側の両方が受け持つ。
+ *
+ * 一覧で「やめる」を選んだら何もしない。未保存の確認で「キャンセル」を選んでも何もしない
+ * （一覧へは戻らない ―― もう一度メニューから選べば済む）。
+ */
+export async function openBackupCommand(
+  ports: FileCommandPorts,
+  choose: (entries: readonly BackupEntry[]) => Promise<string | null>,
+): Promise<void> {
+  let entries: readonly BackupEntry[];
+  try {
+    entries = await ports.listBackups();
+  } catch {
+    entries = [];
+  }
+  const id = await choose(entries);
+  if (id === null) return;
+  if (!(await runUnsavedGuard(ports.guard))) return;
+  const transport = await ports.openBackup(id);
   await completeLoad(ports, transport);
 }
 

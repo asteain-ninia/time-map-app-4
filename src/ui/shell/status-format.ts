@@ -28,6 +28,26 @@ export const DESTINATION_UNDETERMINED = '保存先: 未確定';
 /** 未保存の印。 */
 export const DIRTY_MARK = '●';
 
+/** 世代から開いたときの「何の、いつの世代か」（増分 8D。契約の `RestoredFrom` と同じ形）。 */
+export interface RestoredFromLabel {
+  /** 元の保存ファイルの名前（拡張子込み）。 */
+  readonly sourceName: string;
+  /** その世代を保存した時刻（epoch ms。実時間）。 */
+  readonly savedAtMs: number;
+}
+
+/**
+ * 世代から開いて、まだどこにも保存していないときにファイル名の代わりに出す文字
+ * （増分 8D / 設計書 §E.1 の V14 の規則 ①）。
+ *
+ * 「derle-world.gimoza（2026-10-03 14:03 の世代から復旧・保存先は未確定）」。設計書の例は
+ * 時刻を「1200年」と作中の年で書いているが、世代は **保存した実時間**で並んでいるので
+ * 実時間を出す（一覧の日時の列と同じ物差し）。
+ */
+export function restoredFileLabel(restored: RestoredFromLabel): string {
+  return `${restored.sourceName}（${formatDateMinute(restored.savedAtMs)} の世代から復旧・保存先は未確定）`;
+}
+
 export interface WindowTitleInput {
   /** 世界名（プロジェクト名）。空なら段ごと出さない。 */
   readonly worldName: string;
@@ -36,6 +56,24 @@ export interface WindowTitleInput {
   readonly dirty: boolean;
   /** 保存先を取り下げた状態か（読み込みは成功したが宛先の確定に失敗した）。 */
   readonly destinationRetracted?: boolean;
+  /** 世代から開いて、まだ保存していないとき（増分 8D）。 */
+  readonly restoredFrom?: RestoredFromLabel | null;
+}
+
+/**
+ * ファイル名の段に出す文字（アプリバーとウィンドウタイトルの共通）。優先は
+ * 保存先の名前 → 世代から復旧 → 取り下げ → 未保存の新規。
+ */
+export function fileSlotText(input: {
+  readonly fileName: string | null;
+  readonly destinationRetracted?: boolean;
+  readonly restoredFrom?: RestoredFromLabel | null;
+}): string {
+  if (input.fileName !== null) return input.fileName;
+  if (input.restoredFrom !== undefined && input.restoredFrom !== null) {
+    return restoredFileLabel(input.restoredFrom);
+  }
+  return input.destinationRetracted === true ? DESTINATION_UNDETERMINED : UNSAVED_NEW_PROJECT;
 }
 
 /**
@@ -54,10 +92,7 @@ export function buildWindowTitle(input: WindowTitleInput): string {
   const parts: string[] = [APP_NAME];
   const world = input.worldName.trim();
   if (world.length > 0) parts.push(world);
-  parts.push(
-    input.fileName ??
-      (input.destinationRetracted === true ? DESTINATION_UNDETERMINED : UNSAVED_NEW_PROJECT),
-  );
+  parts.push(fileSlotText(input));
   const base = parts.join(' — ');
   return input.dirty ? `${base} ${DIRTY_MARK}` : base;
 }
@@ -119,6 +154,15 @@ export function formatClock(epochMs: number): string {
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
   return `${hh}:${mm}`;
+}
+
+/**
+ * 「2026-10-03 14:03」（秒を落とした完全表記。増分 8D の世代の一覧とアプリバー）。
+ * {@link formatTimestamp} と同じくロケールに依らない。読めなければ「—」。
+ */
+export function formatDateMinute(epochMs: number): string {
+  const full = formatTimestamp(epochMs);
+  return full === UNKNOWN_TIME ? full : full.slice(0, 16);
 }
 
 /** 日時が読めないとき（NaN 等）に出す文字。`formatScale` の「—」と揃える。 */

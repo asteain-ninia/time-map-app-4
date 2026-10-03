@@ -74,6 +74,8 @@ export const STANDARD_MENUS: readonly MenuDef[] = [
     items: [
       item(COMMAND_ID.FileNew, { key: 'n', ctrlOrMeta: true }),
       item(COMMAND_ID.FileOpen, { key: 'o', ctrlOrMeta: true }),
+      // 増分 8D: 以前の保存から開く（V14 の手順 (a)）。打鍵は割り当てない（稀な操作）。
+      item(COMMAND_ID.FileOpenBackup),
       item(COMMAND_ID.FileSave, { key: 's', ctrlOrMeta: true }),
       item(COMMAND_ID.FileSaveAs, { key: 's', ctrlOrMeta: true, shift: true }),
     ],

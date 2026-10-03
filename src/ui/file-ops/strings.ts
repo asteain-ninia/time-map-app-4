@@ -91,6 +91,31 @@ export const REPAIR_STRINGS = {
   fieldRange: '時間範囲',
 } as const;
 
+/**
+ * 「以前の保存から開く」の世代の一覧（増分 8D / 設計書 §E.1 の V14 の手順 (a)）。
+ * 保存のたびに保存ファイルの隣へ残る世代を、日時・大きさ・地物数で並べて選ばせる。
+ */
+export const BACKUP_LIST_STRINGS = {
+  title: '以前の保存から開く',
+  /** 一覧の上の 1 文。どのファイルの世代かを必ず出す（同名の取り違えを防ぐ）。 */
+  intro: (sourceName: string): string =>
+    `${sourceName} を保存したときの世代です。選ぶと、その時点の内容を開きます。`,
+  /** 開いたあとどうなるかを先に言う（保存先にはならない）。 */
+  note: '開いた内容は元のファイルを上書きしません。最初の保存は「名前を付けて保存」になります。',
+  /** 世代が 1 つも無いとき。 */
+  empty: '戻せる世代はまだありません。保存するたびに 1 世代ずつ残ります。',
+  columnSavedAt: '保存した日時',
+  columnSize: '大きさ',
+  columnFeatures: '地物数',
+  /** 地物数が読めなかった世代。 */
+  unknownFeatures: '—',
+  /** 地物数の表示。 */
+  features: (count: number): string => `${String(count)} 件`,
+  /** 行のボタンの読み上げ名（押すと開く）。 */
+  openRow: (savedAt: string): string => `${savedAt} の世代を開く`,
+  cancel: 'やめる',
+} as const;
+
 /** File-operation rejection / failure notices (FR-115; 通知文言). */
 export const FILE_OPS_STRINGS = {
   /** 読み込み失敗 (read/corrupt). 開発者へ報告 suffix per FR-115 where useful. */
