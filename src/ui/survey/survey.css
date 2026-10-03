@@ -98,6 +98,30 @@
   min-width: 14em;
 }
 
+/* 増分 8C / N-52: 2 本の線の凡例。距離のラベルの下に、地図の線と同じ色・太さ・線種の
+   線を引く（色・太さ・刻みは `SurveyControls.tsx` の LegendLabel が `DEFAULT_SURVEY_STYLE`
+   から変数で渡す）。**横幅を 1px も足さない**ために、見本を文字の横へ並べず背景の線に
+   している ―― 設定欄の予算に余りが無く、横に並べると読み取りごと「≫」へ畳まれた。
+   下の余白は行の箱の高さを変えない（インラインの padding）ので、40px の帯も動かない。 */
+.survey-controls__legend {
+  padding-bottom: 3px;
+  background-image: linear-gradient(var(--survey-legend-color), var(--survey-legend-color));
+  background-position: left bottom;
+  background-size: 100% var(--survey-legend-width);
+  background-repeat: no-repeat;
+}
+
+/* 大円の線は破線（`[線, すき間]` の刻みを 1 周期として横に繰り返す）。 */
+.survey-controls__legend--dashed {
+  background-image: linear-gradient(
+    to right,
+    var(--survey-legend-color) var(--survey-legend-dash),
+    transparent var(--survey-legend-dash)
+  );
+  background-size: var(--survey-legend-period) var(--survey-legend-width);
+  background-repeat: repeat-x;
+}
+
 .survey-controls__coord {
   display: inline-flex;
   align-items: center;

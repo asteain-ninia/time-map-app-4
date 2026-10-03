@@ -41,6 +41,14 @@ export interface ContextMenuRequest {
   readonly clientY: number;
   /** What the right-click hit (feature body / vertex / empty). */
   readonly hit: HitResult;
+  /**
+   * 右クリックした場所にある **測量の線**の id（増分 8C / 設計書 §E.1 V15）。近い順。
+   *
+   * 地図から来た要求だけが持つ（{@link LiveContextMenuPortDeps.probeSurveyLines}）。
+   * 一覧の行の右クリックのように地図の外から開く要求には付かないので、行の下に
+   * たまたま線が描かれていても「この線を消す」は出ない。省略・空配列は「当たっていない」。
+   */
+  readonly surveyLineIds?: readonly number[] | undefined;
 }
 
 /**
@@ -88,6 +96,17 @@ export interface LiveContextMenuPortDeps {
    * （設計書 §I.3 の原則①）ので、止めるのは昇格だけにする。
    */
   readonly promotes?: () => boolean;
+  /**
+   * **右クリックした点に当たる測量の線**を近い順に返す（増分 8C / 設計書 §E.1 V15）。
+   * 省略 ⇒ 測量の線は見ない（従来どおり）。
+   *
+   * 当たった線があれば要求に `surveyLineIds` として載せ、**地物の昇格はしない** ――
+   * 測量の線は地物より上に描かれていて、押した相手は線だからである。昇格すると、
+   * 線を消すつもりの右クリックが下の国を選択へ引き上げてしまう（「測っている間は
+   * 地物を選べません」とも食い違う）。メニューの地物の項目は、空の場所を右クリック
+   * したときと同じく、いまの選択に対して出る。
+   */
+  readonly probeSurveyLines?: (point: ScreenPoint) => readonly number[];
 }
 
 /**
@@ -145,17 +164,29 @@ export function createLiveContextMenuPort(
       // selection is left UNCHANGED (a stray promote during a knife draft would
       // desync the session's own selection assumptions, 教訓 5.2 / 5.6).
       if (deps.suspended?.() === true) return;
+      // 測量の線に当たったか（増分 8C）。当たっていれば、その線が押した相手になる。
+      const surveyLineIds = deps.probeSurveyLines?.(point) ?? [];
       // Promote the hit feature FIRST so the menu's command target is the
       // right-clicked feature (削除 etc.), exactly as a left click would select it
       // (単一の選択書き込み経路, 教訓 5.11). Empty space keeps the current selection.
       //
       // **下書きを持っているあいだは昇格しない**（増分 5 の手直し A1）。メニューは
       // 開くが選択は動かさないので、作図中の右クリックが下書きを壊さない。
-      if (hit.kind !== HIT_KIND.Empty && deps.promotes?.() !== false) {
+      //
+      // **測量の線に当たったときも昇格しない**（増分 8C。`probeSurveyLines` の注記）。
+      if (
+        hit.kind !== HIT_KIND.Empty &&
+        surveyLineIds.length === 0 &&
+        deps.promotes?.() !== false
+      ) {
         deps.promoteHit(hit);
       }
       const { x, y } = deps.surfaceToClient(point);
-      deps.open({ clientX: x, clientY: y, hit });
+      deps.open(
+        surveyLineIds.length === 0
+          ? { clientX: x, clientY: y, hit }
+          : { clientX: x, clientY: y, hit, surveyLineIds },
+      );
     },
   };
 }

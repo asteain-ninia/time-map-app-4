@@ -49,6 +49,7 @@ import './file-ops/file-ops.css';
 import './help-tools/help-tools.css';
 
 import { getCalendar } from '../domain/time/calendar';
+import { createGeoParams } from '../domain/geo/geo-params';
 import {
   DiagnosticLogger,
   ErrorBoundary,
@@ -114,6 +115,7 @@ import {
   SurveyMapBridge,
   SurveyMeasurementPanel,
   SurveyOptionBar,
+  surveyLineMenuItems,
   type SurveyDrawSink,
 } from './survey/index';
 import './survey/survey.css';
@@ -2225,6 +2227,28 @@ export function App(): JSX.Element {
     ],
   );
 
+  /**
+   * 右クリックが測量の線に当たったときの項目（増分 8C / 設計書 §E.1 V15）。距離は
+   * 読み取りと同じ `projectSettings` の 2 値から測る（教訓 5.29）。開いた瞬間に 1 度だけ呼ばれ、
+   * メニューが項目を凍結する。
+   */
+  const surveyMenuItemsFor = useCallback(
+    (lineIds: readonly number[]) => {
+      const s = store.getState();
+      return surveyLineMenuItems(
+        s.survey.lines,
+        lineIds,
+        createGeoParams(s.projectSettings.equatorLengthKm, s.projectSettings.flattening),
+      );
+    },
+    [store],
+  );
+  /** 「この線を消す」。もう無い id（メニューを開いてからクリアした等）なら何もしない。 */
+  const removeSurveyLine = useCallback(
+    (lineId: number): void => store.getState().surveyRemoveLine(lineId),
+    [store],
+  );
+
   // HB5-4 選択解除 — Escape / 編集メニュー「選択解除」clears the active-feature + vertex
   // selection through the SINGLE U22 clear path (store.clearSelection → EMPTY_SELECTION;
   // no re-implementation, 教訓 5.29). It routes through the SAME global shortcut
@@ -3997,6 +4021,11 @@ export function App(): JSX.Element {
               // 増分 7（増分 5 からの送り / 設計書 §I.3）: 道具が下書きを持っている
               // 局面の項目（確定・やめる）。中身はオプションバーの確定欄そのもの。
               optionBar={optionBarStore}
+              // 増分 8C（設計書 §E.1 V15）: 右クリックが測量の線に当たったときの
+              // 「この線を消す」。線は保存しないセッションの表示なので、押した先は
+              // ストアの 1 操作だけ（取り消しの記録も保存の印も触らない＝クリアと同じ）。
+              surveyItemsFor={surveyMenuItemsFor}
+              onRemoveSurveyLine={removeSurveyLine}
             />
             {/* U39 INTEGRATION (受け入れ基準 1-6): the file-ops controller registers
                 the ファイル menu / shortcut commands on the SAME registry the shell
