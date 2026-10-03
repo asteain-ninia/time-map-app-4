@@ -88,13 +88,18 @@ function LastResultStatus(props: { readonly store: StatusMessageStore }): JSX.El
       role="status"
     >
       <span className="statusbar__result-text">{message.text}</span>
-      {/* 結果に添えたボタン（増分 8C の手直し: 「測量の線を消しました［戻す］」）。 */}
+      {/* 結果に添えたボタン（増分 8C の手直し: 「測量の線を消しました［戻す］」）。
+          **押したら焦点を手放す**（再手直し / 再検証 #3）。焦点が状態行に残ると、地図に焦点が
+          あるときだけ効く打鍵（`U`。`shell/map-focus-scope.ts`）が、地図を押し直すまで黙って効かない。 */}
       {message.action !== undefined && (
         <button
           type="button"
           className="statusbar__action"
           data-testid="statusbar-result-action"
-          onClick={message.action.run}
+          onClick={(e) => {
+            e.currentTarget.blur();
+            message.action?.run();
+          }}
         >
           {message.action.label}
         </button>

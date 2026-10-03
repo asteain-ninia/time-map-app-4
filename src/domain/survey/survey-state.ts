@@ -89,10 +89,16 @@ export interface SurveyState {
    * **直前に右クリックで消した 1 本**（増分 8C の手直し / 反証 #2）。状態行の［戻す］と、
    * 消した直後の Ctrl+Z がこれを元の位置へ戻す。覚えるのは最後の 1 本だけ（2 本の線のセット）。
    *
-   * 捨てる契機（決めた範囲）: 次の測量の操作（点を置く・クリア・測るの入り切り・下書きの取りやめ）・
+   * 捨てる契機（決めた範囲）: **線を増やす・減らす測量の操作**（点を置く・クリア）・
    * 別の線を消す（その線に置き換わる）・戻した。ストアの側では、地物の編集・取り消し／やり直し・
-   * 道具の持ち替え・鍵の切り替え・読み込み／新規でも捨てる。カーソルの移動（`updateHover`）では
-   * 捨てない。保存はしない（線そのものと同じく一時的な表示）。
+   * 道具の持ち替え・鍵の切り替え・読み込み／新規でも捨てる。
+   *
+   * **捨てないもの**: カーソルの移動（`updateHover`）、**下書きの取りやめ（Esc）と測るの入り切り
+   * （`U`・レールの「📏 測る」）**（増分 8C の再手直し / 再検証 #1・#2）。どれも線を 1 本も増減させない
+   * ので、覚えを捨てて守るもの（新しく測った線と戻す線の取り違え）が無い。逆に捨てると、始点を
+   * 置いた途中で線を消す → Ctrl+Z が下書き中で届かない → 案内どおり Esc → もう一度 Ctrl+Z、という
+   * いちばん自然な立て直しで、Ctrl+Z が関係のない地物の編集を取り消していた。
+   * 保存はしない（線そのものと同じく一時的な表示）。
    */
   readonly removed: RemovedSurveyLine | null;
 }
@@ -145,7 +151,8 @@ function withDraftDiscarded(state: SurveyState): SurveyState {
  * FR-15). Idempotent.
  */
 export function enableSurveyMode(state: SurveyState): SurveyState {
-  return { ...withDraftDiscarded(state), active: true, removed: null };
+  // 消した線の覚えは捨てない（線を増減させない。`SurveyState.removed`）。
+  return { ...withDraftDiscarded(state), active: true };
 }
 
 /**
@@ -155,7 +162,8 @@ export function enableSurveyMode(state: SurveyState): SurveyState {
  * empties both. Idempotent.
  */
 export function disableSurveyMode(state: SurveyState): SurveyState {
-  return { ...withDraftDiscarded(state), active: false, removed: null };
+  // 消した線の覚えは捨てない（線を増減させない。`SurveyState.removed`）。
+  return { ...withDraftDiscarded(state), active: false };
 }
 
 // --- Pointer transitions -----------------------------------------------------
@@ -222,10 +230,9 @@ export function updateHover(state: SurveyState, point: WorldCoordinate): SurveyS
  * only; confirmed lines remain. No-op when idle.
  */
 export function cancelDraft(state: SurveyState): SurveyState {
-  // 下書きを取りやめた（何かが変わった）ときだけ、消した線の覚えも捨てる（測量の操作）。
-  // 何も変わらなければ同じ参照 ―― 道具の入り切りの副作用で呼ばれても書かない。
-  const next = withDraftDiscarded(state);
-  return next === state ? state : forgetRemovedSurveyLine(next);
+  // **消した線の覚えは捨てない**（増分 8C の再手直し / 再検証 #1）。始点を置いた途中は Ctrl+Z が
+  // 届かないので、案内どおり Esc で下書きをやめてから Ctrl+Z で線を戻す流れを残す。
+  return withDraftDiscarded(state);
 }
 
 /**
