@@ -127,6 +127,8 @@ export function materializeOwnSeries(
   const removals = new Map<string, Set<FeatureId>>();
   const materializedIds: FeatureId[] = [];
   const created: FeatureHistory[] = [];
+  /** 起こした系列を置く位置: 写し元のうち最も前にある歴史の番号（直後に置く）。 */
+  const placeAfter: number[] = [];
 
   for (const id of wanted) {
     const hits = occurrences.get(id) ?? [];
@@ -161,12 +163,32 @@ export function materializeOwnSeries(
     }
     if (entries.length === 0) continue;
     created.push({ featureId: id, series: { entries } });
+    placeAfter.push(Math.min(...hits.map((h) => h.historyIndex)));
     materializedIds.push(id);
   }
 
   if (created.length === 0) return { histories, materializedIds: [] };
 
+  // **起こした系列は写し元の歴史のすぐ後ろに置く**（末尾へ足さない）。歴史の並び順は
+  // 意味を持つ: 時刻ごとに全系列の頂点を束ねるとき同じ id の頂点は後に来た方が勝ち、
+  // 読み込みの修復で食い違う頂点を揃えるときは先に見えた方を正とする。末尾へ足すと
+  // この勝ち負けが入れ替わり、起こしただけで「見える形」が変わる（重なりが隠れ、次の
+  // 修復でまた現れて「新しい不整合」と読まれる ―― 性質検査 seed 36002 / 36004 が
+  // 修復の不動点へ収束しなかった実際の仕組み）。写し元の位置に置けば、起こす前と後で
+  // 束の見え方は変わらない。正常なデータでは頂点は食い違わないので、この並びは結果を
+  // 変えない。
+  const createdAfter = new Map<number, FeatureHistory[]>();
+  created.forEach((history, i) => {
+    const at = placeAfter[i] ?? histories.length - 1;
+    const slot = createdAfter.get(at);
+    if (slot === undefined) createdAfter.set(at, [history]);
+    else slot.push(history);
+  });
+
   const rebuilt: FeatureHistory[] = [];
+  const pushCreatedAfter = (historyIndex: number): void => {
+    for (const h of createdAfter.get(historyIndex) ?? []) rebuilt.push(h);
+  };
   histories.forEach((history, historyIndex) => {
     let changed = false;
     const entries = history.series.entries.map((entry, entryIndex) => {
@@ -184,14 +206,15 @@ export function materializeOwnSeries(
     });
     if (!changed) {
       rebuilt.push(history);
-      return;
+    } else if (entries.some((e) => e.anchor.snapshot.features.length > 0)) {
+      rebuilt.push({ featureId: history.featureId, series: { entries } });
     }
-    // 全部の錨が空になった歴史は落とす（持ち主の居ない空の系列を残さない）。
-    if (entries.every((e) => e.anchor.snapshot.features.length === 0)) return;
-    rebuilt.push({ featureId: history.featureId, series: { entries } });
+    // （全部の錨が空になった歴史は落とす ―― 持ち主の居ない空の系列を残さない。
+    // 落としても、そこから起こした系列はその位置に入る。）
+    pushCreatedAfter(historyIndex);
   });
 
-  return { histories: [...rebuilt, ...created], materializedIds };
+  return { histories: rebuilt, materializedIds };
 }
 
 /**

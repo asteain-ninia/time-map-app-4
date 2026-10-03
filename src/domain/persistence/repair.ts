@@ -28,6 +28,7 @@ import {
   FEATURE_KIND,
   createLeafFeature,
   pruneVertexStore,
+  referencedVertexIds,
   withAggregateChildIds,
   withParentId,
 } from '../feature';
@@ -187,18 +188,18 @@ export function repairOptionsFor(inc: Inconsistency): RepairOption[] {
     case INCONSISTENCY.TimeConflict:
       return [opt(REPAIR_OPTION.NormalizeSeries)];
     case INCONSISTENCY.OrphanHistory:
-      // 中身を捨てない救済を **選べるようにした**（司令塔の決定 (3)）: 持ち主が居ない
-      // 歴史でも、その錨には子・孫の記録が残っている。
+      // **既定は「各地物に自分の年表を作って残す」**（所有者の裁定 2026-09-07。原則:
+      // 削除以外でデータが勝手に消えるのは良くない）。持ち主が居ない歴史でも、その錨には
+      // 子・孫の記録が残っている。「捨てる」は最後の手段として残す。
       //
-      // **既定はまだ「捨てる」のまま**である。既定を入れ替えると、性質検査
-      // （save-load-roundtrip の多重破損）が **修復の不動点へ収束しない**
-      // ―― 起こした系列が次の走査で別の不整合（形状規則・重なり）を生み、
-      // 修復 → 再検査の輪が回り続ける。決定 (3) の「既定にする」を満たすには
-      // 起こしたあとの後始末をもう 1 段（形状規則と重なりの解消）足す必要があり、
-      // それは修復そのものの設計に触るので所有者の裁定を待つ（§11.4）。
+      // 以前これを既定にできなかったのは、起こした系列を歴史の **末尾へ足していた**
+      // からである。並びが変わると、時刻ごとの頂点の束（後に来た方が勝つ）と、食い違う
+      // 頂点を揃える修復（先に見えた方を正とする）の勝ち負けが入れ替わり、重なりが一度
+      // 隠れて次の修復で「新しい不整合」として現れる（seed 36002 / 36004）。後始末として
+      // 起こした系列を写し元の位置に置くようにした（affiliation/materialize.ts）。
       return [
-        opt(REPAIR_OPTION.DropOrphanHistory),
         opt(REPAIR_OPTION.MaterializeOrphanHistory),
+        opt(REPAIR_OPTION.DropOrphanHistory),
       ];
     case INCONSISTENCY.DuplicateOwnerHistory:
       return [opt(REPAIR_OPTION.DropDuplicateOwnerHistories)];
@@ -418,13 +419,30 @@ function reconcileVertexCoordinate(
   // without ever passing through a geometry-broken intermediate. Idempotent: on a
   // project with a single divergence it rewrites exactly that one vertex.
   void vertexId; // every divergent id is reconciled; the named one is included.
+  //
+  // **正とするのは「その錨の地物が実際に使っている」頂点の最初の版**（2026-10-03、
+  // 裁定 (b) の後始末）。どの地物も参照していない頂点の版は、別の錨から紛れ込んだ
+  // 写し（`pruneVertexStore` の注記にある「漏れた頂点」）であって座標の根拠にならない。
+  // 以前は参照の有無を見ずに最初の版を正としていたので、孤立した歴史を救済して歴史の
+  // 並びが変わると、紛れ込んだ版が「最初」になり、使われている形の方を壊して穴が外へ
+  // はみ出した（性質検査 seed 36004）。参照されている版が 1 つも無い id だけ、従来どおり
+  // 最初に見えた版を正とする。
   const canonicalById = new Map<VertexId, Vertex>();
+  const firstSeenById = new Map<VertexId, Vertex>();
   for (const h of project.histories) {
     for (const e of h.series.entries) {
+      const cited = new Set<VertexId>();
+      for (const f of e.anchor.snapshot.features) {
+        for (const id of referencedVertexIds(f)) cited.add(id);
+      }
       for (const body of e.anchor.snapshot.vertices.byId.values()) {
-        if (!canonicalById.has(body.id)) canonicalById.set(body.id, body);
+        if (!firstSeenById.has(body.id)) firstSeenById.set(body.id, body);
+        if (cited.has(body.id) && !canonicalById.has(body.id)) canonicalById.set(body.id, body);
       }
     }
+  }
+  for (const [id, body] of firstSeenById) {
+    if (!canonicalById.has(id)) canonicalById.set(id, body);
   }
   if (canonicalById.size === 0) return project; // no vertices at all → nothing to do.
 
