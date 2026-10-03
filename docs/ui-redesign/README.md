@@ -150,6 +150,7 @@
 
 | 論点 | 採ったもの | 戻し方 |
 | --- | --- | --- |
+| **文言の表の規則の範囲と除外**（2026-10-04、文言の総点検の下準備 その 1。司令塔未確認） | 日本語とみなす文字に、和文の句読点（U+3000–303F）と全角の英数・記号（U+FF00–FFEF）も入れた（提案書の試しはかな・漢字だけで、「、」だけの区切りや「（」「＋」が漏れた）。除外はファイル単位で検査・見本データ（`fixtures*.ts`・`ui/e2e/**`）・性能の計測（`domain/perf/**`・`render/perf/**`）・診断ログの表（`shell/main/close-guard-log.ts`。`close-guard.ts` から一字一句そのまま分けた）。1 行ずつの注記は 7 か所（正規表現の部品 4・内部の英語の例外 1・診断ログの印の行 1・全角の符号の判定 1）。表のファイル名に `○○-strings.ts` / `○○-messages.ts`（何も読み込まない独立の表）を足した。表の外の名前付きの表（`EDIT_PLAN_STRINGS` など 13 個）は中身を変えずに表のファイルへ移し、元のファイルから同じ名前で再び公開した | `scripts/ui-text-rule.mjs` の `UI_TEXT_CHAR_CLASS` / `UI_TEXT_EXEMPT_FILES` / `UI_TEXT_TABLE_FILES` を直す（ESLint と単体の両方がそこを読む）。再公開をやめるなら、読み込む側を表のファイルへ向け直す |
 | **自動保存の間隔・世代数はアプリ側の設定ファイルに置き、主プロセスが効かせる**（2026-10-03、増分 8D。司令塔未確認） | userData の `app-prefs.json` に 2 項目を足し、主プロセスが **書いたその場**（`handleWriteAppPrefs`）と **起動時**（`restoreAutoSaveConfig`）に自動保存へ効かせる。プロジェクトの保存ファイルには入れない（どのプロジェクトでも同じ間隔＝教訓 5.36）。描画プロセスの `configureAutoSave` は呼ばない（口は残っている） | `AppSettings` に 2 項目を足して `uiSettings` に保存し、設定の確定と読み込み時に `configureAutoSave` を呼ぶ。`handleWriteAppPrefs` の `applyAutoSaveConfig` と `restoreAutoSaveConfig` を外す |
 | **「保存とバックアップ」は設定の 3 つ目のタブ**（2026-10-03、増分 8D。司令塔未確認） | 設計書 G-5 は「アプリ全体設定『保存とバックアップ』」だが、書く先（userData）と効き方（［適用］でその場で効く）がほかの 2 タブ（下書き →［保存］）と違うので、タブを分けた。V12 手順 (b) の手数は同じ | `SettingsDialog.tsx` の `BackupTab` の中身を `AppTab` の末尾の節へ移し、タブを 2 つに戻す |
 | **設定の［保存］でも「保存とバックアップ」の打ちかけを書く**（2026-10-03、増分 8D。司令塔未確認） | ［適用］を押し忘れた変更を黙って捨てない。範囲外ならそのタブを開いて理由を出し、閉じない | `SettingsDialog` の `saveAndClose` から `backup` の分岐を外す |
