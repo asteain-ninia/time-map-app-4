@@ -1,16 +1,21 @@
-// B39 の直し — 面の中に子を描くと、確定した時点で親がまとめ役になり（分け残しが生まれる）、
-// 2 人目・3 人目は同じまとめ役の下に平らに並ぶ。保存して開き直しても修復を聞かれない。
-// 取り消し 1 回で「子の追加」と「親の集約化（または分け残しの削り）」がまとめて戻る。
+// B39（面の下に子を作ると、開き直しのたびに修復を聞かれる）— **B39 前の期待**を実アプリで固定する。
 //
-// 単体（`src/domain/promotion/carve.test.ts`）はドメインの経路を固定する。ここは
-// **実アプリの確定の経路**（素性欄の既定・追加の束ねの重なりの検出・取り消しの単位・保存）を
-// 通して見る ―― 2 人目で「重なりの解決」の板が出る、既定が分け残しを指す、といった
-// 配線の欠陥は単体では緑のまま残る（開発ガイド §5.49）。
+// 2026-10-04 に「子を確定した時点で親を集約化する」後始末を入れ直したが、再検証
+// （docs/ui-redesign/審査/B39-手直し2-再検証Opus.md）で、年を変えて子を描く形などで開き直しの
+// 修復が利用者の描いた子を消す道が見つかり、後始末は戻した。いまの約束は次のとおり:
+//
+//   - 確定では親を作り替えない（親は「形を持ったまま子を持つ」末端のまま）。
+//   - 開き直すと修復の板が出て、勧められるまま（各行の先頭）押すと、親 →［子…, 直轄領］の
+//     平らな形で開く。何も消えない。
+//   - 親を描いた年と違う年に子を描いても、修復で解けて開ける（再検証 3-1。以前は修復が親の錨の
+//     始まりの年にしか子を探さず、解けずに読み込みが止まった）。
+//
+// 単体（`src/domain/persistence/repair-leaf-with-children-later.test.ts`）はドメインの修復を、
+// ここは実アプリの描く → 保存 → 開き直す → 修復の経路を見る。
 
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
 import { expect, test, type Page } from '@playwright/test';
 import { strFromU8, unzipSync } from 'fflate';
@@ -19,9 +24,8 @@ import {
   addInputLayerBox,
   armAddAreaTool,
   drawFace,
-  enterEditMode,
+  jumpToYear,
   launchApp,
-  launchAppWithProject,
   leafReport,
   loadProject,
   placeVertices,
@@ -63,41 +67,40 @@ function savedFeatures(path: string): Map<string, SavedFeature> {
   return out;
 }
 
-/** 開き直す。**修復の板・未保存の確認が出たら失敗にする**（`inc7-fix2.spec.ts` と同じ見方）。 */
-async function reopenWithoutBoards(page: Page, path: string): Promise<LoadProjectOutcome> {
-  const loading = loadProject(page, path);
-  const boardShown = page
-    .locator('[data-testid="repair-dialog"],[data-testid="unsaved-dialog"]')
-    .first()
-    .waitFor({ state: 'visible', timeout: 20_000 })
-    .then(() => 'board' as const)
-    .catch(() => 'none' as const);
-  const first = await Promise.race([loading, boardShown]);
-  if (first === 'board') {
-    const text = await page
-      .locator('[data-testid="repair-dialog"],[data-testid="unsaved-dialog"]')
-      .first()
-      .textContent();
-    throw new Error(`開き直しで板が出た: ${text ?? ''}`);
-  }
-  return first === 'none' ? loading : first;
-}
-
-async function activeFeature(page: Page): Promise<string> {
-  return ((await page.getByTestId('app-active-feature').textContent()) ?? '').trim();
-}
-
 /**
- * 親の内側に子を描いて保存する。上位領域の欄の既定と、保存後に選ばれた地物（＝新しい子）を返す。
- * **重なりの解決の板が出ないこと**もここで見る（2 人目以降は分け残しの中に描くので、
- * 追加の試し当てでは分け残しと必ず重なる ―― 聞かずに分け残しを削るのが今回の直し）。
+ * 開き直し、修復の板が出たら各行の先頭（＝勧められる方法）を選んで適用する。やり直しの板が
+ * 出たら失敗にする（勧められるまま 1 回で解けることを見る）。板に出た行の数を返す。
  */
+async function reopenWithRecommendedRepairs(
+  page: Page,
+  path: string,
+): Promise<{ readonly outcome: LoadProjectOutcome; readonly rows: number }> {
+  const loading = loadProject(page, path);
+  const board = page.getByTestId('repair-dialog');
+  const shown = await board
+    .waitFor({ state: 'visible', timeout: 20_000 })
+    .then(() => true)
+    .catch(() => false);
+  let count = 0;
+  if (shown) {
+    const rows = page.locator('[data-testid^="repair-row-"]');
+    count = await rows.count();
+    for (let i = 0; i < count; i += 1) {
+      await rows.nth(i).locator('[data-testid^="repair-option-"]').first().check();
+    }
+    await page.getByTestId('repair-apply').click();
+    // 勧められるまま 1 回で解ける（やり直しの板が出ない）。
+    await expect(board).toHaveCount(0);
+  }
+  return { outcome: await loading, rows: count };
+}
+
+/** 親の内側に子を描いて保存する（上位領域の欄の既定のまま）。上位領域の既定を返す。 */
 async function drawChild(
   page: Page,
   at: { readonly x: number; readonly y: number; readonly half: number },
   name: string,
-): Promise<{ readonly defaultParent: string; readonly id: string }> {
-  const before = await activeFeature(page);
+): Promise<string> {
   await armAddAreaTool(page);
   await placeVertices(page, squareCorners(at.x, at.y, at.half));
   await page.getByTestId('add-complete').click();
@@ -106,14 +109,21 @@ async function drawChild(
   const defaultParent = await select.inputValue();
   await page.getByTestId('add-name').fill(name);
   await page.getByTestId('add-save').click();
-  await expect.poll(() => activeFeature(page)).not.toBe(before);
-  await expect(page.getByTestId('conflict-modal-root')).toHaveCount(0);
+  // 保存は 1 コマ遅れて走る。素性欄が閉じる（＝保存が走り終えた）のを待つ。
   await expect(page.getByTestId('add-property-form')).toHaveCount(0);
-  return { defaultParent, id: await activeFeature(page) };
+  return defaultParent;
 }
 
-test.describe('B39 — 面の中に子を描くと平らに並び、開き直しで修復を聞かれない', () => {
-  test('子 3 人: 親 →［子1, 子2, 子3, 分け残し］。保存 → 開き直しで板が出ない', async () => {
+/** 平らな形（親 →［子…, 直轄領］）で保存されているか。 */
+function expectFlat(saved: Map<string, SavedFeature>, parentId: string, childNames: string[]): void {
+  expect(saved.get(parentId)?.kind).toBe('aggregate');
+  const under = [...saved.values()].filter((f) => f.parentId === parentId);
+  expect(under.map((f) => f.attributes?.name ?? '').sort()).toEqual([...childNames, '親 直轄領'].sort());
+  expect([...saved.values()].filter((f) => f.directDomain === true)).toHaveLength(1);
+}
+
+test.describe('B39 前の期待 — 面の中に子を描くと、開き直しの修復で平らな形になる（何も消えない）', () => {
+  test('同じ年に子 3 人 → 保存 → 開き直し → 勧められる修復 1 回で 親 →［子1, 子2, 子3, 直轄領］', async () => {
     test.setTimeout(240_000);
     const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-b39-'));
     const target = join(workDir, 'b39.gimoza');
@@ -125,238 +135,64 @@ test.describe('B39 — 面の中に子を描くと平らに並び、開き直し
       const cy = b.y + b.height / 2;
       const parentId = await drawFace(page, squareCorners(cx + 60, cy, 150), { name: '親' });
       expect(parentId).not.toBe('');
-
-      const children = [
-        await drawChild(page, { x: cx + 10, y: cy - 70, half: 30 }, '子1'),
-        await drawChild(page, { x: cx + 110, y: cy - 70, half: 30 }, '子2'),
-        await drawChild(page, { x: cx + 60, y: cy + 70, half: 30 }, '子3'),
-      ];
-      // 既定は 3 人とも親（2 人目以降も、1 人目で生まれた分け残しを指さない）。
-      for (const c of children) expect(c.defaultParent).toBe(parentId);
-
-      // 画面の上でも重なりが無い（分け残しは 3 人ぶん削られている）。
-      const report = await leafReport(page, { names: ['子1', '子2', '子3', '親 直轄領'] });
-      expect(report.entries.map((e) => e.name).sort()).toEqual(
-        ['子1', '子2', '子3', '親 直轄領'].sort(),
-      );
-      expect(report.maxPairOverlapKm2).toBe(0);
+      // 確定では親を作り替えない: 既定は 3 人とも親（親は形を持つ末端のまま）。
+      expect(await drawChild(page, { x: cx + 10, y: cy - 70, half: 30 }, '子1')).toBe(parentId);
+      expect(await drawChild(page, { x: cx + 110, y: cy - 70, half: 30 }, '子2')).toBe(parentId);
+      expect(await drawChild(page, { x: cx + 60, y: cy + 70, half: 30 }, '子3')).toBe(parentId);
+      expect((await leafReport(page, { names: ['親'] })).entries).toHaveLength(1);
 
       await page.keyboard.press('Control+s');
       await expect(page.getByTestId('statusbar-result')).toContainText('保存しました');
       expect(existsSync(target)).toBe(true);
 
-      // 書き出したファイル: 親はまとめ役、直下は子 3 人と分け残し 1 つ（平ら）。
-      const saved = savedFeatures(target);
-      expect(saved.get(parentId)?.kind).toBe('aggregate');
-      const under = [...saved.values()].filter((f) => f.parentId === parentId);
-      const dds = [...saved.values()].filter((f) => f.directDomain === true);
-      expect(dds).toHaveLength(1);
-      expect(dds[0]!.parentId).toBe(parentId);
-      expect(dds[0]!.attributes?.name).toBe('親 直轄領');
-      expect(under.map((f) => f.id).sort()).toEqual(
-        [...children.map((c) => c.id), dds[0]!.id].sort(),
-      );
-      // 分け残しの名前の連鎖が無い。
-      expect([...saved.values()].some((f) => (f.attributes?.name ?? '').includes('直轄領 直轄領'))).toBe(
-        false,
-      );
-
-      // 開き直しで修復の板が出ない（旧 B39 はここで毎回聞かれていた）。
-      expect(await reopenWithoutBoards(page, target)).toBe('loaded');
-    } finally {
-      await app.close();
-      rmSync(workDir, { recursive: true, force: true });
-    }
-  });
-
-  test('取り消し 1 回で「子の追加」と「親の集約化／分け残しの削り」がまとめて戻り、やり直しで戻る', async () => {
-    test.setTimeout(240_000);
-    const { app, page } = await launchApp();
-    try {
-      await armAddAreaTool(page);
-      const b = await addInputLayerBox(page);
-      const cx = b.x + b.width / 2;
-      const cy = b.y + b.height / 2;
-      await drawFace(page, squareCorners(cx + 60, cy, 150), { name: '親' });
-      await drawChild(page, { x: cx + 10, y: cy - 70, half: 30 }, '子1');
-      const afterFirst = await leafReport(page, { names: ['親', '親 直轄領', '子1'] });
-      const ddAfterFirst = afterFirst.entries.find((e) => e.name === '親 直轄領');
-      expect(ddAfterFirst).toBeDefined();
-      // 親は末端としては居ない（まとめ役になった）。
-      expect(afterFirst.entries.some((e) => e.name === '親')).toBe(false);
-
-      await drawChild(page, { x: cx + 110, y: cy - 70, half: 30 }, '子2');
-      const afterSecond = await leafReport(page, { names: ['親 直轄領', '子2'] });
-      const ddAfterSecond = afterSecond.entries.find((e) => e.name === '親 直轄領')!;
-      expect(ddAfterSecond.areaKm2!).toBeLessThan(ddAfterFirst!.areaKm2!);
-
-      await enterEditMode(page);
-      // 1 回目の取り消し: 子2 が消え、分け残しは 1 人目のあとの形へ戻る。
-      await page.keyboard.press('Control+z');
-      await expect
-        .poll(async () => (await leafReport(page, { names: ['子2'] })).entries.length)
-        .toBe(0);
-      const undone1 = await leafReport(page, { names: ['親 直轄領'] });
-      expect(undone1.entries[0]?.areaKm2).toBeCloseTo(ddAfterFirst!.areaKm2!, 3);
-      expect(undone1.entries[0]?.ringCount).toBe(ddAfterFirst!.ringCount);
-
-      // 2 回目の取り消し: 子1 と分け残しが消え、親は形を持つ末端へ戻る（中間の姿が無い）。
-      await page.keyboard.press('Control+z');
-      await expect
-        .poll(async () =>
-          (await leafReport(page, { names: ['子1', '親 直轄領', '親'] })).entries.map((e) => e.name),
-        )
-        .toEqual(['親']);
-
-      // やり直し 2 回で 2 人とも戻る。
-      await page.keyboard.press('Control+y');
-      await page.keyboard.press('Control+y');
-      await expect
-        .poll(async () =>
-          (await leafReport(page, { names: ['子1', '子2', '親 直轄領', '親'] })).entries
-            .map((e) => e.name)
-            .sort(),
-        )
-        .toEqual(['子1', '子2', '親 直轄領'].sort());
-    } finally {
-      await app.close();
-    }
-  });
-
-  // 検証 3-1（B39 の手直し 2 回目）: 3 人目が 1 人目と分け残しの両方に重なると、重なりの板が出る
-  // （聞くのは 1 人目との重なりだけ ―― 分け残しとの重なりは後始末で削るので聞かない）。板で答えて
-  // 確定しても、直接の確定と同じ後始末を通り、分け残しが削られて重なりが残らない。
-  test('重なりの板を通って確定した子でも、分け残しが削られ重なりが残らない（開き直しで板なし）', async () => {
-    test.setTimeout(240_000);
-    const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-b39c-'));
-    const target = join(workDir, 'b39c.gimoza');
-    const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });
-    try {
-      await armAddAreaTool(page);
-      const b = await addInputLayerBox(page);
-      const cx = b.x + b.width / 2;
-      const cy = b.y + b.height / 2;
-      const parentId = await drawFace(page, squareCorners(cx + 60, cy, 150), { name: '親' });
-      await drawChild(page, { x: cx + 10, y: cy - 70, half: 30 }, '子1');
-      await drawChild(page, { x: cx + 110, y: cy - 70, half: 30 }, '子2');
-      const before = await leafReport(page, { names: ['親 直轄領'] });
-      const ddBefore = before.entries[0]!.areaKm2!;
-
-      // 3 人目: 頂点は 3 つとも分け残しの中（1 人目の外）、辺が 1 人目の角を横切る三角形。
-      await armAddAreaTool(page);
-      await placeVertices(page, [
-        [cx + 10, cy - 25],
-        [cx + 70, cy - 25],
-        [cx + 70, cy - 70],
-      ]);
-      await page.getByTestId('add-complete').click();
-      await expect(page.getByTestId('add-parent')).toHaveValue(parentId);
-      await page.getByTestId('add-name').fill('子3');
-      await page.getByTestId('add-save').click();
-      const dialog = page.getByTestId('conflict-dialog');
-      await expect(dialog).toBeVisible();
-      // 聞かれるのは「子1 ／ 子3」の 1 行だけ（分け残しとの重なりは聞かない）。
-      const rows = page.getByTestId('conflict-rows').locator(':scope > li');
-      await expect(rows).toHaveCount(1);
-      await expect(rows.first().getByTestId('conflict-row-features')).not.toContainText('直轄領');
-      await rows.first().getByRole('radio', { name: /子1/ }).check();
-      await page.getByTestId('conflict-apply').click();
-      await expect(dialog).toHaveCount(0);
-
-      // 分け残しは削られ、どの組も重ならない。
-      await expect
-        .poll(async () =>
-          (await leafReport(page, { names: ['子1', '子2', '子3', '親 直轄領'] })).entries.length,
-        )
-        .toBe(4);
-      const after = await leafReport(page, { names: ['子1', '子2', '子3', '親 直轄領'] });
-      expect(after.maxPairOverlapKm2).toBe(0);
-      expect(after.entries.find((e) => e.name === '親 直轄領')!.areaKm2!).toBeLessThan(ddBefore);
-
+      const reopened = await reopenWithRecommendedRepairs(page, target);
+      expect(reopened.outcome).toBe('loaded');
+      expect(reopened.rows).toBeGreaterThan(0);
+      // 修復した姿で保存し直して、平らな形を確かめる。
       await page.keyboard.press('Control+s');
       await expect(page.getByTestId('statusbar-result')).toContainText('保存しました');
-      expect(await reopenWithoutBoards(page, target)).toBe('loaded');
-    } finally {
-      await app.close();
-      rmSync(workDir, { recursive: true, force: true });
-    }
-  });
-});
-
-// 実データ（DERLE_TMAP_DIR か derle-import/ に複写元が無ければ skip）。正準ファイルは開かず、
-// 一時ディレクトリへ複写して開く（教訓 5.48）。
-const REAL_DATA_FILE = 'derle-world-full-2026-08-16.gimoza';
-const dataDir =
-  process.env['DERLE_TMAP_DIR'] ??
-  resolve(dirname(fileURLToPath(import.meta.url)), '..', 'derle-import');
-const canonicalPath = join(dataDir, REAL_DATA_FILE);
-
-test.describe('B39 — 実データ（デーレ界）で、重なりの板を通った子の後始末', () => {
-  test.skip(!existsSync(canonicalPath), `実データが無い (${canonicalPath})`);
-
-  test('ナイー共和国の中に子を 2 人描き、3 人目が 1 人目と分け残しに重なる → 板 → 確定で重なり 0', async () => {
-    test.setTimeout(240_000);
-    const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-b39-real-'));
-    const workingCopy = join(workDir, REAL_DATA_FILE);
-    copyFileSync(canonicalPath, workingCopy);
-    const canonicalBefore = statSync(canonicalPath);
-    const { app, page } = await launchAppWithProject(workingCopy);
-    try {
-      const map = (await page.getByTestId('map-input-layer').boundingBox())!;
-      const cx = map.x + map.width / 2 - 200;
-      const cy = map.y + map.height / 2 + 80;
-      // 全体表示の (−200, +80) はナイー共和国の内陸。そこへ寄って、頂点の遠い所に描く。
-      await page.mouse.move(cx, cy);
-      for (let k = 0; k < 8; k += 1) {
-        await page.mouse.wheel(0, -300);
-        await page.waitForTimeout(150);
-      }
-      await armAddAreaTool(page);
-      await placeVertices(page, squareCorners(cx - 60, cy, 20));
-      await page.getByTestId('add-complete').click();
-      const parentId = await page.getByTestId('add-parent').inputValue();
-      expect(parentId).not.toBe('');
-      await page.getByTestId('add-name').fill('子1');
-      await page.getByTestId('add-save').click();
-      await expect(page.getByTestId('add-property-form')).toHaveCount(0);
-      const second = await drawChild(page, { x: cx, y: cy, half: 20 }, '子2');
-      expect(second.defaultParent).toBe(parentId);
-
-      // 3 人目: 頂点は 3 つとも分け残しの中（1 人目の外）、辺が 1 人目の角を横切る三角形。
-      await armAddAreaTool(page);
-      await placeVertices(page, [
-        [cx - 72, cy + 36],
-        [cx - 25, cy + 36],
-        [cx - 25, cy - 5],
-      ]);
-      await page.getByTestId('add-complete').click();
-      await expect(page.getByTestId('add-parent')).toHaveValue(parentId);
-      await page.getByTestId('add-name').fill('子3');
-      await page.getByTestId('add-save').click();
-      const dialog = page.getByTestId('conflict-dialog');
-      await expect(dialog).toBeVisible();
-      const rows = page.getByTestId('conflict-rows').locator(':scope > li');
-      await expect(rows).toHaveCount(1);
-      await expect(rows.first().getByTestId('conflict-row-features')).not.toContainText('直轄領');
-      await rows.first().getByRole('radio', { name: /子1/ }).check();
-      await page.getByTestId('conflict-apply').click();
-      await expect(dialog).toHaveCount(0);
-
-      const names = ['子1', '子2', '子3'];
-      await expect
-        .poll(async () => (await leafReport(page, { names })).entries.length)
-        .toBe(3);
-      // 分け残し（「ナイー共和国 直轄領」）を含めて、どの組も重ならない。
-      const report = await leafReport(page, { names: [...names, 'ナイー共和国 直轄領'] });
-      expect(report.entries.map((e) => e.name).sort()).toEqual([...names, 'ナイー共和国 直轄領'].sort());
+      expectFlat(savedFeatures(target), parentId, ['子1', '子2', '子3']);
+      const report = await leafReport(page, { names: ['子1', '子2', '子3', '親 直轄領'] });
+      expect(report.entries).toHaveLength(4);
       expect(report.maxPairOverlapKm2).toBe(0);
     } finally {
       await app.close();
       rmSync(workDir, { recursive: true, force: true });
     }
-    const canonicalAfter = statSync(canonicalPath);
-    expect(canonicalAfter.size).toBe(canonicalBefore.size);
-    expect(canonicalAfter.mtimeMs).toBe(canonicalBefore.mtimeMs);
+  });
+
+  test('1000 年に親・1100 年に子 → 保存 → 開き直し → 修復で解けて開き、1100 年から 親 →［子, 直轄領］', async () => {
+    test.setTimeout(240_000);
+    const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-b39y-'));
+    const target = join(workDir, 'b39y.gimoza');
+    const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });
+    try {
+      await jumpToYear(page, 1000);
+      await armAddAreaTool(page);
+      const b = await addInputLayerBox(page);
+      const cx = b.x + b.width / 2;
+      const cy = b.y + b.height / 2;
+      const parentId = await drawFace(page, squareCorners(cx + 60, cy, 150), { name: '親' });
+      await jumpToYear(page, 1100);
+      expect(await drawChild(page, { x: cx + 10, y: cy - 70, half: 30 }, '子')).toBe(parentId);
+
+      await page.keyboard.press('Control+s');
+      await expect(page.getByTestId('statusbar-result')).toContainText('保存しました');
+
+      // 以前はここで修復が解けず、2 枚目の板のあと読み込みが止まった（再検証 3-1）。
+      const reopened = await reopenWithRecommendedRepairs(page, target);
+      expect(reopened.outcome).toBe('loaded');
+      await jumpToYear(page, 1100);
+      const at1100 = await leafReport(page, { names: ['親', '子', '親 直轄領'] });
+      expect(at1100.entries.map((e) => e.name).sort()).toEqual(['子', '親 直轄領'].sort());
+      expect(at1100.maxPairOverlapKm2).toBe(0);
+      // 1050 年（子が居ない年）の親は形を持つ末端のまま。
+      await jumpToYear(page, 1050);
+      const at1050 = await leafReport(page, { names: ['親', '子', '親 直轄領'] });
+      expect(at1050.entries.map((e) => e.name)).toEqual(['親']);
+    } finally {
+      await app.close();
+      rmSync(workDir, { recursive: true, force: true });
+    }
   });
 });
-

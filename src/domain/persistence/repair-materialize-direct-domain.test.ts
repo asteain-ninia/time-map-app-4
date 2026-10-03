@@ -160,6 +160,7 @@ describe('FR-37 直轄領 materialisation repair — options', () => {
     const opts = repairOptionsFor(inc).map((o) => o.id);
     expect(opts).toEqual([
       REPAIR_OPTION.MaterializeDirectDomain,
+      REPAIR_OPTION.KeepLeafWithChildren,
       REPAIR_OPTION.DropShapeRoleFeature,
     ]);
   });
