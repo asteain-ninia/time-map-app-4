@@ -121,6 +121,17 @@ describe('直前の結果（設計書 §H.5 / 教訓 5.12）', () => {
     expect(screen.getByTestId('statusbar-result')).toHaveTextContent('測量の線を消しました');
   });
 
+  // 増分 8C の再手直し（再検証 #3）: 焦点が状態行に残ると、地図に焦点があるときだけ効く打鍵が効かない。
+  it('ボタンを押したら焦点を手放す（本文へ戻る）', () => {
+    const { messageStore } = renderStatus();
+    act(() => messageStore.set('測量の線を消しました', 'success', { label: '戻す', run: () => undefined }));
+    const button = screen.getByTestId('statusbar-result-action');
+    button.focus();
+    expect(document.activeElement).toBe(button);
+    fireEvent.click(button);
+    expect(document.activeElement).toBe(document.body);
+  });
+
   it('ボタンの無い結果ではボタンを出さない', () => {
     const { messageStore } = renderStatus();
     act(() => messageStore.success('保存しました（a.gimoza）'));

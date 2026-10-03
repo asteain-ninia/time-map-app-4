@@ -418,6 +418,82 @@ test.describe('増分 8C の手直し — 消した線を戻す（反証 #2）',
     }
   });
 
+  // 増分 8C の再手直し（再検証 #1）: 始点を置いた途中で線を消すと、下書き中で Ctrl+Z は届かない。
+  // 案内どおり Esc で下書きをやめたあとの Ctrl+Z は、関係のない地物の取り消しではなく線を戻す。
+  test('始点を置いた途中で線を消す → Ctrl+Z は届かない → Esc → Ctrl+Z で線が戻り、地物は減らない', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await waitForE2EHook(page);
+      const f = await twoFaces(page);
+      await enableSurvey(page);
+      const y = f.cy + 20;
+      await page.mouse.click(f.aX - 50, y);
+      await page.mouse.click(f.aX + 50, y);
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+      // 次の測量の始点だけを置く（下書きあり）。
+      await page.mouse.click(f.bX, f.cy - 40);
+      await expect(page.getByTestId('option-bar-next-step')).toContainText('終点を指定');
+
+      await page.mouse.click(f.aX, y, { button: 'right' });
+      await surveyItems(page).first().click();
+      await expect(page.getByTestId('survey-line-count')).toHaveText('0');
+      await expect(page.getByTestId('statusbar-result-action')).toHaveCount(1);
+
+      // 下書き中は大域の打鍵が止まっている ―― 何も起きない（地物の取り消しにも流れない）。
+      await page.keyboard.press('Control+z');
+      await expect(page.getByTestId('survey-line-count')).toHaveText('0');
+      expect(await listedFeatureCount(page)).toBe(2);
+
+      // 案内どおり Esc で下書きをやめる。覚えは残る（［戻す］も残る）。
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('option-bar-next-step')).toContainText('地図で 2 点を押すと');
+      await expect(page.getByTestId('statusbar-result-action')).toHaveCount(1);
+
+      // もう一度 Ctrl+Z → 線が戻る。地物は 2 件のまま。
+      await page.keyboard.press('Control+z');
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+      expect(await listedFeatureCount(page)).toBe(2);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // 増分 8C の再手直し（再検証 #2・#3）: U で測るを終えても覚えは捨てない。［戻す］を押したあとは
+  // 焦点が状態行に残らず、U がそのまま効く。
+  test('線を消して U で測るを終えても Ctrl+Z で線が戻る／［戻す］のあとも U が効く', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await waitForE2EHook(page);
+      const f = await twoFaces(page);
+      await enableSurvey(page);
+      const y = f.cy + 20;
+      await page.mouse.click(f.aX - 50, y);
+      await page.mouse.click(f.aX + 50, y);
+      await page.mouse.click(f.aX, y, { button: 'right' });
+      await surveyItems(page).first().click();
+      await expect(page.getByTestId('survey-line-count')).toHaveText('0');
+
+      const toggle = page.getByTestId('survey-toggle');
+      await page.keyboard.press('u');
+      await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+      await expect(page.getByTestId('statusbar-result-action')).toHaveCount(1);
+      await page.keyboard.press('Control+z');
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+      expect(await listedFeatureCount(page)).toBe(2);
+
+      // 測るを終えたあとでも線は右クリックで消せる。消して［戻す］を押し、そのまま U で測るを持つ。
+      await page.mouse.click(f.aX, y, { button: 'right' });
+      await surveyItems(page).first().click();
+      await expect(page.getByTestId('survey-line-count')).toHaveText('0');
+      await page.getByTestId('statusbar-result-action').click();
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+      await page.keyboard.press('u');
+      await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    } finally {
+      await app.close();
+    }
+  });
+
   test('消したあとに測量の操作をすると覚えは捨てられ、Ctrl+Z は従来どおり地物の取り消しへ戻る', async () => {
     const { app, page } = await launchApp();
     try {

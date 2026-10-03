@@ -300,18 +300,26 @@ describe('restoreRemovedSurveyLine — 直前に消した線を戻す（増分 8
     expect(back.lines).toHaveLength(3);
   });
 
-  it('覚えを捨てる契機: 点を置く・クリア・測るの入り切り・下書きの取りやめ・道具の持ち替え', () => {
+  it('覚えを捨てる契機: 点を置く・クリア・道具の持ち替え', () => {
     const base = removeSurveyLine(threeLines(), 1);
     expect(base.removed).not.toBeNull();
     expect(clickPoint(base, P(70, 0)).removed).toBeNull();
     expect(clearSurvey(base).removed).toBeNull();
-    expect(enableSurveyMode(base).removed).toBeNull();
-    expect(disableSurveyMode(base).removed).toBeNull();
     expect(discardOnToolSwitch(base).removed).toBeNull();
-    // 下書きを取りやめたとき（何かが変わったとき）だけ捨てる。
+  });
+
+  // 増分 8C の再手直し（再検証 #1・#2）: 線を増減させない操作では捨てない。始点を置いた途中は
+  // Ctrl+Z が届かないので、案内どおり Esc で下書きをやめてから Ctrl+Z で戻せなければならない。
+  it('下書きの取りやめ（Esc）と測るの入り切りでは捨てない', () => {
     const drafting = removeSurveyLine(clickPoint(threeLines(), P(60, 0)), 1);
-    expect(cancelDraft(drafting).removed).toBeNull();
-    // 下書きが無いときの取りやめは何も変えない（同じ参照・覚えも残る）。
+    const cancelled = cancelDraft(drafting);
+    expect(cancelled.draft).toBeNull();
+    expect(cancelled.removed).toBe(drafting.removed);
+    expect(restoreRemovedSurveyLine(cancelled).lines).toHaveLength(3);
+    const base = removeSurveyLine(threeLines(), 1);
+    expect(disableSurveyMode(base).removed).toBe(base.removed);
+    expect(enableSurveyMode(disableSurveyMode(base)).removed).toBe(base.removed);
+    // 下書きが無いときの取りやめは何も変えない（同じ参照）。
     expect(cancelDraft(base)).toBe(base);
   });
 
