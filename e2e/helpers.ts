@@ -427,6 +427,9 @@ export async function drawFace(
   }
   await page.getByTestId('add-save').click();
   if (!(opts.waitForSelection ?? true)) return '';
+  // **保存は 1 コマ遅れて走る**（B39 の直しで追加の［保存］にも進行表示を掛けた）。押した直後は
+  // まだ前の選択が残っているので、素性欄が閉じる（＝保存が走り終えた）のを待ってから読む。
+  await expect(page.getByTestId('add-property-form')).toHaveCount(0);
   const activeFeature = page.getByTestId('app-active-feature');
   await expect(activeFeature).toHaveText(/\S/);
   return ((await activeFeature.textContent()) ?? '').trim();

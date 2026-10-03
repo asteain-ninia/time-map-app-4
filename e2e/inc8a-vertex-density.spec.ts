@@ -597,6 +597,85 @@ test.describe('増分 8A — 実データ（デーレ界）の密度で頂点を
     await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
   }
 
+  // B86（2026-10-03 の観察「一覧が出たまま別の点を押すと、前の一覧の持ち主が選ばれる」）の確かめ。
+  // 実データの全体表示で、押すと一覧が出る点を 2 つ（A・B。B は A の一覧の矩形の外）探し、
+  // 「A を押して一覧が出たまま B を押す」と「素の状態から B を押す」が同じ結果になることを見る。
+  // 観察の正体は「B が A の一覧の矩形の上にあり、行を押していた」で、アプリの不具合では
+  // なかった（行を押せばその頂点を選ぶのが正しい）。一覧の外の押下はそのまま地図に届く。
+  test('B86: 一覧が出たまま一覧の外の点を押すと、素の状態から押したのと同じ結果になる', async () => {
+    test.setTimeout(240_000);
+    await withRealData(async (page) => {
+      await enterEditMode(page);
+      const map = (await page.getByTestId('map-input-layer').boundingBox())!;
+      const cx = map.x + map.width / 2;
+      const cy = map.y + map.height / 2;
+      const list = page.getByTestId('vertex-candidates');
+      const vertexNow = async (): Promise<string> =>
+        ((await page.getByTestId('app-active-vertex').textContent()) ?? '').trim();
+      const rowsNow = async (): Promise<string[]> =>
+        list.locator('[data-testid^="vertex-candidate-v"]').evaluateAll((els) =>
+          els.map((e) => e.getAttribute('data-testid') ?? ''),
+        );
+      const fresh = async (): Promise<void> => {
+        for (let i = 0; i < 4; i += 1) await page.keyboard.press('Escape');
+        await expect(list).toHaveCount(0);
+      };
+
+      // 素の状態から押すと一覧が出る点を集める（一覧の矩形・選ばれた頂点・行の並びも覚える）。
+      interface Spot {
+        readonly x: number;
+        readonly y: number;
+        readonly box: { x: number; y: number; width: number; height: number };
+        readonly vertex: string;
+        readonly feature: string;
+        readonly rows: string[];
+      }
+      const spots: Spot[] = [];
+      for (const dy of [-120, -60, 0, 60, 120]) {
+        for (const dx of [-240, -180, -120, -60, 0, 60, 120, 180, 240]) {
+          await fresh();
+          await page.mouse.click(cx + dx, cy + dy);
+          if ((await list.count()) === 0) continue;
+          spots.push({
+            x: cx + dx,
+            y: cy + dy,
+            box: (await list.boundingBox())!,
+            vertex: await vertexNow(),
+            feature: await activeFeatureId(page),
+            rows: await rowsNow(),
+          });
+        }
+      }
+      const outside = (s: Spot, p: { x: number; y: number }): boolean =>
+        p.x < s.box.x - 4 ||
+        p.x > s.box.x + s.box.width + 4 ||
+        p.y < s.box.y - 4 ||
+        p.y > s.box.y + s.box.height + 4;
+      let pair: { a: Spot; b: Spot } | null = null;
+      for (const a of spots) {
+        const b = spots.find((s) => s !== a && outside(a, s) && s.vertex !== a.vertex);
+        if (b !== undefined) {
+          pair = { a, b };
+          break;
+        }
+      }
+      expect(pair, `一覧が出る点が 2 つ見つからない（見つかった点 ${String(spots.length)}）`).not.toBeNull();
+      const { a, b } = pair!;
+      // 素の状態から B を押したときは、地物は選ばれず頂点が選ばれて一覧が出る。
+      expect(b.feature).toBe('');
+
+      await fresh();
+      await page.mouse.click(a.x, a.y);
+      await expect(list).toHaveCount(1);
+      await page.mouse.click(b.x, b.y);
+      // A の一覧が出たまま B を押しても、素の状態から B を押したのと同じ。
+      await expect(list).toHaveCount(1);
+      expect(await vertexNow()).toBe(b.vertex);
+      expect(await activeFeatureId(page)).toBe(b.feature);
+      expect(await rowsNow()).toEqual(b.rows);
+    });
+  });
+
   test('バアカ（601 頂点）: 全体表示のまま、候補一覧から選んだ頂点を掴める', async () => {
     test.setTimeout(180_000);
     await withRealData(async (page) => {

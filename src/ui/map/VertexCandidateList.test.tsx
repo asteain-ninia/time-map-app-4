@@ -16,6 +16,8 @@ import { VertexCandidateList } from './VertexCandidateList';
 import {
   VERTEX_CANDIDATE_MAX_ROWS,
   VertexCandidateStore,
+  createVertexCandidateGesture,
+  type DescribedVertexCandidate,
   type VertexCandidateRow,
   type VertexCandidateState,
 } from './vertex-candidates';
@@ -161,3 +163,67 @@ describe('頂点の候補一覧', () => {
     expect(store.getHover()).toBeNull();
   });
 });
+
+// B86（2026-10-03 の観察）の確かめ: 一覧が出たまま地図の別の点 B を押すと、一覧を畳む押下は
+// そのまま地図の押下として届き、B の候補で一覧が出直す ―― **素の状態から B を押したのと同じ**。
+// 観察された「前の一覧の持ち主が選ばれる」は、B が一覧の矩形の上にあって行を押していた
+// （正しい動き: 行を押せばその頂点を選ぶ）。ここでは「一覧の外の押下」の順序を、文書の捕捉段で
+// 畳む（`use-dismissable`）→ 地図の押下 → 解放、の実物と同じ並びで固定する。
+describe('B86: 一覧が出たまま別の点を押すと、素の状態から押したのと同じ結果になる', () => {
+  const at = (owner: string, id: string, lon: number): DescribedVertexCandidate => ({
+    featureId: asFeatureId(owner),
+    vertexId: asVertexId(id),
+    distancePx: 1,
+    coordinate: createCoordinate(lon, 0),
+    citers: [asFeatureId(owner)],
+  });
+  // 点 A の近くには A国の頂点が 2 つ、点 B の近くには B国の頂点が 2 つ。
+  const near = (x: number): readonly DescribedVertexCandidate[] =>
+    x < 100 ? [at('A', 'a1', 1), at('A', 'a2', 1.01)] : [at('B', 'b1', 50), at('B', 'b2', 50.01)];
+
+  function mount() {
+    const store = new VertexCandidateStore();
+    const gesture = createVertexCandidateGesture({
+      store,
+      probe: (p) => near(p.x),
+      activeFeature: () => null,
+      nameOf: (id) => `${String(id)}国`,
+    });
+    render(
+      <div>
+        <div data-testid="map">地図</div>
+        <VertexCandidateList store={store} onPick={vi.fn()} />
+      </div>,
+    );
+    // 地図の入力層（`mount/input.ts`）と同じく、押下と解放を地図の要素の上で受ける。
+    const map = screen.getByTestId('map');
+    let point = { x: 0, y: 0 };
+    map.addEventListener('pointerdown', () => gesture.press(point, true, 1));
+    map.addEventListener('pointerup', () => gesture.release(point, 1));
+    const click = (x: number): void => {
+      point = { x, y: 10 };
+      act(() => {
+        fireEvent.pointerDown(map);
+        fireEvent.pointerUp(map);
+      });
+    };
+    return { store, click };
+  }
+
+  it('素の状態から B を押すと B の一覧が出る', () => {
+    const { store, click } = mount();
+    click(200);
+    expect(store.get()?.rows.map((r) => r.vertexId)).toEqual(['b1', 'b2']);
+  });
+
+  it('A の一覧が出たまま B を押しても、B の一覧が出る（A の持ち主に寄らない）', () => {
+    const { store, click } = mount();
+    click(10);
+    expect(store.get()?.rows.map((r) => r.vertexId)).toEqual(['a1', 'a2']);
+    expect(screen.getByTestId('vertex-candidates')).toBeTruthy();
+    click(200);
+    expect(store.get()?.rows.map((r) => r.vertexId)).toEqual(['b1', 'b2']);
+    expect(store.get()?.rows.every((r) => r.featureId === asFeatureId('B'))).toBe(true);
+  });
+});
+

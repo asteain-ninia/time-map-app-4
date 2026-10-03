@@ -52,7 +52,13 @@ import { OptionBarStore } from '../shell/option-bar';
 import { AddDraftForm } from './AddPropertyForm';
 import { AddDraftStore } from './add-draft-store';
 import { AddToolController, type AddDrawSink, type ScreenToWorld } from './AddToolController';
+
 import { ADD_PHASE } from './useAddTool';
+
+/** 保存を同期で走らせる（`useDeferredCommit` の既定は 1 コマ遅らせる。B39 の進行表示）。 */
+const SYNC_COMMIT = (run: () => void): void => {
+  run();
+};
 
 type S = { tag: string };
 const STATE: S = { tag: 'committed-state' };
@@ -109,6 +115,8 @@ function mountApp(
     readonly onFocusSelection?: () => void;
     /** 確認の板の開閉を受ける口（増分 5 の手直し A3 / A4）。 */
     readonly onModalChange?: (open: boolean) => void;
+    /** 保存を遅らせる口（既定は同期）。 */
+    readonly commitScheduler?: (run: () => void) => void;
   } = {},
 ): Harness {
   const store = createSessionStore<S>({
@@ -150,6 +158,7 @@ function mountApp(
       overlay={
         <AddToolController<S>
           store={store}
+          commitScheduler={extra.commitScheduler ?? SYNC_COMMIT}
           startProcess={startProcess}
           ids={{
             nextFeatureId: () => asFeatureId(`f${++f}`),
@@ -256,6 +265,28 @@ describe('U23 integration: toolbar → add flow → save (受け入れ基準 1 /
     act(() => fireEvent.click(screen.getByTestId('add-save')));
     expect(h.startProcess).toHaveBeenCalledTimes(1);
     expect(h.proposals[0]?.anchorTime).toEqual(timePointYearMonthDay(1500, 6, 20));
+  });
+
+  it('B39: 保存は 1 コマ遅れて走り、その間［保存］は「保存しています…」で押せない（二重に走らない）', () => {
+    const queued: (() => void)[] = [];
+    const h = mountApp(undefined, { commitScheduler: (run) => queued.push(run) });
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(4, 0);
+    clickMap(2, 3);
+    act(() => fireEvent.click(screen.getByTestId('add-complete')));
+    act(() => fireEvent.click(screen.getByTestId('add-save')));
+    // 押した直後: まだ走っていない。［保存］は文が変わって押せない。
+    expect(h.startProcess).not.toHaveBeenCalled();
+    expect(screen.getByTestId('add-save')).toBeDisabled();
+    expect(screen.getByTestId('add-save')).toHaveTextContent('保存しています…');
+    // もう一度押しても（打鍵など disabled を外せる経路を想定）2 回目は積まれない。
+    act(() => fireEvent.click(screen.getByTestId('add-save')));
+    expect(queued).toHaveLength(1);
+    // 1 コマ後に走る。
+    act(() => queued[0]!());
+    expect(h.startProcess).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('add-property-form')).not.toBeInTheDocument();
   });
 
   it('HB3-21: the complete button names the POINT tool (「点を確定」, not 「線を確定」)', () => {
@@ -462,6 +493,7 @@ describe('U23 bughunt3 (H2): Ctrl+Z does NOT double-fire while drawing', () => {
           overlay={
             <AddToolController<S>
               store={store}
+              commitScheduler={SYNC_COMMIT}
               startProcess={() => committed}
               ids={{
                 nextFeatureId: () => asFeatureId(`f${++f}`),
@@ -763,6 +795,7 @@ describe('U23 手直し D3: 保存のあとは待機に戻る（GPT #9）', () =
         overlay={
           <AddToolController<S>
             store={store}
+            commitScheduler={SYNC_COMMIT}
             startProcess={() => committed}
             ids={{
               nextFeatureId: () => asFeatureId(`f${++f}`),
@@ -822,6 +855,7 @@ describe('U23 手直し D9: カーソル移動は 1 フレームに 1 回へま�
         overlay={
           <AddToolController<S>
             store={store}
+            commitScheduler={SYNC_COMMIT}
             startProcess={() => committed}
             ids={{
               nextFeatureId: () => asFeatureId(`f${++f}`),
@@ -936,6 +970,7 @@ describe('U23 手直し D1: 打ちかけの下書きを黙って消さない', (
         overlay={
           <AddToolController<S>
             store={store}
+            commitScheduler={SYNC_COMMIT}
             startProcess={() => committed}
             ids={{
               nextFeatureId: () => asFeatureId(`f${++f}`),
@@ -983,6 +1018,7 @@ describe('U23 手直し: 置く動作は、予約されたカーソル移動よ�
         overlay={
           <AddToolController<S>
             store={store}
+            commitScheduler={SYNC_COMMIT}
             startProcess={() => committed}
             ids={{
               nextFeatureId: () => asFeatureId(`f${++f}`),
