@@ -1,6 +1,6 @@
 # Stall watch for long unattended runs (no LLM involved).
 # Run every 10 minutes by Task Scheduler (task "gimoza-stall-watch").
-# If the newest commit on HEAD is older than the threshold, append one line to
+# If the newest commit on any branch is older than the threshold, append one line to
 # .tooling/stall-watch.log (at most once per hour per stalled commit).
 # Every run overwrites .tooling/stall-watch.heartbeat.log so we can see the watcher itself is alive.
 # ASCII only on purpose: Task Scheduler starts Windows PowerShell 5.1, which misreads BOM-less UTF-8.
@@ -17,7 +17,8 @@ $now = Get-Date
 $nowText = $now.ToString('yyyy-MM-dd HH:mm:ss', $inv)
 
 try {
-  $line = (& git -C $repo log -1 '--format=%ct %h' HEAD) | Select-Object -First 1
+  # --all: worktrees commit on their own branches while main HEAD sits still during verification.
+  $line = (& git -C $repo log -1 '--format=%ct %h' --all) | Select-Object -First 1
   $parts = $line.Trim().Split(' ')
   $commitAt = [DateTimeOffset]::FromUnixTimeSeconds([long]$parts[0]).LocalDateTime
   $hash = $parts[1]
