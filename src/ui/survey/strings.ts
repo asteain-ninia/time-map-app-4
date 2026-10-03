@@ -27,8 +27,43 @@ export const SURVEY_STRINGS = {
   targetStartOnly: '始点だけ指定',
   /** 対象欄に出す確定した線の本数。 */
   targetLines: (n: number): string => `測った線 ${String(n)} 本`,
-  /** 次の一手（測量を始めた直後）。 */
-  nextStepIdle: '地図で 2 点を押すと距離が出ます。',
+  /**
+   * 次の一手（測量を始めた直後）。
+   *
+   * **後半の「測っている間は地物を選べません」**（増分 8C / N-54 / 設計書 §C.4 の測るの行）。
+   * 測っているあいだ地図の左クリックは測量が受け取るので、地物を押しても選べない ――
+   * それが画面のどこにも書かれていなかった（現状分析 N-54）。
+   */
+  nextStepIdle: '地図で 2 点を押すと距離が出ます。測っている間は地物を選べません。',
+  /**
+   * 右クリックで当たった測量の線が **1 本だけ**のときの項目（増分 8C / 設計書 §E.1 V15）。
+   * 消えるのは正距円筒の線と大円の線の 2 本セット。
+   */
+  removeThisLine: 'この線を消す',
+  /**
+   * 当たった線が **2 本以上**（交差・重なり）のときの項目。測量ごとに 1 項目ずつ並べ、
+   * どの線かを大円の距離で言い分ける（「1,234km の線を消す」。設計書 §E.1 V15 の 3）。
+   */
+  removeLineOfKm: (km: string): string => `${km} の線を消す`,
+  /**
+   * 距離の文が **ほかの候補と同じになったとき** だけ添える端点（増分 8C の手直し / GPT #1）。
+   * 「1,234km の線を消す（北緯 10.0° 東経 20.0° → 北緯 10.0° 東経 40.0°）」。
+   */
+  removeLineOfKmWithEnds: (km: string, ends: string): string => `${km} の線を消す（${ends}）`,
+  /** 端点まで同じ線（同じ 2 点を 2 回測った）に添える、測った順。 */
+  endsWithOrder: (ends: string, order: number): string => `${ends}・測った順で ${String(order)} 本目`,
+  /** 右クリックで線を消したあとの状態行（増分 8C の手直し / 反証 #2）。［戻す］を添える。 */
+  lineRemoved: '測量の線を消しました',
+  /** 状態行の［戻す］ボタンの文字。 */
+  restoreLineAction: '戻す',
+  /** ［戻す］・消した直後の Ctrl+Z で線を戻したあとの状態行。 */
+  lineRestored: '測量の線を戻しました',
+  /**
+   * 読み取りの色見本に添える説明（増分 8C / N-52）。見本は地図の線と同じ色・同じ線種で、
+   * 正距円筒は実線、大円は破線。画面に出すのは見本の `title`（指を載せると読める）。
+   */
+  legendEquirectangular: '地図の上のまっすぐな線（実線）',
+  legendGreatCircle: '地球の上の最短の道すじ（破線）',
   /** The clear-all button label (FR-15). */
   clearLabel: '測量結果をクリア',
   /** Panel heading for the measurement readout. */

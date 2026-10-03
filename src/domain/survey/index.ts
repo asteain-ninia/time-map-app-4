@@ -38,6 +38,7 @@ export {
   type SurveyLine,
   type SurveyDraft,
   type SurveyState,
+  type RemovedSurveyLine,
   SURVEY_PHASE,
   initialSurveyState,
   enableSurveyMode,
@@ -47,4 +48,13 @@ export {
   cancelDraft,
   discardOnToolSwitch,
   clearSurvey,
+  removeSurveyLine,
+  restoreRemovedSurveyLine,
+  forgetRemovedSurveyLine,
 } from './survey-state';
+
+export {
+  type SurveyLineHit,
+  SURVEY_LINE_HIT_TOLERANCE_PX,
+  surveyLinesAt,
+} from './survey-hit-test';

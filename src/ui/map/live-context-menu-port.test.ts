@@ -381,3 +381,93 @@ describe('createLiveContextMenuPort — promotes gate（A1: 開くが昇格し�
     }
   });
 });
+
+// --- 増分 8C: 測量の線の右クリック（設計書 §E.1 V15）-----------------------------
+//
+// 地図から来た右クリックだけが、押した点に当たる測量の線の id を要求に載せる。線に
+// 当たったときは、その線が押した相手なので **地物を昇格しない**（下の国を黙って選択へ
+// 引き上げない）。当たらなければ従来どおり。
+
+describe('createLiveContextMenuPort — 測量の線（増分 8C）', () => {
+  function surveyHarness(
+    probe: (p: ScreenPoint) => readonly number[],
+    extra: { suspended?: () => boolean } = {},
+  ) {
+    const promoted: HitResult[] = [];
+    const opened: { clientX: number; clientY: number; hit: HitResult; surveyLineIds?: readonly number[] | undefined }[] = [];
+    const probed: ScreenPoint[] = [];
+    const port = createLiveContextMenuPort({
+      surfaceToClient: (p: ScreenPoint) => ({ x: p.x + 100, y: p.y + 200 }),
+      promoteHit: (hit) => promoted.push(hit),
+      open: (req) => opened.push(req),
+      probeSurveyLines: (p) => {
+        probed.push(p);
+        return probe(p);
+      },
+      ...extra,
+    });
+    return { promoted, opened, probed, port };
+  }
+
+  it('当たった線の id を、押した面（surface）の点で調べて要求に載せる', () => {
+    const h = surveyHarness(() => [3, 1]);
+    h.port.request({ x: 30, y: 40 }, EMPTY_HIT);
+    expect(h.probed).toEqual([{ x: 30, y: 40 }]);
+    expect(h.opened).toEqual([
+      { clientX: 130, clientY: 240, hit: EMPTY_HIT, surveyLineIds: [3, 1] },
+    ]);
+  });
+
+  it('線に当たったら、下に地物があっても昇格しない（押した相手は線）', () => {
+    const h = surveyHarness(() => [2]);
+    const hit = featureBodyHit(asFeatureId('f-under'));
+    h.port.request({ x: 30, y: 40 }, hit);
+    expect(h.promoted).toEqual([]);
+    expect(h.opened).toHaveLength(1);
+    expect(h.opened[0]?.surveyLineIds).toEqual([2]);
+    expect(h.opened[0]?.hit).toBe(hit);
+  });
+
+  // 増分 8C の手直し（反証 #1）: 把手は測量の線より上に描かれているので、把手の当たりが勝つ。
+  // 旧版は頂点の当たりでも線を見て昇格を止め、メニューの「頂点を削除」が **選択中の別の地物の
+  // 頂点** に向いた。
+  it('頂点の把手に当たったら線を調べず、従来どおりその頂点を昇格する（把手は線より上）', () => {
+    const h = surveyHarness(() => [2]);
+    const hit = vertexHit(asFeatureId('A'), asVertexId('va'));
+    h.port.request({ x: 30, y: 40 }, hit);
+    expect(h.probed).toEqual([]);
+    expect(h.promoted).toEqual([hit]);
+    expect(h.opened).toEqual([{ clientX: 130, clientY: 240, hit }]);
+  });
+
+  it('辺の把手に当たったときも線を調べない（要求に surveyLineIds は付かない）', () => {
+    const h = surveyHarness(() => [2]);
+    const hit = edgeHit(asFeatureId('A'), asVertexId('v1'), asVertexId('v2'));
+    h.port.request({ x: 30, y: 40 }, hit);
+    expect(h.probed).toEqual([]);
+    // 辺の当たりは昇格の対象ではないが、昇格の口には従来どおり渡る（promoteHitToSelection が何もしない）。
+    expect(h.promoted).toEqual([hit]);
+    expect(h.opened).toEqual([{ clientX: 130, clientY: 240, hit }]);
+  });
+
+  it('線に当たらなければ従来どおり（地物は昇格し、要求に surveyLineIds は付かない）', () => {
+    const h = surveyHarness(() => []);
+    const hit = featureBodyHit(asFeatureId('f-1'));
+    h.port.request({ x: 30, y: 40 }, hit);
+    expect(h.promoted).toEqual([hit]);
+    expect(h.opened).toEqual([{ clientX: 130, clientY: 240, hit }]);
+  });
+
+  it('suspended のときは線を調べもしない（要求ごと捨てる既存の契約）', () => {
+    const h = surveyHarness(() => [1], { suspended: () => true });
+    h.port.request({ x: 30, y: 40 }, EMPTY_HIT);
+    expect(h.probed).toEqual([]);
+    expect(h.opened).toEqual([]);
+  });
+
+  it('probeSurveyLines を渡さなければ従来どおり（要求に surveyLineIds は付かない）', () => {
+    const h = harness();
+    h.port.request({ x: 5, y: 6 }, EMPTY_HIT);
+    expect(h.opened).toEqual([{ clientX: 105, clientY: 206, hit: EMPTY_HIT }]);
+  });
+});

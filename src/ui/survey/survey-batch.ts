@@ -41,6 +41,12 @@ import type { WorldPoint } from '../../render/vtransform';
 export interface SurveyStyle {
   /** Great-circle (FR-15 mandatory) confirmed line stroke. */
   readonly greatCircleStroke: string;
+  /**
+   * 大円の線の破線の刻み（CSS px、`[線, すき間]`）。増分 8C / N-52: **正距円筒＝実線・
+   * 大円＝破線**で 2 本を見分ける。読み取りの色見本（`SurveyMeasurementPanel`）も
+   * この値をそのまま使うので、地図の線と見本の線種がずれない（教訓 5.29）。
+   */
+  readonly greatCircleDashPx: readonly number[];
   /** Equirectangular (straight) confirmed line stroke — distinct style. */
   readonly equirectangularStroke: string;
   /** Preview (in-progress) line stroke — distinct from confirmed. */
@@ -57,6 +63,7 @@ export interface SurveyStyle {
 /** Default survey style (overridable; e.g. project theme could supply colours). */
 export const DEFAULT_SURVEY_STYLE: SurveyStyle = {
   greatCircleStroke: '#1565c0',
+  greatCircleDashPx: [6, 4],
   equirectangularStroke: '#90a4ae',
   previewStroke: '#42a5f5',
   markerFill: '#1565c0',
@@ -81,6 +88,9 @@ function toWorldPoints(path: readonly WorldCoordinate[]): WorldPoint[] {
  * (distinct style), the great-circle shortest-path curve (FR-15 mandatory), and
  * a temporary marker at each endpoint (FR-16). Drawn back-to-front: straight
  * line under the curve under the markers.
+ *
+ * 増分 8C / N-52: 正距円筒の線は **実線**、大円の線は **破線**（`greatCircleDashPx`）。
+ * 色だけでなく線種でも見分けられるようにし、読み取りの色見本と対応させる。
  */
 export function confirmedLinePrimitives(
   line: SurveyLine,
@@ -100,6 +110,7 @@ export function confirmedLinePrimitives(
       points: toWorldPoints(gc),
       widthPx: style.lineWidthPx,
       stroke: style.greatCircleStroke,
+      dashPx: style.greatCircleDashPx,
     },
     {
       kind: 'point',

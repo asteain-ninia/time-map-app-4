@@ -25,6 +25,7 @@ import {
   editableTargetFromEvent,
   isEditableTarget,
 } from './focus-guard';
+import { MAP_FOCUS_ONLY_COMMANDS, NO_REPEAT_COMMANDS, focusIsOnMap } from './map-focus-scope';
 import {
   DISPATCH_RESULT,
   dispatchChord,
@@ -177,6 +178,17 @@ export function useShortcuts(options: UseShortcutsOptions): void {
         // 実行はしない。**理由だけ**を呼び出し側へ渡す（preventDefault もしない）。
         onSuspendedRefusal?.(id);
         return;
+      }
+
+      // 増分 8C の手直し: 地図に焦点があるときだけ効く打鍵と、押しっぱなしで繰り返さない打鍵
+      // （`map-focus-scope.ts`）。地図の外では何もせず、打鍵も飲み込まない。
+      const scopedId = keymap.resolve(chord);
+      if (scopedId !== undefined) {
+        if (MAP_FOCUS_ONLY_COMMANDS.has(scopedId) && !focusIsOnMap(e.target)) return;
+        if (e.repeat && NO_REPEAT_COMMANDS.has(scopedId)) {
+          e.preventDefault();
+          return;
+        }
       }
 
       const result = dispatchChord(chord, keymap, registry, mode);

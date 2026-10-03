@@ -49,6 +49,7 @@ import { PROCESS_STATUS, type ProcessResult } from '../../../domain/consistency/
 import type { WorldCoordinate } from '../../../domain/coordinate';
 import { RELEASE_OUTCOME, type EditRefusalKind } from '../../../domain/editing/index';
 import { reportVertexCarryForward } from '../../../domain/editing/apply-proposal';
+import { surveyLinesAt } from '../../../domain/survey/index';
 import { getCalendar } from '../../../domain/time/calendar';
 import type { FeatureId, RingId, VertexId } from '../../../domain/ids';
 import {
@@ -474,6 +475,16 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
     // 現在値は ref から読む（教訓 5.6: 古い写しを掴まない）。
     suspended: () => suspendsContextMenu(focusOwnerRef.current),
     promotes: () => promotesOnContextMenu({ toolDrawing: toolDraftRef.current }),
+    // 増分 8C（設計書 §E.1 V15）: 押した点に当たる測量の線。線・カメラとも **押した瞬間の
+    // 値**を読み（教訓 5.6）、画面↔世界はレンダラと同じ変換 1 本を通す（教訓 5.29）。
+    // 8px の許容値は zoom（1 度が何 px か）で度に直してドメインが測る。
+    probeSurveyLines: (point) => {
+      const lines = store.getState().survey.lines;
+      if (lines.length === 0) return [];
+      const { camera, viewport } = ports.readCamera();
+      const world = unprojectScreenToWorld(point, camera, viewport);
+      return surveyLinesAt(lines, world, camera.zoom).map((hit) => hit.lineId);
+    },
   });
 
   // 頂点の候補一覧（#12）。`hitTester` と **同じ入力** を渡すので、一覧に出る顔ぶれは
