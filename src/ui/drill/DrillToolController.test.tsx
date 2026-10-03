@@ -755,3 +755,46 @@ describe('DrillToolController — バグハント第11波 (#3/#6): focus guard o
     h.unmount();
   });
 });
+
+describe('DrillToolController — 素性を入れている最終段階の幕（N-13 の穴あけの半分。増分 8B の手直し）', () => {
+  function enterProperties(): void {
+    selectAndDrawRegion();
+    fireEvent.click(screen.getByTestId('drill-confirm'));
+  }
+
+  it('地図の上に幕（入力の橋）が残り、押しても背後の地物は選ばれず理由が出る', () => {
+    const h = mountDrill();
+    activateDrill(h.store);
+    enterProperties();
+    // **わざと壊すなら**: 橋の条件から `drillEntering` を外すと、幕が消えてここが赤くなる
+    // （背後の地図の左クリックが素通りして、地物を選んだり動かしたりできる）。
+    const layer = screen.getByTestId('drill-input-layer');
+    expect(layer).toHaveAttribute('data-locked', 'true');
+    const before = h.store.getState().activeFeature;
+    fireEvent.pointerDown(layer, { clientX: 15, clientY: 15, button: 0 });
+    expect(h.store.getState().activeFeature).toBe(before);
+    expect(h.optionBar.get().nextStep).toBe(DRILL_STRINGS.mapLockedWhileNaming);
+    // 素性欄はそのまま使える。
+    expect(screen.getByTestId('add-property-form')).toBeInTheDocument();
+    h.unmount();
+  });
+
+  it('名前を打って幕を押し（焦点が欄から外れる）、Escape を押しても、捨てる前に聞く', () => {
+    const h = mountDrill();
+    activateDrill(h.store);
+    enterProperties();
+    const name = screen.getByTestId('add-name') as HTMLInputElement;
+    name.focus();
+    fireEvent.change(name, { target: { value: '湖' } });
+    fireEvent.pointerDown(screen.getByTestId('drill-input-layer'), {
+      clientX: 15,
+      clientY: 15,
+      button: 0,
+    });
+    name.blur();
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(screen.getByTestId('drill-draft-discard-confirm')).toBeInTheDocument();
+    expect(screen.getByTestId('add-property-form')).toBeInTheDocument();
+    h.unmount();
+  });
+});

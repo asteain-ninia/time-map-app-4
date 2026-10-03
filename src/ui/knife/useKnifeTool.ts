@@ -48,7 +48,7 @@ import {
   placeCutPoint,
   selectInheritor as selectInheritorTx,
   selectTarget as selectTargetTx,
-  smallestPieceIndex,
+  largestPieceIndex,
   startKnife,
   toEditProposal,
   toSplitSnapshot,
@@ -283,7 +283,8 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
 
   // CONFIRM CUT trigger (教訓 5.7): re-run the SAME domain validation (教訓 5.26 確定
   // 前にも同じサービスで) and execute the split. On success advance to継承先選択 seeded
-  // with the SMALLEST piece (FR-93 小さい方 / 教訓 5.4, HB3-5/19 n-way); on failure
+  // with the LARGEST piece (増分 8B の手直し: 元の地物は既定でいちばん大きい片に残る。
+  // FR-93 の赤い枠は今までどおり小さい方を囲む; HB3-5/19 n-way); on failure
   // surface the Japanese message and stay in DrawingCut — nothing is recorded (教訓 5.22).
   const confirmCutAction = useCallback(() => {
     setState((s) => {
@@ -307,7 +308,7 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
         return s;
       }
       setMessage(null);
-      return confirmCut(s, result, smallestPieceIndex(result));
+      return confirmCut(s, result, largestPieceIndex(result));
     });
   }, [resolveFeature, resolveStore]);
 

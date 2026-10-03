@@ -58,6 +58,19 @@ export interface AddDraftPrompt {
   readonly onSave: (properties: AddProperties) => void;
   /** やめる（下書きを丸ごと捨てる。教訓 5.2）。 */
   readonly onCancel: () => void;
+  /**
+   * **保存が走っている間の文**（増分 8B の中身 3）。null・省略なら走っていない。
+   * 分割の［保存］は編集案の組み立てと整合の検査で数秒かかるので、押した直後に
+   * ［保存］をこの文に変えて押せなくする（所属変更の板と同じ進行表示）。
+   */
+  readonly busyLabel?: string | null;
+  /**
+   * **打ちかけがあるかの知らせ**（増分 8B の手直し / 反証 2-2）。名前か種別に何か打たれて
+   * いれば真。変わったときだけ呼ばれる。道具は Escape で「聞かずにやめてよいか」を
+   * **焦点のある欄ではなく中身で**決めるのに使う ―― 名前を打ってから地図を押すと焦点が
+   * 欄から外れ、焦点だけを見ていると打ちかけが確認なしに捨てられていた。
+   */
+  readonly onDirtyChange?: (dirty: boolean) => void;
 }
 
 export type AddDraftListener = (prompt: AddDraftPrompt | null) => void;
@@ -101,6 +114,8 @@ function samePrompt(a: AddDraftPrompt | null, b: AddDraftPrompt | null): boolean
     a.parentCandidates === b.parentCandidates &&
     a.onChooseParent === b.onChooseParent &&
     a.onSave === b.onSave &&
-    a.onCancel === b.onCancel
+    a.onCancel === b.onCancel &&
+    (a.busyLabel ?? null) === (b.busyLabel ?? null) &&
+    a.onDirtyChange === b.onDirtyChange
   );
 }

@@ -33,6 +33,12 @@ export const DRILL_STRINGS = {
    * `ADD_STRINGS.nextStepPropertyForm` と同じ調子で短くする。
    */
   nextStepEnterProperties: '右のパネルで名前を入れて［保存］を押してください',
+  /**
+   * 素性を入れている間に地図を押したとき（N-13「最終段階だけ幕が無い」の穴あけの半分。
+   * 増分 8B の手直し）。分ける道具の `KNIFE_STRINGS.mapLockedWhileNaming` と同じ形。
+   */
+  mapLockedWhileNaming:
+    '穴あけを確定するまで地図の地物は触れません。右のパネルで名前を入れて［保存］を押してください',
   /** ConflictPaused status (FR-62). */
   conflictPaused: '空間競合の解決待ちです。',
   /** LEAF gate refusal (集約 body クリック時): a non-leaf cannot be drilled. */

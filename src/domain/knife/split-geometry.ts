@@ -27,8 +27,14 @@ import { LONGITUDE_PERIOD, unwrapRing } from '../geo/index';
 import { countLongEdgesInMultiPolygon } from '../geo/long-edge';
 import {
   difference,
+  EMPTY_MULTI_POLYGON,
   intersection,
   isOk,
+  multiPolygonFromRing,
+  quantizeMultiPolygon,
+  quantizeRing,
+  ringSelfIntersects,
+  union,
   pointInPolygon,
   POINT_LOCATION,
   QUANTIZE_SCALE,
@@ -75,6 +81,18 @@ export const SPLIT_REJECT = {
    */
   SelfIntersectingCut: 'self-intersecting-cut',
   /**
+   * n 分割の途中で、ある切片 (境界→内部→境界の一続き) の内側の代表点が、それまでに
+   * 切ってできたどの片の内部にも入らなかった (V10 / N-08 の場面 (a))。
+   * 以前は {@link SPLIT_REJECT.SelfIntersectingCut} と同じ理由コードを使い回していたので、
+   * どちらで断られたかを測れなかった。
+   */
+  ChordOutsidePieces: 'chord-outside-pieces',
+  /**
+   * n 分割の途中で、ある切片で片を切った結果の片側 (交差か差) が空になった
+   * (V10 / N-08 の場面 (b))。以前は {@link SPLIT_REJECT.SelfIntersectingCut} と共用だった。
+   */
+  ChordEmptiesSide: 'chord-empties-side',
+  /**
    * 分割してできた形に「1 辺で経度 180 度以上を渡る辺」がある (N-51 / 技術方針 §6.8)。
    *
    * 保存形式は「隣り合う頂点は最短方向で繋がっている」と仮定して経度を連続量へ戻すので、
@@ -100,6 +118,10 @@ export const SPLIT_REJECT_MESSAGE: Readonly<Record<SplitRejectKind, string>> = {
   [SPLIT_REJECT.Unresolvable]: '対象面の形状を取得できませんでした。',
   [SPLIT_REJECT.DegenerateLine]: '分断線の点が足りません。',
   [SPLIT_REJECT.SelfIntersectingCut]: '分断線が自己交差しています。交差しないように引き直してください。',
+  [SPLIT_REJECT.ChordOutsidePieces]:
+    '分断線の途中の区間が、切り分けた片のどれにも入りませんでした。分断線を引き直してください。',
+  [SPLIT_REJECT.ChordEmptiesSide]:
+    '分断線の途中の区間で片を切ると、片側が空になりました。分断線を引き直してください。',
   // 利用者はナイフでは頂点を打たないので「途中に点を打つ」とは言えない。この道具で実際に
   // 取れる次の手は「別の場所で切る」なので、そう書く (追加の道具の文言と同じ趣旨)。
   [SPLIT_REJECT.LongEdge]:
@@ -163,6 +185,12 @@ export type SplitCheckResult =
       readonly sideA: SplitSide;
       /** 2-way alias = `pieces[1]` (kept while consumers migrate to `pieces`). */
       readonly sideB: SplitSide;
+      /**
+       * 真のとき、開いた分断線を **延ばした先** でも面が切れている（B69 の残り。飛び地の
+       * ある面・外周が自分に接する面・線の端が穴の中にある線は、遠い枠までの延長で切る
+       * 2 分割の経路を通る）。画面は確定の前にこれを言う。省略＝偽。
+       */
+      readonly cutsBeyondLine?: boolean;
     }
   | {
       readonly status: typeof SPLIT_CHECK_STATUS.NotSplittable;
@@ -285,10 +313,22 @@ interface PlanarBBox {
  * the caller additionally rejects a clip whose ring area is still ~0 with DegenerateLine,
  * so a polyline with no extent at all can never form a clip.
  */
-function openLineToClip(line: readonly WorldCoordinate[], targetBox: PlanarBBox): GeoRing {
+//
+// 増分 8B の手直し（B69）: the "runs outward, away from the face" above holds only for a
+// CONVEX face. On a concave one a continuation re-enters the face and cuts where the user
+// drew nothing. The function therefore also returns the two CONTINUATIONS (line end →
+// frame) so the caller can tell whether that happened and say so (`cutsBeyondLine`).
+// Simple and holed single-polygon faces no longer come here for an open line at all.
+function openLineToClip(
+  line: readonly WorldCoordinate[],
+  targetBox: PlanarBBox,
+): {
+  readonly ring: GeoRing;
+  readonly continuations: readonly (readonly [WorldCoordinate, WorldCoordinate])[];
+} {
   const first = line[0];
   const last = line[line.length - 1];
-  if (first === undefined || last === undefined) return [];
+  if (first === undefined || last === undefined) return { ring: [], continuations: [] };
 
   // The frame must strictly contain the target AND the whole drawn polyline, with a
   // generous margin so the two end-segment continuations reach it well outside the face
@@ -334,14 +374,36 @@ function openLineToClip(line: readonly WorldCoordinate[], targetBox: PlanarBBox)
 
   const exitLast = rayToFrame(last, lastDir, frame);
   const exitFirst = rayToFrame(first, firstDir, frame);
-  if (exitLast === undefined || exitFirst === undefined) return [];
+  if (exitLast === undefined || exitFirst === undefined) return { ring: [], continuations: [] };
 
   // Clip = drawn line + continuation out to the frame at `last`, walk the frame border
   // to the `first` exit, then the continuation back in to `first`. Walking the frame
   // corners keeps the closing path strictly on the (outside-the-target) frame boundary.
   const forward: WorldCoordinate[] = line.map((p) => ({ lon: p.lon, lat: p.lat }));
   const frameWalk = walkFrameBorder(exitLast, exitFirst, frame);
-  return [...forward, exitLast, ...frameWalk, exitFirst];
+  return {
+    ring: [...forward, exitLast, ...frameWalk, exitFirst],
+    continuations: [
+      [first, exitFirst],
+      [last, exitLast],
+    ],
+  };
+}
+
+/** Whether segment a→b touches or crosses any ring edge of the face. Pure. */
+function segmentMeetsFace(a: WorldCoordinate, b: WorldCoordinate, mp: GeoMultiPolygon): boolean {
+  for (const poly of mp) {
+    for (const ring of poly) {
+      const n = ring.length;
+      for (let j = 0; j < n; j += 1) {
+        const c = ring[j];
+        const d = ring[(j + 1) % n];
+        if (c === undefined || d === undefined) continue;
+        if (segmentsIntersect(a, b, c, d).relation !== SEGMENT_RELATION.Disjoint) return true;
+      }
+    }
+  }
+  return false;
 }
 
 /** A non-zero direction for the polyline as a whole (chord, else bbox diagonal). */
@@ -491,12 +553,20 @@ function planarRingArea2(ring: GeoRing): number {
 // n-way OPEN split (HB3-5/19): a cut crossing the boundary 2k times → k+1 pieces.
 //
 // Strategy (確定プラン iterative-per-chord, G1〜G8): decompose the open line into
-// INTERIOR CHORDS (boundary-node → 面内部 → boundary-node), then apply the EXISTING
-// 2-way mechanism (openLineToClip + U06 intersection/difference) ONE chord at a time
-// to whichever current piece the chord runs through. k chords → k+1 pieces. The
-// dangling head/tail (line ends that stop inside / start outside) are naturally
-// dropped because a chord needs a boundary crossing at BOTH ends (G2). A self-
-// intersecting cut (chords crossing) is rejected (G3) rather than mis-processed.
+// INTERIOR CHORDS (boundary-node → 面内部 → boundary-node), then split whichever
+// current piece the chord runs through ALONG THAT CHORD ONLY (ring walk, see
+// splitRingByChord). k chords → k+1 pieces. The dangling head/tail (line ends that
+// stop inside / start outside) are naturally dropped because a chord needs a boundary
+// crossing at BOTH ends (G2). A self-intersecting cut (chords crossing / touching each
+// other inside the face) is rejected (G3) rather than mis-processed.
+//
+// V10 / N-08 (増分 8B): this path used to cut each chord with openLineToClip — the chord
+// CONTINUED along its end segments out to a far frame. For a concave face that
+// continuation re-enters the face: for a straight line every later chord is collinear
+// with chord 1's continuation, so chord 1 already cut along chords 2..k, their interior
+// samples then sat exactly ON a piece boundary, no piece "contained" them, and every
+// straight line crossing a concave country 4+ times was refused (実データのアルラーク国で
+// 南北 110/199・東西 99/199 本). Splitting the ring by the chord itself cuts nothing else.
 // ---------------------------------------------------------------------------
 
 /** Whether `point` is strictly inside the multi-polygon (inside ANY polygon; 穴透過 via U06 even-odd). */
@@ -575,8 +645,17 @@ function splitIntoChords(
     aug.push({ point: b, crossing: false });
   }
 
-  // 2. Classify each gap (in/out via its midpoint) and collect maximal INSIDE runs
-  //    bounded by boundary crossings at BOTH ends — those are the chords.
+  // 2. Classify each gap (in/out via its midpoint) and collect the INSIDE runs bounded by
+  //    boundary crossings at BOTH ends — those are the chords.
+  //
+  //    増分 8B の手直し（反証 2-3）: a run is ALSO ended at every boundary node it meets
+  //    on the way, even when the gaps on both sides of that node are inside. That is the
+  //    line touching the ring from inside (the tip of a notch) and going back in. Before,
+  //    the run went on through the touch point, which then became an INTERIOR node of one
+  //    chord lying ON the ring: the ring walk produced a pinched half (不正形状) and the
+  //    chord's sample point sat on the boundary (chord-outside-pieces). Two chords that
+  //    share that node are fine (chordsSelfIntersect allows a shared end), and the result
+  //    is the same as a line drawn a hair away from the tip.
   const chords: WorldCoordinate[][] = [];
   let i = 0;
   while (i + 1 < aug.length) {
@@ -585,8 +664,12 @@ function splitIntoChords(
       i += 1;
       continue;
     }
-    let j = i;
-    while (j + 1 < aug.length && multiPolygonContains(mp, midpoint(aug[j]!.point, aug[j + 1]!.point))) {
+    let j = i + 1;
+    while (
+      !aug[j]!.crossing &&
+      j + 1 < aug.length &&
+      multiPolygonContains(mp, midpoint(aug[j]!.point, aug[j + 1]!.point))
+    ) {
       j += 1;
     }
     if (aug[i]!.crossing && aug[j]!.crossing) {
@@ -602,10 +685,16 @@ function midpoint(a: WorldCoordinate, b: WorldCoordinate): WorldCoordinate {
   return createCoordinate((a.lon + b.lon) / 2, (a.lat + b.lat) / 2);
 }
 
-/** A point strictly inside the face along a chord (an interior vertex if any, else its midpoint). */
+/**
+ * A point strictly inside the face along a chord: the midpoint of the chord's FIRST
+ * segment. {@link splitIntoChords} classified exactly that gap as inside by exactly
+ * that midpoint, so it is never on the ring (増分 8B の手直し / 反証 2-3: the old pick,
+ * an interior vertex of the chord, could be a point where the line touched the ring).
+ * Chords never cross or touch each other inside the face (G3), so no earlier chord runs
+ * through it either.
+ */
 function chordInteriorSample(chord: readonly WorldCoordinate[]): WorldCoordinate {
-  if (chord.length > 2) return chord[Math.floor(chord.length / 2)]!;
-  return midpoint(chord[0]!, chord[chord.length - 1]!);
+  return midpoint(chord[0]!, chord[1] ?? chord[chord.length - 1]!);
 }
 
 /** The discriminated result of the n-way piece collector. */
@@ -614,51 +703,209 @@ type PiecesResult =
   | { readonly ok: false; readonly reason: SplitRejectKind };
 
 /**
- * Collect the k+1 pieces of an OPEN cut by applying each chord's 2-way clip to the
- * piece it runs through (G1/G6: the piece count is the actual connected-component
- * count the iterated boolean ops yield, not a `pieces.length===k+1` assert). Rejects
- * a self-intersecting cut (a chord whose interior lands in no current piece, or whose
- * clip empties a side) honestly (G3). Pure.
+ * Whether two chords cross or touch each other INSIDE the face (G3: a genuinely
+ * self-intersecting cut). Two chords may legitimately share an END node (the line
+ * touched the boundary at one point and went back in), so a contact that is an end of
+ * both chords is allowed; every other contact — a proper crossing, a touch at an
+ * interior point, a collinear overlap — is a self-intersection. A chord is also checked
+ * against itself (non-adjacent segments). Pure.
+ */
+function chordsSelfIntersect(chords: readonly (readonly WorldCoordinate[])[]): boolean {
+  const isEndOf = (chord: readonly WorldCoordinate[], p: WorldCoordinate): boolean =>
+    coordinatesEqual(chord[0]!, p) || coordinatesEqual(chord[chord.length - 1]!, p);
+  for (let ci = 0; ci < chords.length; ci += 1) {
+    const a = chords[ci]!;
+    for (let cj = ci; cj < chords.length; cj += 1) {
+      const b = chords[cj]!;
+      for (let i = 0; i + 1 < a.length; i += 1) {
+        const startJ = ci === cj ? i + 2 : 0; // same chord: skip itself and its neighbour
+        for (let j = startJ; j + 1 < b.length; j += 1) {
+          const hit = segmentsIntersect(a[i]!, a[i + 1]!, b[j]!, b[j + 1]!);
+          if (hit.relation === SEGMENT_RELATION.Disjoint) continue;
+          if (hit.relation === SEGMENT_RELATION.Endpoint && hit.point !== undefined) {
+            const p = quantizeCoordinate(hit.point);
+            if (ci !== cj && isEndOf(a, p) && isEndOf(b, p)) continue;
+          }
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/** Squared planar distance from `p` to segment a→b, plus the clamped parameter along it. */
+function pointSegmentDistance2(
+  p: WorldCoordinate,
+  a: WorldCoordinate,
+  b: WorldCoordinate,
+): { readonly d2: number; readonly t: number } {
+  const t = Math.min(1, Math.max(0, paramAlong(a, b, p)));
+  const x = a.lon + (b.lon - a.lon) * t - p.lon;
+  const y = a.lat + (b.lat - a.lat) * t - p.lat;
+  return { d2: x * x + y * y, t };
+}
+
+/**
+ * A chord end located on a ring: on an existing vertex (`t === 0` at `edge`) or partway
+ * along the edge `edge → edge+1` (`0 < t < 1`).
+ */
+interface RingSpot {
+  readonly edge: number;
+  readonly t: number;
+}
+
+/**
+ * How far (in grid quanta) a chord end may sit from the ring edge it was computed on.
+ * The crossing is quantized onto the U06 grid, so it lies within half a quantum of the
+ * true edge per axis; 2 quanta leaves slack without ever reaching a different edge of a
+ * real map (the closest distinct vertices on the derle data are many quanta apart).
+ */
+const RING_SPOT_TOLERANCE = 2 / QUANTIZE_SCALE;
+
+/** Locate a chord end on `ring` (vertex equality first, else the nearest edge). */
+function locateOnRing(ring: GeoRing, p: WorldCoordinate): RingSpot | undefined {
+  const n = ring.length;
+  for (let i = 0; i < n; i += 1) {
+    if (coordinatesEqual(ring[i]!, p)) return { edge: i, t: 0 };
+  }
+  let best: RingSpot | undefined;
+  let bestD2 = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < n; i += 1) {
+    const { d2, t } = pointSegmentDistance2(p, ring[i]!, ring[(i + 1) % n]!);
+    if (d2 < bestD2) {
+      bestD2 = d2;
+      best = { edge: i, t };
+    }
+  }
+  if (best === undefined || bestD2 > RING_SPOT_TOLERANCE * RING_SPOT_TOLERANCE) return undefined;
+  // A spot that clamps onto an edge END is that vertex — but then the vertex-equality
+  // pass above would have matched unless the point is off-grid by a hair. Keep it strictly
+  // mid-edge so the walk below inserts it as its own node.
+  return { edge: best.edge, t: Math.min(Math.max(best.t, Number.EPSILON), 1 - Number.EPSILON) };
+}
+
+/**
+ * Split ONE simple ring along a chord whose two ends lie on the ring and whose interior
+ * runs strictly inside it (V10 / N-08 root fix). The ring is walked from the chord's
+ * start P to its end Q and closed back along the chord (one half), and from Q to P and
+ * closed along the chord forwards (the other half). NOTHING but the chord is cut — unlike
+ * the old far-frame clip, whose continuation re-entered a concave face.
+ *
+ * P and Q are inserted as their own nodes when they fall mid-edge. Their coordinates are
+ * the quantized crossings `splitIntoChords` computed against the QUANTIZED ring, i.e. the
+ * same node `computeEdgeCuts` hands to the shared-edge neighbour (FR-95), so the seam node
+ * and the neighbour's inserted node coincide. Returns undefined when either end cannot be
+ * located on the ring, or both ends are the same spot (no area on one side). Pure.
+ */
+function splitRingByChord(
+  ring: GeoRing,
+  chord: readonly WorldCoordinate[],
+): readonly [GeoRing, GeoRing] | undefined {
+  const p = chord[0];
+  const q = chord[chord.length - 1];
+  if (p === undefined || q === undefined || chord.length < 2) return undefined;
+  const sp = locateOnRing(ring, p);
+  const sq = locateOnRing(ring, q);
+  if (sp === undefined || sq === undefined) return undefined;
+  if (sp.edge === sq.edge && sp.t === sq.t) return undefined;
+
+  // Walk the ring once, inserting P / Q (mid-edge) right after their edge's start vertex,
+  // ordered by their position along that edge; remember where each landed.
+  const aug: WorldCoordinate[] = [];
+  let ip = -1;
+  let iq = -1;
+  const n = ring.length;
+  for (let i = 0; i < n; i += 1) {
+    if (sp.edge === i && sp.t === 0) ip = aug.length;
+    if (sq.edge === i && sq.t === 0) iq = aug.length;
+    aug.push(ring[i]!);
+    const mids: { t: number; which: 'p' | 'q' }[] = [];
+    if (sp.edge === i && sp.t > 0) mids.push({ t: sp.t, which: 'p' });
+    if (sq.edge === i && sq.t > 0) mids.push({ t: sq.t, which: 'q' });
+    mids.sort((x, y) => x.t - y.t);
+    for (const m of mids) {
+      if (m.which === 'p') {
+        ip = aug.length;
+        aug.push(p);
+      } else {
+        iq = aug.length;
+        aug.push(q);
+      }
+    }
+  }
+  if (ip < 0 || iq < 0 || ip === iq) return undefined;
+
+  const walk = (from: number, to: number): WorldCoordinate[] => {
+    const out: WorldCoordinate[] = [];
+    const m = aug.length;
+    for (let k = from; ; k = (k + 1) % m) {
+      out.push(aug[k]!);
+      if (k === to) break;
+    }
+    return out;
+  };
+  const inner = chord.slice(1, chord.length - 1);
+  const half1 = [...walk(ip, iq), ...[...inner].reverse()];
+  const half2 = [...walk(iq, ip), ...inner];
+  return [half1, half2];
+}
+
+/**
+ * Normalize a ring-walk half through U06 (quantize + kernel normalize + invariant check),
+ * the same defense every boolean result gets (技術方針 R2). A chord strictly inside a
+ * simple ring yields a simple half, so anything other than ONE polygon with ONE ring is a
+ * degeneracy and is refused rather than silently reshaped.
+ */
+function normalizeHalf(ring: GeoRing): GeoMultiPolygon | undefined {
+  const res = union(multiPolygonFromRing(ring), EMPTY_MULTI_POLYGON);
+  if (!isOk(res)) return undefined;
+  if (res.result.length !== 1 || res.result[0]!.length !== 1) return undefined;
+  return res.result;
+}
+
+/**
+ * Collect the k+1 pieces of an OPEN cut on a SIMPLE face (one polygon, one ring) by
+ * splitting, chord by chord, the piece each chord runs through along that chord only
+ * (G1/G6). `mp` must already be quantized onto the U06 grid (checkSplittable does it) so
+ * the chord ends are the same nodes {@link computeEdgeCuts} produces (FR-95).
+ *
+ * Rejections (each its own reason, V10 / §M-6):
+ *   - no chord at all → 貫通せず;
+ *   - chords crossing / touching each other inside the face → 自己交差 (G3, a real one);
+ *   - a chord whose interior lies in no current piece → chord-outside-pieces (should not
+ *     happen once self-intersection is excluded; kept as an honest defensive code);
+ *   - a chord whose ends cannot be placed on that piece's ring, or that leaves one side
+ *     without area → chord-empties-side;
+ *   - a half that U06 cannot normalize into one simple polygon → 不正形状.
+ * Pure.
  */
 export function collectOpenPieces(
   linePts: readonly WorldCoordinate[],
   mp: GeoMultiPolygon,
   span: number,
 ): PiecesResult {
-  void span; // kept for the stable test/consumer API; the clip frame is derived from `mp`.
-  const box = multiPolygonBBox(mp);
+  void span; // kept for the stable test/consumer API.
   const chords = splitIntoChords(linePts, mp);
   if (chords.length === 0) return { ok: false, reason: SPLIT_REJECT.DoesNotPierce };
+  if (chordsSelfIntersect(chords)) return { ok: false, reason: SPLIT_REJECT.SelfIntersectingCut };
 
-  // Each chord is a boundary→interior→boundary cut of exactly ONE current piece (the one
-  // its interior sample lands in). Applying the SAME 2-way clip (openLineToClip +
-  // intersection/difference) to that piece replaces it with its two halves; k chords ⇒
-  // k+1 pieces. NOTE (documented limitation, plan G1/G6): each half is kept WHOLE — we do
-  // NOT split a half into connected components. A single chord that genuinely disconnects
-  // a CONCAVE half into two regions therefore yields ONE multi-part (exclave) piece rather
-  // than two — the SAME conservative grouping the prior 2-way split produced. We avoid the
-  // naive component-split because the chord's own clip (a half-plane extrusion of a BENT
-  // chord) routinely produces disjoint boolean artifacts that are NOT real pieces, and
-  // splitting those over-counts the common comb cut. A true component collector that
-  // distinguishes real cut-disconnections from clip artifacts is future work.
+  // Each chord cuts exactly ONE current piece (the one its interior sample lands in); that
+  // piece is replaced by its two halves, so k chords ⇒ k+1 pieces.
   const pieces: GeoMultiPolygon[] = [mp];
   for (const chord of chords) {
-    const clipRing = openLineToClip(chord, box);
-    if (planarRingArea2(clipRing) <= CHORD_DEGENERATE_EPS) {
-      return { ok: false, reason: SPLIT_REJECT.DegenerateLine };
-    }
-    const clip: GeoMultiPolygon = [[clipRing]];
     const sample = chordInteriorSample(chord);
-    const idx = pieces.findIndex((p) => multiPolygonContains(p, sample));
-    if (idx < 0) return { ok: false, reason: SPLIT_REJECT.SelfIntersectingCut };
+    const idx = pieces.findIndex((piece) => multiPolygonContains(piece, sample));
+    if (idx < 0) return { ok: false, reason: SPLIT_REJECT.ChordOutsidePieces };
     const piece = pieces[idx]!;
-    const inside = intersection(piece, clip);
-    const outside = difference(piece, clip);
-    if (!isOk(inside) || !isOk(outside)) return { ok: false, reason: SPLIT_REJECT.InvalidShape };
-    if (inside.result.length === 0 || outside.result.length === 0) {
-      return { ok: false, reason: SPLIT_REJECT.SelfIntersectingCut };
-    }
-    pieces.splice(idx, 1, inside.result, outside.result);
+    const outer = piece.length === 1 && piece[0]!.length === 1 ? piece[0]![0] : undefined;
+    if (outer === undefined) return { ok: false, reason: SPLIT_REJECT.InvalidShape };
+    const halves = splitRingByChord(outer, chord);
+    if (halves === undefined) return { ok: false, reason: SPLIT_REJECT.ChordEmptiesSide };
+    const a = normalizeHalf(halves[0]);
+    const b = normalizeHalf(halves[1]);
+    if (a === undefined || b === undefined) return { ok: false, reason: SPLIT_REJECT.InvalidShape };
+    pieces.splice(idx, 1, a, b);
   }
 
   if (pieces.length < 2) return { ok: false, reason: SPLIT_REJECT.DoesNotPierce };
@@ -898,27 +1145,63 @@ export function checkSplittable(
     return rejection(SPLIT_REJECT.DegenerateLine);
   }
 
-  // HB3-5/19 n-way split scope — PURELY ADDITIVE: the n-way path is taken ONLY for an
-  // OPEN cut on a SIMPLE face (one polygon, one ring) that decomposes into ≥2 interior
-  // chords (i.e. crosses the boundary ≥4 times ⇒ ≥3 pieces). Every ≤2-piece cut (one
-  // chord), every CLOSED cut, and every holed / multi-region face fall through to the
-  // EXISTING single-clip 2-way path UNCHANGED — so the common 2-piece behaviour (incl.
-  // the FR-95 shared-edge-cut seam node, all existing tests) is bit-for-bit preserved.
-  // Only the genuinely-multi-crossing comb cut (which the 2-way grouped into one
-  // exclave-bearing side) now correctly yields k+1 separate pieces. targetMp + linePts
-  // are already seam-anchored to ONE branch above (R3) so the chord planar geometry is
-  // correct across the antimeridian. (Holes/exclaves + n-way edge-cut coincidence remain
-  // future work — verify-workflow findings.)
+  // HB3-5/19 n-way split scope: the chord path is taken for an OPEN cut on a face of ONE
+  // polygon whose outer ring is simple (holes allowed — see below); a cut crossing the
+  // outer boundary 2k times yields k+1 pieces. Every CLOSED cut and every multi-region
+  // (exclave) / pinched-outer face goes through the single-clip 2-way path. targetMp +
+  // linePts are already seam-anchored to ONE branch above (R3) so the chord planar geometry
+  // is correct across the antimeridian.
+  //
+  // V10 / N-08 (増分 8B): the chord path now cuts along the chords ONLY (ring walk), so it
+  // also takes the ONE-chord case. The far-frame clip of the 2-way path continues the
+  // line's end segments outward, and on a CONCAVE face that continuation re-enters the
+  // face and silently cuts parts the user never crossed (a short line over one arm of a U
+  // also slices the other arm). The 2-way path stays for CLOSED cuts (no continuation) and
+  // for exclave / pinched faces (現状分析 §11-14: those still fall to 2 pieces — the UI says
+  // so before confirming, and `cutsBeyondLine` says when the continuation cut something).
+  // The chord path works on the QUANTIZED face so its chord ends are exactly the nodes
+  // computeEdgeCuts inserts on a shared-edge neighbour (FR-95).
+  //
+  // 増分 8B の手直し（B69 / GPT 重 3・反証 2-1）: a face with HOLES (one polygon, simple
+  // outer ring) takes the chord path too. Only the OUTER ring is split along the chords
+  // (the chords are found against the outer ring alone, so a chord runs straight over a
+  // hole), and each piece then has the holes subtracted (`difference`). A hole a chord
+  // crosses is thereby cut along the chord as well; a hole it does not touch stays whole in
+  // the piece around it. Before, such faces took the far-frame path, and a short line over
+  // one arm of a concave sea also cut its other arms (実データ 34 地物・面積で 18%).
   let pieces: GeoMultiPolygon[];
-  const simpleFace = targetMp.length === 1 && (targetMp[0]?.length ?? 0) === 1;
-  const nwayChords =
-    line.kind === KNIFE_LINE_KIND.Open && simpleFace
-      ? splitIntoChords(linePts, targetMp)
-      : [];
-  if (nwayChords.length >= 2) {
-    const collected = collectOpenPieces(linePts, targetMp, 0);
+  let cutsBeyondLine = false;
+  const manyPiecesFace = splitsIntoManyPieces(targetMp);
+  const quantizedTarget = manyPiecesFace ? quantizeMultiPolygon(targetMp) : targetMp;
+  const quantizedOuter: GeoMultiPolygon = manyPiecesFace ? [[quantizedTarget[0]![0]!]] : [];
+  const quantizedHoles: GeoMultiPolygon = manyPiecesFace
+    ? quantizedTarget[0]!.slice(1).map((hole) => [hole])
+    : [];
+  const chordCount =
+    line.kind === KNIFE_LINE_KIND.Open && manyPiecesFace
+      ? splitIntoChords(linePts, quantizedOuter).length
+      : 0;
+  if (chordCount >= 1) {
+    // One chord keeps the 2-way gate's meaning: the line must run outside → through →
+    // outside (FR-90). A line that dangles inside stays 貫通せず, as before. The gate looks
+    // at the WHOLE face: a line end inside a hole is outside the face.
+    if (chordCount === 1 && !linePiercesFace(linePts, targetMp)) {
+      return rejection(SPLIT_REJECT.DoesNotPierce);
+    }
+    const collected = collectOpenPieces(linePts, quantizedOuter, 0);
     if (!collected.ok) return rejection(collected.reason);
     pieces = [...collected.pieces];
+    if (quantizedHoles.length > 0) {
+      const holed: GeoMultiPolygon[] = [];
+      for (const piece of pieces) {
+        const res = difference(piece, quantizedHoles);
+        // A piece always keeps the stretch of the outer ring it was cut from, so it can
+        // never vanish into the holes; an empty result is a degeneracy → refuse honestly.
+        if (!isOk(res) || res.result.length === 0) return rejection(SPLIT_REJECT.InvalidShape);
+        holed.push(res.result);
+      }
+      pieces = holed;
+    }
   } else {
     let clip: GeoMultiPolygon;
     if (line.kind === KNIFE_LINE_KIND.Closed) {
@@ -931,7 +1214,10 @@ export function checkSplittable(
       if (!linePiercesFace(linePts, targetMp)) {
         return rejection(SPLIT_REJECT.DoesNotPierce);
       }
-      const clipRing = openLineToClip(linePts, multiPolygonBBox(targetMp));
+      const { ring: clipRing, continuations } = openLineToClip(
+        linePts,
+        multiPolygonBBox(targetMp),
+      );
       // Reject a degenerate clip (bug-hunt2): even with the chord guard, a polyline
       // with no spatial extent at all (every snapped vertex on one grid node) yields a
       // zero-area ring. A zero-area clip makes intersection/difference vanish and would
@@ -940,6 +1226,10 @@ export function checkSplittable(
         return rejection(SPLIT_REJECT.DegenerateLine);
       }
       clip = [[clipRing]];
+      // B69 の残り（飛び地・外周が自分に接する面・線の端が穴の中の線）: the continuation
+      // may cut where nothing was drawn. Tell the caller so the UI can say so before the
+      // split is saved (所有者の原則「削除以外でデータが勝手に変わるのは良くない」).
+      cutsBeyondLine = continuations.some(([from, to]) => segmentMeetsFace(from, to, targetMp));
     }
 
     const inside = intersection(targetMp, clip);
@@ -980,7 +1270,28 @@ export function checkSplittable(
     pieces: sides,
     sideA: sides[0]!,
     sideB: sides[1]!,
+    ...(cutsBeyondLine ? { cutsBeyondLine: true } : {}),
   };
+}
+
+/**
+ * Whether an OPEN cut can split this face into k+1 pieces (現状分析 §11-14): exactly one
+ * polygon whose outer ring does not touch or cross itself (some real islands are stored as
+ * one ring pinched into a lagoon — that is a hole in disguise, and walking such a ring along
+ * a chord does not give two simple halves). HOLES ARE ALLOWED (増分 8B の手直し / B69): the
+ * outer ring is split along the chords and the holes are subtracted from each piece. A face
+ * with exclaves, or with a pinched outer ring, falls to the 2-piece path. Exported so the UI
+ * can say so BEFORE confirming (V10 ④).
+ *
+ * The outer ring is first made longitude-continuous (`unwrapRing`) and then judged on the
+ * U06 grid — the same values the split itself works on (反証 2-4: the UI passes the STORED
+ * ring, and a face spanning the antimeridian read as self-crossing there while the split,
+ * which unwraps first, cut it into 3 pieces). For an already continuous ring the unwrap is
+ * the identity. Pure.
+ */
+export function splitsIntoManyPieces(mp: GeoMultiPolygon): boolean {
+  if (mp.length !== 1 || (mp[0]?.length ?? 0) < 1) return false;
+  return !ringSelfIntersects(quantizeRing(unwrapRing([...mp[0]![0]!])));
 }
 
 /** Wrap a resolved multi-polygon piece as a {@link SplitSide} with its geodesic area (FR-93). */
@@ -1020,36 +1331,59 @@ export interface SplitResult {
   readonly sideA: SplitSide;
   /** 2-way alias = `pieces[1]` (kept while consumers migrate to `pieces`). */
   readonly sideB: SplitSide;
+  /** {@link SplitCheckResult} と同じ印（延ばした先でも切れている）。省略＝偽。 */
+  readonly cutsBeyondLine?: boolean;
   /**
-   * Every point where the OPEN cut line crosses an existing target edge partway
-   * along it (FR-95). Empty for a closed cut, or when the cut only meets existing
-   * vertices (no mid-edge crossing). 片落とし禁止: every crossed edge is recorded.
+   * Every point where the split cut an existing target edge partway along it (FR-95):
+   * the new piece vertices lying on an original edge (増分 8B の再手直し — read off the
+   * pieces, so the neighbour's node and the piece's vertex are one source). Empty when
+   * the cut only meets existing vertices. 片落とし禁止: every cut edge is recorded.
    */
   readonly edgeCuts: readonly EdgeCutPoint[];
 }
 
 /**
- * Compute every mid-edge crossing of the OPEN cut line against the target leaf's
- * existing edges (FR-95 / 教訓5.38: 線分交差で判定). A mid-edge cut is recorded when:
- *   - the cut line crosses the edge PROPERLY (interiors cross), OR
- *   - the cut line TOUCHES the edge at an Endpoint contact whose point lands PARTWAY
- *     along the edge — i.e. a cut-line vertex lands mid-edge (not on an existing
- *     target vertex). Codex M1: this Endpoint case is also a真の共有辺途中切断点 — the
- *     共有相手 edge still needs a same-coordinate node there (FR-95). Only an Endpoint
- *     contact that coincides with an existing edge ENDPOINT (an existing target
- *     vertex) needs no new node and is skipped.
- * For each recorded cut we store the ring id, the edge's start index, the two edge
- * vertex ids, and the quantize-aligned cut coordinate. The proposal layer maps
- * these to {@link SharedEdgeCutSpec}s when the crossed edge is a共有辺. Pure.
+ * Compute every 共有辺途中切断点 (FR-95) **from the vertices the pieces actually have**
+ * (増分 8B の再手直し / 再検証 3-1・2-1): every piece vertex that is NOT an original
+ * target vertex and lies on an original target edge (strictly between its ends, within
+ * {@link RING_SPOT_TOLERANCE}) is a point where the split cut that edge, and the
+ * neighbour sharing the edge needs the same node there.
+ *
+ * WHY not intersect the drawn line with the edges any more: the cut seam the pieces carry
+ * is computed by the split itself — by the ring walk on the QUANTIZED chord ends, by U06's
+ * `difference` against the holes along that quantized chord, or by the far-frame clip's
+ * continuations. Re-deriving the crossing from the drawn segment a→b put the neighbour's
+ * node on a DIFFERENT grid point whenever the chord P→Q was a hair off a→b (a slanted
+ * line over a hole: one grid step apart, in 265 of 1,278 real-data lines), the apply step
+ * then found no piece vertex there and dropped the cut, and the island kept a T-junction
+ * against the sea. The continuation of the far-frame path also cut shared edges the drawn
+ * line never crossed, and those were never transferred at all. Taking the cut points from
+ * the pieces makes the neighbour's node and the piece's vertex ONE source, whatever path
+ * produced it; it also works for a closed cut that crosses the boundary.
+ *
+ * Every candidate is assigned to its NEAREST original edge only (a point near a corner is
+ * not inserted into both edges). Coordinates are in the seam-anchored system the pieces
+ * use (R3): each original vertex is anchored to `refLon`, the edge end to its start, then
+ * both are quantized onto the U06 grid. For each recorded cut we store the ring id, the
+ * edge's start index, the two edge vertex ids and the piece vertex's coordinate. Pure.
  */
 function computeEdgeCuts(
   target: LeafFeature,
   store: VertexStore,
-  linePts: readonly WorldCoordinate[],
+  pieces: readonly GeoMultiPolygon[],
   refLon: number,
 ): EdgeCutPoint[] {
-  const cuts: EdgeCutPoint[] = [];
-  const seen = new Set<string>();
+  interface Edge {
+    readonly ringId: RingId;
+    readonly index: number;
+    readonly startId: VertexId;
+    readonly endId: VertexId;
+    readonly start: WorldCoordinate;
+    readonly end: WorldCoordinate;
+  }
+  const keyOf = (p: WorldCoordinate): string => `${p.lon},${p.lat}`;
+  const edges: Edge[] = [];
+  const original = new Set<string>();
   for (const ring of target.shape.rings) {
     const n = ring.vertexIds.length;
     for (let j = 0; j < n; j += 1) {
@@ -1059,50 +1393,54 @@ function computeEdgeCuts(
       const startV = getVertex(store, startId);
       const endV = getVertex(store, endId);
       if (startV === undefined || endV === undefined) continue;
-      // Quantize the target edge endpoints onto the SAME grid the split boolean op
-      // works on (U06 quantizes its inputs) before computing the crossing. WHY:
-      // the cut line is grid-snapped (snapCutLine) but the stored target coords
-      // can be sub-grid; intersecting the snapped line against RAW edge endpoints
-      // can quantize to a DIFFERENT grid node than the seam the split actually
-      // produced — FR-95 would then insert a mismatched node on the共有相手 edge.
-      // Quantizing both sides keeps the共有辺途中切断点 on the split's exact seam node.
-      // Anchor both endpoints onto the cut line's longitude branch (refLon) first
-      // so a seam-crossing edge (e.g. 170° → −170°) is compared against the line in
-      // ONE continuous system (R3), matching the checkSplittable boolean op.
       const startA = createCoordinate(anchorLon(startV.coordinate.lon, refLon), startV.coordinate.lat);
       const endA = createCoordinate(anchorLon(endV.coordinate.lon, startA.lon), endV.coordinate.lat);
-      const startC = quantizeCoordinate(startA);
-      const endC = quantizeCoordinate(endA);
-      for (let i = 0; i + 1 < linePts.length; i += 1) {
-        const a = linePts[i];
-        const b = linePts[i + 1];
-        if (a === undefined || b === undefined) continue;
-        const hit = segmentsIntersect(a, b, startC, endC);
-        if (hit.point === undefined) continue;
-        if (hit.relation !== SEGMENT_RELATION.Proper && hit.relation !== SEGMENT_RELATION.Endpoint) {
-          continue;
+      const start = quantizeCoordinate(startA);
+      const end = quantizeCoordinate(endA);
+      original.add(keyOf(start));
+      original.add(keyOf(end));
+      edges.push({ ringId: ring.id, index: j, startId, endId, start, end });
+    }
+  }
+
+  const cuts: EdgeCutPoint[] = [];
+  const seen = new Set<string>();
+  const tol2 = RING_SPOT_TOLERANCE * RING_SPOT_TOLERANCE;
+  for (const piece of pieces) {
+    for (const poly of piece) {
+      for (const ring of poly) {
+        for (const raw of ring) {
+          const p = quantizeCoordinate(raw);
+          const key = keyOf(p);
+          if (original.has(key) || seen.has(key)) continue;
+          let best: Edge | undefined;
+          let bestD2 = Number.POSITIVE_INFINITY;
+          for (const e of edges) {
+            if (
+              p.lon < Math.min(e.start.lon, e.end.lon) - RING_SPOT_TOLERANCE ||
+              p.lon > Math.max(e.start.lon, e.end.lon) + RING_SPOT_TOLERANCE ||
+              p.lat < Math.min(e.start.lat, e.end.lat) - RING_SPOT_TOLERANCE ||
+              p.lat > Math.max(e.start.lat, e.end.lat) + RING_SPOT_TOLERANCE
+            ) {
+              continue;
+            }
+            const { d2, t } = pointSegmentDistance2(p, e.start, e.end);
+            if (t <= 0 || t >= 1) continue; // at or beyond an end → not mid-edge
+            if (d2 < bestD2) {
+              bestD2 = d2;
+              best = e;
+            }
+          }
+          if (best === undefined || bestD2 > tol2) continue;
+          seen.add(key);
+          cuts.push({
+            ringId: best.ringId,
+            edgeStartIndex: best.index,
+            edgeStartVertexId: best.startId,
+            edgeEndVertexId: best.endId,
+            coordinate: p,
+          });
         }
-        const coordinate = quantizeCoordinate(hit.point);
-        // A mid-edge cut is recorded ONLY when the (quantized) intersection point
-        // falls strictly between the edge's (quantized) endpoints. This applies to
-        // BOTH a Proper crossing AND an Endpoint contact: an intersection that
-        // quantizes onto an existing edge vertex (startC/endC) needs no new node and
-        // would otherwise produce a zero-length edge / duplicate-coordinate node on
-        // the共有相手 edge (Codex M1; bug-hunt: a near-endpoint Proper crossing that
-        // quantizes onto startC/endC is degenerate and must be skipped too).
-        if (coordinatesEqual(coordinate, startC) || coordinatesEqual(coordinate, endC)) {
-          continue;
-        }
-        const key = `${ring.id}:${j}:${coordinate.lon},${coordinate.lat}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        cuts.push({
-          ringId: ring.id,
-          edgeStartIndex: j,
-          edgeStartVertexId: startId,
-          edgeEndVertexId: endId,
-          coordinate,
-        });
       }
     }
   }
@@ -1123,21 +1461,26 @@ export function executeSplit(
 ): SplitResult | undefined {
   const check = checkSplittable(target, store, line);
   if (check.status !== SPLIT_CHECK_STATUS.Splittable) return undefined;
-  // Mid-edge cut points only arise for an OPEN cut crossing existing edges. Compute
-  // them in the SAME seam-anchored system checkSplittable used (R3): the reference
-  // is the target's outer-ring branch, and the cut line + target edges are anchored
-  // to it before the line-segment crossing test.
+  // Mid-edge cut points are read off the pieces themselves (増分 8B の再手直し): every
+  // new piece vertex lying on an original edge. Same seam-anchored system as
+  // checkSplittable (R3): the reference is the target's outer-ring branch.
+  const pieces = check.pieces ?? [check.sideA, check.sideB];
   let edgeCuts: readonly EdgeCutPoint[] = [];
-  if (target.kind === FEATURE_KIND.Leaf && line.kind === KNIFE_LINE_KIND.Open) {
+  if (target.kind === FEATURE_KIND.Leaf) {
     const resolvedMp = resolveLeafShape(target.shape, store);
     const refLon = resolvedMp === undefined ? 0 : targetReferenceLon(resolvedMp);
-    const anchoredLine = snapCutLine(unwrapAnchoredRing([...line.points], refLon), false);
-    edgeCuts = computeEdgeCuts(target, store, anchoredLine, refLon);
+    edgeCuts = computeEdgeCuts(
+      target,
+      store,
+      pieces.map((piece) => piece.area),
+      refLon,
+    );
   }
   return {
-    pieces: check.pieces ?? [check.sideA, check.sideB],
+    pieces,
     sideA: check.sideA,
     sideB: check.sideB,
+    ...(check.cutsBeyondLine === true ? { cutsBeyondLine: true } : {}),
     edgeCuts,
   };
 }
@@ -1152,6 +1495,24 @@ export function smallestPieceIndex(result: SplitResult): number {
   let best = 0;
   for (let i = 1; i < pieces.length; i += 1) {
     if (pieces[i]!.areaKm2 < pieces[best]!.areaKm2) best = i;
+  }
+  return best;
+}
+
+/**
+ * The index of the LARGEST piece by area — the 既定の継承先 (増分 8B の手直し / 設計適合の
+ * 重 1). The piece that keeps the original feature (its id, name, colour and timeline)
+ * defaults to the biggest remainder: cutting a strip off a country should make the STRIP
+ * new, not rename the bulk. With 3〜7 pieces the old default (the smallest) handed the
+ * original identity to a sliver. FR-93 still boxes the SMALLEST piece in the preview
+ * ({@link smallestPieceIndex}); only the seeded selection moved. Ties resolve to the LOWEST
+ * index deterministically. Pure.
+ */
+export function largestPieceIndex(result: SplitResult): number {
+  const pieces = result.pieces ?? [result.sideA, result.sideB];
+  let best = 0;
+  for (let i = 1; i < pieces.length; i += 1) {
+    if (pieces[i]!.areaKm2 > pieces[best]!.areaKm2) best = i;
   }
   return best;
 }

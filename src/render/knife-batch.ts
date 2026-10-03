@@ -36,6 +36,7 @@ import {
   KNIFE_PHASE,
   isFixedCircleVisible,
   isOverlayVisible,
+  summarizePieces,
   type KnifeState,
 } from '../domain/knife/index';
 
@@ -66,6 +67,24 @@ export interface KnifeStyle {
   readonly circleWidthPx: number;
   /** Fixed-circle ON-SCREEN radius in CSS px (constant under zoom; FR-17). */
   readonly circleRadiusPx: number;
+  /**
+   * 閉じた分断線の囲みの塗り（N-10「閉じても画面が何も変わらない」）。閉じた瞬間に
+   * 囲みが塗られ、閉じる辺も実線になり、固定円が消える。
+   */
+  readonly closedFill: string;
+  /**
+   * 分割の下見（V10 / N-09）: 片ごとの塗り。継承先に選んでいる片は {@link inheritFill}、
+   * ほかの片はこの並びを順に使う（隣り合う片が同じ色にならないよう 4 色で回す）。
+   */
+  readonly pieceFills: readonly string[];
+  /** 継承先（元の地物として残る片）の塗り。 */
+  readonly inheritFill: string;
+  readonly pieceStroke: string;
+  readonly pieceStrokeWidthPx: number;
+  /** 番号札（画面固定の文字の大きさ）。板の下見と同じ番号を地図にも出す。 */
+  readonly tagFontPx: number;
+  readonly tagFill: string;
+  readonly tagHalo: string;
 }
 
 /** Default knife visual style (overridable; e.g. project theme). */
@@ -84,6 +103,19 @@ export const DEFAULT_KNIFE_STYLE: KnifeStyle = {
   circleStroke: 'rgba(213, 0, 0, 0.7)',
   circleWidthPx: 1.5,
   circleRadiusPx: 28,
+  closedFill: 'rgba(213, 0, 0, 0.18)',
+  pieceFills: [
+    'rgba(66, 165, 245, 0.45)',
+    'rgba(102, 187, 106, 0.45)',
+    'rgba(171, 71, 188, 0.45)',
+    'rgba(38, 198, 218, 0.45)',
+  ],
+  inheritFill: 'rgba(255, 193, 7, 0.55)',
+  pieceStroke: '#263238',
+  pieceStrokeWidthPx: 1.5,
+  tagFontPx: 18,
+  tagFill: '#102027',
+  tagHalo: '#ffffff',
 };
 
 /** The world extent the map-wide overlay covers (whole world; U17 seam-replicates). */
@@ -147,16 +179,23 @@ function cutLinePrimitives(
       stroke: style.cutStroke,
     },
   ];
-  // A CLOSED cut draws the closing edge back to the first point (translucent).
+  // A CLOSED cut: the enclosed region is filled UNDER the line and the closing edge is
+  // drawn in the SAME solid cut stroke (N-10: closing must visibly change the picture —
+  // the old translucent thin edge was easy to miss). An OPEN line draws no closing edge.
   if (closed) {
     const first = points[0];
     const last = points[points.length - 1];
     if (first !== undefined && last !== undefined) {
+      out.unshift({
+        kind: 'polygon',
+        ring: points.map(toWorldPoint),
+        fill: style.closedFill,
+      });
       out.push({
         kind: 'line',
         points: [toWorldPoint(last), toWorldPoint(first)],
-        widthPx: style.closingWidthPx,
-        stroke: style.closingStroke,
+        widthPx: style.cutWidthPx,
+        stroke: style.cutStroke,
       });
     }
   }
@@ -210,6 +249,50 @@ function fixedCirclePrimitive(
   };
 }
 
+/**
+ * 分割の下見（V10 / N-09）: 継承先を選んでいる間と素性を入れている間、地図の上に
+ * **片ごとに別の色**で切った結果を描き、各片に **番号札**を立てる。穴は `shape` の
+ * 偶奇規則でそのまま穴になる（FR-21）。番号と札の位置は板の下見と同じ 1 本
+ * （`summarizePieces`）から取る（教訓 5.29）。
+ */
+function piecePreviewPrimitives(
+  pieces: readonly GeoMultiPolygon[],
+  inheritIndex: number,
+  style: KnifeStyle,
+): DrawPrimitive[] {
+  const out: DrawPrimitive[] = [];
+  let other = 0;
+  pieces.forEach((mp, i) => {
+    let fill = style.inheritFill;
+    if (i !== inheritIndex) {
+      fill =
+        style.pieceFills[other % Math.max(style.pieceFills.length, 1)] ??
+        style.inheritFill;
+      other += 1;
+    }
+    out.push({
+      kind: 'shape',
+      pieces: mp.map((poly) => poly.map((ring) => ring.map(toWorldPoint))),
+      fill,
+      stroke: style.pieceStroke,
+      strokeWidthPx: style.pieceStrokeWidthPx,
+    });
+  });
+  for (const s of summarizePieces(pieces)) {
+    out.push({
+      kind: 'label',
+      at: toWorldPoint(s.labelPoint),
+      text: String(s.number),
+      fontPx: style.tagFontPx,
+      fill: style.tagFill,
+      halo: style.tagHalo,
+      align: 'center',
+      baseline: 'middle',
+    });
+  }
+  return out;
+}
+
 // --- Whole-state batch ------------------------------------------------------
 
 /** Inputs the builder needs beyond the session state (host-resolved; render→domain). */
@@ -242,12 +325,33 @@ export function buildKnifePrimitives(
 
   const out: DrawPrimitive[] = [];
 
-  // 1. Map-wide overlay (only while selecting / drawing — FR-90).
-  if (isOverlayVisible(state)) {
+  // 1. Map-wide overlay (while selecting / drawing — FR-90 — and, since N-13, while the
+  //    new piece is being named: the map behind stays visible but reads as "not now").
+  if (
+    isOverlayVisible(state) ||
+    state.phase === KNIFE_PHASE.EnteringProperties
+  ) {
     out.push(overlayPrimitive(style));
   }
 
-  // 2. Target emphasis (over the overlay).
+  // 2. After the cut is confirmed: the split preview (pieces in distinct colours, holes
+  //    as holes, number tags) REPLACES the single-colour target emphasis (V10 / N-09).
+  if (
+    state.phase === KNIFE_PHASE.ChoosingInheritor ||
+    state.phase === KNIFE_PHASE.EnteringProperties
+  ) {
+    const pieces = (
+      state.result.pieces ?? [state.result.sideA, state.result.sideB]
+    ).map((p) => p.area);
+    const inherit =
+      state.phase === KNIFE_PHASE.ChoosingInheritor
+        ? state.selectedIndex
+        : state.inheritIndex;
+    out.push(...piecePreviewPrimitives(pieces, inherit, style));
+    return out;
+  }
+
+  // 2'. Target emphasis (over the overlay).
   const target = targetPrimitive(targetShape, style);
   if (target !== undefined) out.push(target);
 
@@ -257,7 +361,12 @@ export function buildKnifePrimitives(
     out.push(
       ...cutLinePrimitives(points, state.line.kind === KNIFE_LINE_KIND.Closed, style),
     );
-    if (isFixedCircleVisible(state)) {
+    // 閉じたら固定円は役目を終える（N-10: 閉じたことが絵で分かるよう、円を消して
+    // 囲みを塗る）。
+    if (
+      isFixedCircleVisible(state) &&
+      state.line.kind !== KNIFE_LINE_KIND.Closed
+    ) {
       const center = points[0];
       if (center !== undefined) {
         const circle = fixedCirclePrimitive(center, zoom, style);

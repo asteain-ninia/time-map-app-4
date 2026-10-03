@@ -639,7 +639,8 @@ interface SharedEdgeCutGroup {
  * Group every共有辺途中切断点 by the ORIGINAL edge it crosses — keyed by the target
  * feature id plus the edge's two endpoint vertex ids (order-independent), so two cuts
  * on the SAME shared edge end up in one group. Each cut's minted seam vertex (matched
- * by quantized coordinate) is collected; cuts with no minted seam are dropped. Groups
+ * by quantized coordinate) is collected; a cut with no minted seam THROWS (増分 8B の
+ * 再手直し — it used to be dropped silently, leaving a T-junction on the neighbour). Groups
  * and their seams preserve the geometry layer's emission order; the splice orders them
  * along the edge afterwards (so the absolute key order here does not matter). Pure.
  */
@@ -651,7 +652,16 @@ function groupSharedEdgeCuts(
   const order: string[] = [];
   for (const cut of cuts) {
     const seam = findVertexAtCoordinate(splitVertices, cut.cutCoordinate);
-    if (seam === undefined) continue; // no minted seam vertex → nothing to share.
+    // **黙って捨てない**（増分 8B の再手直し / 再検証 3-1）。切り口は分割の片の頂点から
+    // 作るので、ここで片の頂点が見つからないのは作り方の不具合である。捨てると隣の辺に
+    // 点が入らず、境目に T 字のつなぎ目が黙って残る（あとで隣の頂点を動かすと裂ける）。
+    // 投げれば、検査では落ち、本番では U13 の守り（`runGuarded`）が「内部エラー」の
+    // 断り（＋開発者へ報告の案内）に変えて、確定させない。
+    if (seam === undefined) {
+      throw new Error(
+        `U44: split shared-edge cut at (${String(cut.cutCoordinate.lon)}, ${String(cut.cutCoordinate.lat)}) has no piece vertex (FR-95; the neighbour edge would keep a T-junction)`,
+      );
+    }
     // Order-independent edge key: the same physical edge yields the same key whether the
     // geometry recorded it as (start,end) or (end,start).
     const lo = idToString(cut.edgeStartVertexId) <= idToString(cut.edgeEndVertexId)

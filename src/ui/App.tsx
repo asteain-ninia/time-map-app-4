@@ -186,6 +186,7 @@ import { ImpactConfirmDialog } from './shell/ImpactConfirmDialog';
 import { markedDrawInputs } from './discovery/marked-shapes';
 import { buildWindowTitle, fileNameOf } from './shell/status-format';
 import type { SaveStatus } from './file-ops/save-context';
+import { leafReport } from './e2e/leaf-report';
 import { projectStats } from './e2e/project-stats';
 import { OptionBar } from './shell/OptionBar';
 import { OptionBarStore, type OptionBarAction } from './shell/option-bar';
@@ -483,6 +484,17 @@ export function App(): JSX.Element {
           buildSyntheticAnchorProject(s.domain, count, options),
           {},
         );
+      }),
+    [store],
+  );
+
+  // 増分 8B の手直し: 末端地物の中身を表示と独立に読む口（T-2）。分割の E2E が片の数・
+  // 元の地物の id と素性・年表・片の重なり・点の持ち主をドメインの値で確かめる。
+  useEffect(
+    () =>
+      registerE2eHarnessAction(globalThis, 'getLeafReport', (query) => {
+        const s = store.getState();
+        return leafReport(s.domain, s.currentTime, query);
       }),
     [store],
   );

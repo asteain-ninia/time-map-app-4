@@ -15,7 +15,7 @@
 // 保存ボタンは `data-testid="add-save"` のまま **素性欄の保存ボタン**になる（T-1 の
 // 付け替え 2 件のうちの 1 件。役割「追加した地物の値を確定する」は変わらない）。
 
-import { useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 
 import {
   createBasicAttributes,
@@ -65,6 +65,13 @@ export interface AddPropertyFormProps {
   readonly onSave: (properties: AddProperties) => void;
   /** Cancel the whole add (教訓 5.2). */
   readonly onCancel: () => void;
+  /**
+   * 保存が走っている間の文（増分 8B の中身 3 / `AddDraftPrompt.busyLabel`）。null・省略なら
+   * 普段どおり。出ている間は［保存］がこの文になって押せなくなり、読み上げにも流す。
+   */
+  readonly busyLabel?: string | null;
+  /** 打ちかけの有無が変わったら呼ぶ（`AddDraftPrompt.onDirtyChange`）。 */
+  readonly onDirtyChange?: (dirty: boolean) => void;
 }
 
 export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
@@ -77,8 +84,16 @@ export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
     onSave,
     onCancel,
   } = props;
+  const busyLabel = props.busyLabel ?? null;
   const [name, setName] = useState('');
   const [kindLabel, setKindLabel] = useState('');
+  // 打ちかけ（名前か種別に何か打たれている）の有無を、変わったときだけ押し込む側へ知らせる
+  // （増分 8B の手直し / 反証 2-2）。1 文字ごとには知らせない。
+  const dirty = name.length > 0 || kindLabel.length > 0;
+  const onDirtyChange = props.onDirtyChange;
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
   // **上位領域の欄は「選ばれている値」を持つ**（増分 3 の手直し B2）。`defaultValue` だと
   // 部品が載った瞬間の値しか効かない ―― 候補の絞り込みは形を確定した直後の 1 拍あとに
   // 決まるので、既定が届いたときには欄はもう空のままだった（画面と実際の保存値が割れる）。
@@ -92,6 +107,8 @@ export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
   }
 
   const submit = (): void => {
+    // 走っている間の Enter でもう 1 度送らない（器の側にも関門はある＝二重の守り）。
+    if (busyLabel !== null) return;
     // 年代は「いま見ている年」を継ぐ（G-8）。開始と終了に同じ年を入れるのは、
     // これまで 0 / 0 を入れていたのと同じ形（飾りの 2 欄。実際の存続は錨が決める）で、
     // 変えたのは **値の出どころ**だけである。
@@ -175,13 +192,32 @@ export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
 
       <div className="add-property-form__actions">
         {/* SAVE — property-form完了 trigger (教訓 5.7). Enter also submits. */}
-        <button type="submit" data-testid="add-save">
-          {ADD_STRINGS.save}
+        <button
+          type="submit"
+          data-testid="add-save"
+          disabled={busyLabel !== null}
+          aria-busy={busyLabel !== null}
+        >
+          {busyLabel ?? ADD_STRINGS.save}
         </button>
-        <button type="button" data-testid="add-form-cancel" onClick={onCancel}>
+        <button
+          type="button"
+          data-testid="add-form-cancel"
+          onClick={onCancel}
+          disabled={busyLabel !== null}
+        >
           {ADD_STRINGS.cancel}
         </button>
       </div>
+      {busyLabel !== null && (
+        <p
+          className="add-property-form__busy"
+          role="status"
+          data-testid="add-save-busy"
+        >
+          {busyLabel}
+        </p>
+      )}
     </form>
   );
 }
@@ -224,5 +260,7 @@ export function addPromptToFormProps(prompt: AddDraftPrompt): AddPropertyFormPro
     onChooseParent: prompt.onChooseParent,
     onSave: prompt.onSave,
     onCancel: prompt.onCancel,
+    busyLabel: prompt.busyLabel ?? null,
+    ...(prompt.onDirtyChange !== undefined ? { onDirtyChange: prompt.onDirtyChange } : {}),
   };
 }

@@ -27,7 +27,7 @@
 // The component holds NO domain truth and writes the store ONLY through the
 // host-supplied `onCommitted` (教訓 5.22 確定までの非破壊 / 単一の真実源).
 
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { StoreApi } from 'zustand/vanilla';
 
 import type { ColorInfo } from '../../domain/attributes';
@@ -313,6 +313,13 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
     );
   }, [drill.region, drill.preview, drawSink, style]);
 
+  // **素性欄の打ちかけ**（増分 8B の手直し）。右パネルの欄が「名前か種別に何か打った」を
+  // 変わったときだけ知らせてくる（`AddDraftPrompt.onDirtyChange`）。Escape はこれを見る。
+  const propertiesDirtyRef = useRef(false);
+  // N-13: 素性を入れている間に地図（幕）が押されたか（押されたら次の一手で理由を言う）。
+  // 局面を離れたら忘れる（下の effect）。
+  const [mapLockedHint, setMapLockedHint] = useState(false);
+
   // --- Keyboard: Escape→cancel, Ctrl+Z→undo vertex (FR-78). Active while a session runs,
   // EXCEPT while the U35 conflict modal owns the screen (ConflictPaused): there the MODAL
   // owns Esc, and a tool-side cancel would release `activeTool` under the open modal so the
@@ -371,9 +378,13 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
         // **素性を入力している局面**（決定 (5) で右パネルへ移った）。欄が「打ちかけ無し」を
         // 名乗っていれば 1 回でやめ、打ちかけがあれば 1 度聞く。**やめた先は「対象を離す」段**
         // （§D.4.1 の階段）で、道具は持ったままである（旧版は道具ごと降りていた）。
+        //
+        // **打ちかけは中身でも見る**（増分 8B の手直し。分ける道具の反証 2-2 と同じ形）。
+        // 穴あけにも幕を掛けたので、名前を打ってから地図を押すと焦点が欄から外れる ――
+        // 焦点のある欄だけを見ていると、次の Escape で打ちかけが確認なしに捨てられる。
         if (drill.flow === DRILL_FLOW.EnteringProperties) {
           e.preventDefault();
-          if (inEditable && target?.pristine === false) {
+          if (propertiesDirtyRef.current || (inEditable && target?.pristine === false)) {
             drillGuard.askOnEscape();
             return;
           }
@@ -469,6 +480,15 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
   const enteringYear = anchorTime().year;
   const drillSave = drill.save;
   const drillCancel = drill.cancel;
+  // 素性欄の打ちかけ（増分 8B の手直し）。欄が変わったときだけ知らせてもらう。
+  const onPropertiesDirtyChange = useCallback((dirty: boolean) => {
+    propertiesDirtyRef.current = dirty;
+  }, []);
+  useEffect(() => {
+    if (drillEntering) return;
+    propertiesDirtyRef.current = false;
+    setMapLockedHint(false);
+  }, [drillEntering]);
   useEffect(() => {
     if (addDraft === undefined || !drillEntering) return;
     const mine: AddDraftPrompt = {
@@ -484,13 +504,14 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
       // あった）。`AddProperties` は `drill.save` が受ける形と同じ 3 つ組である。
       onSave: drillSave,
       onCancel: drillCancel,
+      onDirtyChange: onPropertiesDirtyChange,
     };
     addDraft.set(mine);
     // 局面を離れる・道具を降りる・アンマウントの全経路で必ず閉じる（教訓 5.2）。
     return () => {
       if (addDraft.get() === mine) addDraft.set(null);
     };
-  }, [addDraft, drillEntering, enteringYear, drillSave, drillCancel]);
+  }, [addDraft, drillEntering, enteringYear, drillSave, drillCancel, onPropertiesDirtyChange]);
 
   // **モーダルは別に報せる**（増分 5 の手直し A4）。新地物の素性入力は、Escape / Tab しか
   // 自分では受けない本物のモーダルである。
@@ -589,7 +610,12 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
     // 「どこで入れるのか」を言っていない ―― 板が目の前に出ていたころはそれで足りたが、
     // いま欄は右パネルにある。断り（`message`）が出ているときは今までどおり最優先。
     nextStep:
-      drill.message ?? (drillEntering ? DRILL_STRINGS.nextStepEnterProperties : drill.guide),
+      drill.message ??
+      (drillEntering
+        ? mapLockedHint
+          ? DRILL_STRINGS.mapLockedWhileNaming
+          : DRILL_STRINGS.nextStepEnterProperties
+        : drill.guide),
     commit: drillCommit,
     extras: drillExtras,
   });
@@ -635,17 +661,25 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
   const onMapPointerDown = useCallback(
     (e: { clientX: number; clientY: number; button?: number }) => {
       if (e.button !== undefined && e.button !== 0) return;
+      // N-13（増分 8B の手直し）: 素性を入れている最終段階では、幕（入力の橋）が地図の
+      // クリックを受け止めるだけで何もしない ―― 背後の地物を選んだり動かしたりさせない。
+      // 黙って無視すると「効かない」と読まれるので、理由を次の一手に出す。
+      if (drillEntering) {
+        setMapLockedHint(true);
+        return;
+      }
       const world = screenToWorld(e.clientX, e.clientY);
       drill.handleClick(world, featureAtPoint(world));
     },
-    [drill, screenToWorld, featureAtPoint],
+    [drill, drillEntering, screenToWorld, featureAtPoint],
   );
 
   const onMapPointerMove = useCallback(
     (e: { clientX: number; clientY: number }) => {
+      if (drillEntering) return;
       drill.updatePreview(screenToWorld(e.clientX, e.clientY));
     },
-    [drill, screenToWorld],
+    [drill, drillEntering, screenToWorld],
   );
 
   // --- Camera passthrough (mirrors the ring-edit / knife bridge): forward wheel +
@@ -688,8 +722,12 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
           only events (wheel + non-left pointer) to the live dispatcher so 中ボタンパン /
           ホイールズーム keep working. Only up while drawing so it never steals input
           during the property form. */}
-      {drawing && (
+      {/* N-13「最終段階だけ幕が無い」の穴あけの半分（増分 8B の手直し）: 素性を入れている
+          間も同じ橋を **幕** として残す。分ける道具と同じ形（左クリックは受け止めて理由を
+          言う、ホイールと中ボタンの移動は通す）。 */}
+      {(drawing || drillEntering) && (
         <DrillInputBridge
+          locked={drillEntering}
           onMapPointerDown={onMapPointerDown}
           onMapPointerMove={onMapPointerMove}
           onMapWheel={onMapWheel}
@@ -770,6 +808,8 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
  * knife固定円 shape.
  */
 function DrillInputBridge(props: {
+  /** 幕として置いている（N-13）。見た目（カーソル）だけを変える。 */
+  readonly locked?: boolean;
   readonly onMapPointerDown: (e: { clientX: number; clientY: number; button?: number }) => void;
   readonly onMapPointerMove: (e: { clientX: number; clientY: number }) => void;
   readonly onMapWheel: (e: {
@@ -829,6 +869,7 @@ function DrillInputBridge(props: {
       ref={ref}
       className="drill-tool__input"
       data-testid="drill-input-layer"
+      data-locked={props.locked === true ? 'true' : 'false'}
       onPointerDown={(e) =>
         onMapPointerDown({ clientX: e.clientX, clientY: e.clientY, button: e.button })
       }
