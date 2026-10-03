@@ -175,4 +175,31 @@ describe('既定の修復で記録を全部の年から消さない（手直し 
     expect(done.outcome).toBe(REPAIR_OUTCOME.Unresolved);
     expect(parentAt(done.project!, 'L', 1500)).toBeNull();
   });
+
+  it('4 回目 #3: 区間の修復は、まとめ役の錨に居る子でない居候の記録を道連れにしない（切る前に起こす）', () => {
+    // F の錨: 1000 年 {F{a,b}, a<F>, b<F>}（1300 年で終わり）と、1500 年 {F{}, a, b}（a・b は F の子ではない居候）。
+    const a = leafTile('a', 0, 0, 10, 10, 'F');
+    const b = leafTile('b', 10, 0, 10, 10, 'F');
+    const aTop = leafTile('a', 0, 0, 10, 10);
+    const bTop = leafTile('b', 10, 0, 10, 10);
+    const old = project([
+      {
+        featureId: fid('F'),
+        series: {
+          entries: [
+            { anchor: anchorOf('anchor-F-1000', [aggregate('F', ['a', 'b']), a.feature, b.feature], [...a.vertices, ...b.vertices]), start: y(1000), end: y(1300) },
+            { anchor: anchorOf('anchor-F-1500', [aggregate('F', []), aTop.feature, bTop.feature], [...aTop.vertices, ...bTop.vertices]), start: y(1500), end: null },
+          ],
+        },
+      },
+    ]);
+    const done = reopenWithDefaults(old);
+    expect(done.outcome).toBe(REPAIR_OUTCOME.Applied);
+    const p = done.project!;
+    expect(parentAt(p, 'a', 1200)).toBe('F');
+    expect(parentAt(p, 'a', 1550)).toBeNull();
+    expect(parentAt(p, 'b', 3000)).toBeNull();
+    expect(parentAt(p, 'F', 1550)).toBeUndefined();
+    expect(parentAt(p, 'F', 1200)).toBeNull();
+  });
 });

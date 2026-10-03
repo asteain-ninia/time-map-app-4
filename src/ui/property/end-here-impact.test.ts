@@ -55,10 +55,27 @@ describe('buildEndHereImpactView — まとめ役を終わらせる前の影響�
       cascaded: [{ name: '第一連邦', yearLabel: '1400年' }],
     });
     expect(view.groups.find((g) => g.testId === 'ends')?.lines[1]).toBe(
-      '1400年より後の、途切れずに続いていた記録 2 件も一緒に終わります',
+      '1400年より後の、途切れずに続いていた記録（中身の変わる記録 2 件）も一緒に終わります',
     );
     expect(view.groups.find((g) => g.testId === 'cascaded')?.lines).toEqual([
       'まとめ役「第一連邦」は下位領域を全て失うので、1400年から終わります',
+    ]);
+  });
+
+  it('別の上位領域への後の所属が一緒に終わる・まとめ役が記録ごと無くなるときは、その行を出す（4 回目 #1・#2）', () => {
+    const view = buildEndHereImpactView({
+      targetName: '州 a',
+      yearLabel: '1400年',
+      promotedCount: 0,
+      promotedNames: [],
+      laterAffiliations: [{ name: '連邦 G', yearLabel: '1700年' }],
+      cascaded: [{ name: '連邦 G', yearLabel: '1700年', whole: true }],
+    });
+    expect(view.groups.find((g) => g.testId === 'ends')?.lines).toContain(
+      '1700年からの「連邦 G」への所属も一緒に終わります（「連邦 G」の下位領域から外れます）',
+    );
+    expect(view.groups.find((g) => g.testId === 'cascaded')?.lines).toEqual([
+      'まとめ役「連邦 G」はどの年にも下位領域が居なくなるので、記録ごと無くなります（所属を変えて下位領域を全て失ったときと同じ）',
     ]);
   });
 });
