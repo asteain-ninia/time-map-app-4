@@ -44,7 +44,7 @@ const calendar = getCalendar('gregorian');
 
 function load(): DomainProject {
   const res = loadTmapBytes(realPath, new Uint8Array(readFileSync(realPath)));
-  if (!res.ok) throw new Error(`load failed: ${res.message}`);
+  if (!res.ok) throw new Error(`load failed: ${res.reason}`);
   return manifestToProject(res.manifest);
 }
 
