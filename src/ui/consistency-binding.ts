@@ -344,14 +344,35 @@ function checkConstraints(resultState: DomainRoot): readonly unknown[] {
  * `shell/command-result.ts` の {@link UI_COMMAND_LABEL} が唯一の定義箇所で、同じ
  * module の写像表が画面へ出す日本語を決める（教訓 5.51 出口 1 か所で写像する）。
  */
+/**
+ * どこかの年の錨に居る地物の id（系列の持ち主と、錨の中の居候の両方）。
+ *
+ * **地物の増減は地物の id で数える**（増分 7 の手直し 2 回目 / 設計適合 指摘 2）。旧版は
+ * 系列の id（＝自分の系列を持つ地物）の差で数えていたので、所属変更でまとめ役の子の
+ * 記録を自分の系列へ起こす（決定 (1)）と系列が 1 本増え、それを「新しく作られた地物」と
+ * 読んでいた。取り消しではその裏返しで「消えた地物」になり、地物は親の錨に戻って居るのに
+ * 選択が外れていた。母集合は `App` の `liveFeatureIds`（決定 (10)）と同じ「どこかの年に
+ * 居る地物」。
+ */
+function featureIdsInHistories(root: DomainRoot): Set<FeatureId> {
+  const ids = new Set<FeatureId>();
+  for (const history of root.histories) {
+    ids.add(history.featureId);
+    for (const entry of history.series.entries) {
+      for (const f of entry.anchor.snapshot.features) ids.add(f.id);
+    }
+  }
+  return ids;
+}
+
 function makeCommand(
   baseline: DomainRoot,
   finalState: DomainRoot,
   touched: readonly FeatureId[],
   label: string,
 ): Command<DomainRoot> {
-  const baselineIds = new Set<FeatureId>(baseline.histories.map((h) => h.featureId));
-  const finalIds = new Set<FeatureId>(finalState.histories.map((h) => h.featureId));
+  const baselineIds = featureIdsInHistories(baseline);
+  const finalIds = featureIdsInHistories(finalState);
   const created = new Set<DomainId>();
   const survived = new Set<DomainId>();
   const deleted = new Set<DomainId>();
