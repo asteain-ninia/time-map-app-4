@@ -28,7 +28,7 @@ import type { PaletteThemeId } from '../../domain/coloring';
 import type { PropertyEditValues } from './contracts';
 import { PROPERTY_STRINGS, formatAreaKm2, formatLengthKm } from './messages';
 import { StyleSection } from './StyleSection';
-import { styleOnAutoColorToggle } from './auto-color-off';
+import { useAutoColorToggle } from './auto-color-off';
 import { type StyleValues } from './style-section';
 
 export interface BasicInfoFormProps {
@@ -195,6 +195,9 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
     () => props.paletteThemes ?? [feature.color.paletteTheme],
     [props.paletteThemes, feature.color.paletteTheme],
   );
+  // 増分 8E（G-15）: 自動配色の切り替え。往復しても打ち込んだ手動色を失わないよう、
+  // 「この下書きで 1 度 OFF にしたか」を覚えた口を使う（auto-color-off.ts）。
+  const onAutoColorToggle = useAutoColorToggle(feature);
 
   return (
     <section className="basic-info" data-testid="basic-info">
@@ -383,7 +386,7 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
         onChange={(raw) => {
           // 増分 8E（G-15 / FR-100）: 自動配色を OFF にした瞬間は、いま塗られている色を
           // 手動色として残す（規則は auto-color-off.ts の 1 か所）。
-          const next = styleOnAutoColorToggle(feature, styleValuesFromDraft(draft), raw);
+          const next = onAutoColorToggle(styleValuesFromDraft(draft), raw);
           onChange({
             autoColorEnabled: next.autoColorEnabled,
             paletteTheme: next.paletteTheme,
