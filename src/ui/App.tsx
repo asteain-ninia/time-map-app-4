@@ -24,6 +24,7 @@ import { TOOL_ID, isSelectTool } from './shell/tools';
 import { APP_STRINGS, MENU_ITEM_LABELS } from './shell/strings';
 import { AppShell, SIDEBAR_SECTION } from './shell';
 import { buildSidebarContent } from './shell/SidebarContent';
+import { keepPanelsPresent } from './property/detail-panels';
 import {
   DetailPanels,
   EMPTY_DETAIL_PANELS,
@@ -3198,21 +3199,24 @@ export function App(): JSX.Element {
   // never lingers as an invisible, un-closable ghost (a missing feature renders null in
   // DetailPanels, so without this the entry could not be closed). Keyed on DOMAIN identity
   // (camera / time set()s are skipped) and returns the SAME state ref when nothing is
-  // pruned, so it adds no re-render churn. A time-hidden feature still EXISTS in the domain
-  // (a history carries it), so it is kept — only genuinely-removed features are pruned.
+  // pruned, so it adds no re-render churn.
+  // 増分 8E の手直し（設計適合 S2-3・反証 2-3）: 「在るか」は **いまの年に居るか**（地図と
+  // 同じ `featuresAt`）で見て、時刻の変化でも掃除する。系列の有無で見ていたころは、まとめ役の
+  // 子（自分の系列を持たない）のパネルが関係のない編集のたびに閉じ、年を動かして居なくなった
+  // 地物のパネルは閉じずに隠れていた（規則は `keepPanelsPresent` の 1 か所）。
   useEffect(() => {
     let prevDomain = store.getState().domain;
+    let prevTime = store.getState().currentTime;
     return store.subscribe(() => {
-      const domain = store.getState().domain;
-      if (domain === prevDomain) return;
+      const { domain, currentTime } = store.getState();
+      if (domain === prevDomain && currentTime === prevTime) return;
       prevDomain = domain;
-      setDetailPanels((s) => {
-        if (s.panels.length === 0) return s;
-        const live = s.panels.filter((p) =>
-          domain.histories.some((h) => h.featureId === p.featureId),
-        );
-        return live.length === s.panels.length ? s : { panels: live };
-      });
+      prevTime = currentTime;
+      setDetailPanels((s) =>
+        s.panels.length === 0
+          ? s
+          : keepPanelsPresent(s, new Set(featuresAt(domain, currentTime).map((f) => f.id))),
+      );
     });
   }, [store]);
   // 増分 8E（設計書 §J.4 の結合点 #12）: **プロジェクトを開き直したら詳細パネルを全部閉じる。**
