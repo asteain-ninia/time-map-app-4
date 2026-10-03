@@ -1351,8 +1351,8 @@ describe('増分 8B — 継承先の板（N-09: 番号札・方角・面積で�
     expect(sentence).toContain(labels[1]!);
     expect(sentence).toContain('「target」として残り');
     // 下見に番号札が立つ。
-    expect(screen.getByTestId('knife-preview-tag-0').textContent).toBe('1');
-    expect(screen.getByTestId('knife-preview-tag-1').textContent).toBe('2');
+    expect(screen.getByTestId('knife-piece-tag-0').textContent).toBe('1');
+    expect(screen.getByTestId('knife-piece-tag-1').textContent).toBe('2');
     h.unmount();
   });
 });

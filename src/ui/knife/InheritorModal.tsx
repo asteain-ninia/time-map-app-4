@@ -197,11 +197,13 @@ export function InheritorModal(props: InheritorModalProps): JSX.Element {
               strokeWidth={strokeWidth}
             />
           ))}
-          {/* 番号札（V10 / N-09）。地図の下見と同じ番号を、同じ位置（片の内側）に描く。 */}
+          {/* 番号札（V10 / N-09）。地図の下見と同じ番号を、同じ位置（片の内側）に描く。
+              testid は `knife-preview-` で始めない ―― 既存の E2E が
+              `[data-testid^="knife-preview-"]` で片の path を数えている（T-1）。 */}
           {summaries.map((s, i) => (
             <text
               key={`tag-${String(i)}`}
-              data-testid={`knife-preview-tag-${String(i)}`}
+              data-testid={`knife-piece-tag-${String(i)}`}
               className="knife-preview__tag"
               x={s.labelPoint.lon}
               y={-s.labelPoint.lat}
