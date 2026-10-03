@@ -3173,6 +3173,21 @@ export function App(): JSX.Element {
       });
     });
   }, [store]);
+  // 増分 8E（設計書 §J.4 の結合点 #12）: **プロジェクトを開き直したら詳細パネルを全部閉じる。**
+  // 上の掃除は「その id の地物がドメインから消えたか」で見るので、**同じファイルを開き直す**と
+  // id が同じまま残り、前のプロジェクトのパネルが新しいプロジェクトの上に浮いたままになって
+  // いた（実機の探針で確認）。読み込み・新規で必ず動く印（`projectLoadNonce`。一覧が先頭へ
+  // 戻るのと同じ印）で閉じる。パネルは「前のプロジェクトの一時状態」であり、開き直しで
+  // 捨てる側に属する（教訓 5.2 全経路で破棄）。
+  useEffect(() => {
+    let prevNonce = store.getState().projectLoadNonce;
+    return store.subscribe(() => {
+      const nonce = store.getState().projectLoadNonce;
+      if (nonce === prevNonce) return;
+      prevNonce = nonce;
+      setDetailPanels((s) => (s.panels.length === 0 ? s : EMPTY_DETAIL_PANELS));
+    });
+  }, [store]);
   // LIVE feature lookup for the detail panels (resolves at the current time, fresh
   // per call — never a stale capture, 教訓 5.6 / 単一真実源 5.29).
   const detailFeatureLookup = useMemo<PropertyFeatureLookup>(
@@ -4063,6 +4078,8 @@ export function App(): JSX.Element {
             <DetailPanels
               state={detailPanels}
               featureLookup={detailFeatureLookup}
+              // 増分 8E（結合点 #12）: 年を動かしてその地物が無くなったら、その場で消す。
+              liveStore={store}
               assetResolver={NO_ASSET_RESOLVER}
               // FR-98: the LIVE detail document, resolved at the CURRENT time per call
               // (the SAME「現在時刻で都度解決」discipline detailFeatureLookup uses —
