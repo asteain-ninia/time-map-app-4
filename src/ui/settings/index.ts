@@ -22,6 +22,14 @@ export {
   CONFIRM_STATUS,
 } from './useSettingsDialog';
 
+// 増分 8D: 保存とバックアップ（自動保存の間隔・世代数。アプリ側の設定ファイルを読み書きする）。
+export {
+  useBackupSettings,
+  validateBackupDraft,
+  type BackupSettingsPort,
+  type UseBackupSettings,
+} from './useBackupSettings';
+
 export {
   type SettingsValidationError,
   type ValidationResult,
@@ -52,4 +60,5 @@ export {
   APP_FIELD_STRINGS,
   BASEMAP_STRINGS,
   PALETTE_STRINGS,
+  BACKUP_SETTINGS_STRINGS,
 } from './strings';

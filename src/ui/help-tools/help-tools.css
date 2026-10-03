@@ -303,3 +303,22 @@
   color: #5b6573;
   overflow-wrap: anywhere;
 }
+
+/* 増分 8D: 設定の「保存とバックアップ」。［適用］と「適用しました」を 1 行に並べる。 */
+.settings-backup__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 12px;
+}
+
+.settings-backup__applied {
+  font-size: 13px;
+  color: #1b5e20;
+}
+
+.settings-field__error {
+  margin: -6px 0 10px;
+  font-size: 13px;
+  color: #842029;
+}

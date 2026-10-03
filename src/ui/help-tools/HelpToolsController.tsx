@@ -43,7 +43,7 @@ import {
   formatTimestamp,
 } from '../shell/index';
 import { SettingsDialog } from '../settings/index';
-import type { SettingsStorePort } from '../settings/index';
+import type { BackupSettingsPort, SettingsStorePort } from '../settings/index';
 import {
   DIAGNOSTICS_STRINGS,
   LOG_LEVEL,
@@ -205,11 +205,15 @@ export function HelpToolsController(props: HelpToolsControllerProps): JSX.Elemen
           ? { commitPaletteChange: props.onCommitPaletteChange }
           : {}),
       };
+      // 増分 8D: 「保存とバックアップ」の節は型付き IPC（アプリ側の設定と世代の一覧）を
+      // 直に使う。preload が公開していない環境（jsdom の単体試験）では渡さない。
+      const backupPort = (globalThis as { timeMapApi?: BackupSettingsPort }).timeMapApi;
       return (
         <SettingsDialog
           store={settingsPort}
           canEdit={editable}
           onClose={close}
+          backupPort={backupPort}
           {...(props.onRequestBasemapReplace !== undefined
             ? { onRequestBasemapReplace: props.onRequestBasemapReplace }
             : {})}

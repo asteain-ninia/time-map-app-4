@@ -16,6 +16,8 @@ export const SETTINGS_STRINGS = {
   tabProject: 'プロジェクト設定',
   /** Tab label for app-wide settings (FR-110). */
   tabApp: 'アプリ全体設定',
+  /** 増分 8D: 保存とバックアップの節（G-5）。 */
+  tabBackup: '保存とバックアップ',
   /** Hint shown under the project tab clarifying the save context (教訓 5.36). */
   projectScopeHint:
     'これらの設定はプロジェクトごとに保存されます（変更すると未保存状態になります）。',
@@ -78,6 +80,29 @@ export const PALETTE_STRINGS = {
   add: '色を追加',
   remove: '削除',
   empty: 'カスタムパレットは空です。',
+} as const;
+
+/**
+ * 「保存とバックアップ」の節（増分 8D / 設計書 G-5・FR-108、V12 の合格条件④）。
+ * 自動保存の間隔と残す世代の数。アプリ全体に効く（どのプロジェクトでも同じ）。
+ */
+export const BACKUP_SETTINGS_STRINGS = {
+  hint: 'これらの設定はアプリ全体に効きます（どのプロジェクトでも共通）。［適用］ですぐに効きます。',
+  interval: '自動保存の間隔（分）',
+  generations: '残す世代の数',
+  apply: '適用',
+  applied: '適用しました。',
+  intervalInvalid: '自動保存の間隔は 1〜120 分の整数で入れてください。',
+  generationsInvalid: '残す世代の数は 1〜100 の整数で入れてください。',
+  /** いまの世代の数（V14 の入口）。 */
+  generationCount: (sourceName: string, count: number): string =>
+    `${sourceName} の世代はいま ${String(count)} 個あります（ファイル →「以前の保存から開く」で戻せます）。`,
+  generationNone: '戻せる世代はまだありません。保存するたびに 1 世代ずつ残ります。',
+  generationLoading: '世代を数えています…',
+  generationUnavailable: '世代の数を読めませんでした。',
+  /** 自動保存がいつ動くか（静かに待機していることを先に言う。状態行の断り書きと同じ趣旨）。 */
+  autoSaveNote:
+    '自動保存は、保存先が決まっていて上書きを一度確かめたファイルにだけ、変更があるときに書きます。',
 } as const;
 
 /** App-wide field labels (FR-110). */

@@ -30,7 +30,13 @@ import {
   useSettingsDialog,
 } from './useSettingsDialog';
 import {
+  type BackupSettingsPort,
+  type UseBackupSettings,
+  useBackupSettings,
+} from './useBackupSettings';
+import {
   APP_FIELD_STRINGS,
+  BACKUP_SETTINGS_STRINGS,
   BASEMAP_STRINGS,
   PALETTE_STRINGS,
   PROJECT_FIELD_STRINGS,
@@ -40,12 +46,18 @@ import {
 const SETTINGS_TAB = {
   Project: 'project',
   App: 'app',
+  /** 増分 8D: 保存とバックアップ（G-5。自動保存の間隔・世代数）。 */
+  Backup: 'backup',
 } as const;
 
 type SettingsTab = (typeof SETTINGS_TAB)[keyof typeof SETTINGS_TAB];
 
 /** The scope tabs in traversal order (for the WAI-ARIA arrow-key navigation). */
-const SETTINGS_TAB_ORDER: readonly SettingsTab[] = [SETTINGS_TAB.Project, SETTINGS_TAB.App];
+const SETTINGS_TAB_ORDER: readonly SettingsTab[] = [
+  SETTINGS_TAB.Project,
+  SETTINGS_TAB.App,
+  SETTINGS_TAB.Backup,
+];
 
 /** Palette themes offered for the default-theme select (single source, 教訓 5.19). */
 const PALETTE_THEME_OPTIONS = [DEFAULT_PALETTE_THEME] as const;
@@ -69,11 +81,17 @@ export interface SettingsDialogProps {
    * absent the control is disabled. This dialog never performs the replacement.
    */
   readonly onRequestBasemapReplace?: (() => void) | undefined;
+  /**
+   * 「保存とバックアップ」の節が使う口（増分 8D）。`window.timeMapApi` の
+   * `readAppPrefs` / `writeAppPrefs` / `listBackups`。無ければ節は読み取り不能の案内を出す。
+   */
+  readonly backupPort?: BackupSettingsPort | undefined;
 }
 
 export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
-  const { store, onClose, canEdit, onRequestBasemapReplace } = props;
+  const { store, onClose, canEdit, onRequestBasemapReplace, backupPort } = props;
   const dialog = useSettingsDialog(store, canEdit);
+  const backup = useBackupSettings(backupPort);
   const [tab, setTab] = useState<SettingsTab>(SETTINGS_TAB.Project);
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
@@ -84,10 +102,20 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
   }, [dialog, onClose]);
 
   const saveAndClose = useCallback(() => {
+    // 増分 8D: 「保存とバックアップ」の下書きが打ちかけで変わっていれば、［保存］でも
+    // 一緒に書く（［適用］を押し忘れた変更を黙って捨てない）。値が範囲外ならその節を開いて
+    // 理由を出し、何も書かずに留まる。
+    if (backup.dirty && backup.validate().length > 0) {
+      setTab(SETTINGS_TAB.Backup);
+      void backup.apply();
+      return;
+    }
     const result = dialog.confirm();
     // Stay open on rejection so the user can fix the value (errors persist, 教訓 5.12).
-    if (result.status !== 'rejected') onClose();
-  }, [dialog, onClose]);
+    if (result.status === 'rejected') return;
+    if (backup.dirty) void backup.apply();
+    onClose();
+  }, [dialog, backup, onClose]);
 
   // Focus trap + Esc (受け入れ基準 3 / 6: モーダル離脱の全経路でドラフト破棄). The
   // trap logic is the shared a11y helper (教訓 5.13 単一の真実源).
@@ -161,6 +189,18 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
           >
             {SETTINGS_STRINGS.tabApp}
           </button>
+          <button
+            type="button"
+            role="tab"
+            id="settings-tab-backup"
+            aria-controls="settings-panel-backup"
+            aria-selected={tab === SETTINGS_TAB.Backup}
+            data-testid="settings-tab-backup"
+            onClick={() => setTab(SETTINGS_TAB.Backup)}
+            onKeyDown={onTabKeyDown}
+          >
+            {SETTINGS_STRINGS.tabBackup}
+          </button>
         </div>
 
         {/* Rejection banner (FR-115). Persists until re-confirm / cancel (教訓 5.12). */}
@@ -186,6 +226,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
             hidden={tab !== SETTINGS_TAB.Project}
           />
           <AppTab dialog={dialog} hidden={tab !== SETTINGS_TAB.App} />
+          <BackupTab backup={backup} hidden={tab !== SETTINGS_TAB.Backup} />
         </div>
 
         <footer className="settings-dialog__footer">
@@ -614,6 +655,122 @@ function AppTab(props: {
         />
         {APP_FIELD_STRINGS.showFirstRunGuide}
       </label>
+    </section>
+  );
+}
+
+// --- 保存とバックアップ（増分 8D / 設計書 G-5・FR-108、V12 の合格条件④）---------------
+
+function generationText(backup: UseBackupSettings): string {
+  const g = backup.generations;
+  switch (g.kind) {
+    case 'loading':
+      return BACKUP_SETTINGS_STRINGS.generationLoading;
+    case 'unavailable':
+      return BACKUP_SETTINGS_STRINGS.generationUnavailable;
+    case 'ready':
+      return g.count === 0 || g.sourceName === null
+        ? BACKUP_SETTINGS_STRINGS.generationNone
+        : BACKUP_SETTINGS_STRINGS.generationCount(g.sourceName, g.count);
+    default: {
+      const never: never = g;
+      return never;
+    }
+  }
+}
+
+/**
+ * 自動保存の間隔と残す世代の数。**アプリ全体の設定**なので「読むだけ」でも変えられる
+ * （アプリ全体設定タブと同じ扱い。K-6 はプロジェクト設定だけを止める）。
+ * ［適用］はこの節だけをその場で書き、ダイアログは閉じない。
+ */
+function BackupTab(props: {
+  readonly backup: UseBackupSettings;
+  readonly hidden: boolean;
+}): JSX.Element {
+  const { backup, hidden } = props;
+  const loading = backup.saved === null;
+  const errorFor = (field: 'autoSaveIntervalMinutes' | 'backupGenerations'): string | undefined =>
+    backup.errors.find((e) => e.field === field)?.message;
+  const intervalError = errorFor('autoSaveIntervalMinutes');
+  const generationsError = errorFor('backupGenerations');
+  return (
+    <section
+      className="settings-section settings-section--backup"
+      data-testid="settings-backup"
+      role="tabpanel"
+      id="settings-panel-backup"
+      aria-labelledby="settings-tab-backup"
+      hidden={hidden}
+    >
+      <p className="settings-section__hint">{BACKUP_SETTINGS_STRINGS.hint}</p>
+
+      <label>
+        {BACKUP_SETTINGS_STRINGS.interval}
+        <input
+          type="number"
+          min={1}
+          max={120}
+          step={1}
+          data-testid="settings-backup-interval"
+          aria-label={BACKUP_SETTINGS_STRINGS.interval}
+          aria-invalid={intervalError !== undefined}
+          value={backup.intervalDraft}
+          disabled={loading}
+          onChange={(e) => backup.setIntervalDraft(e.target.value)}
+        />
+      </label>
+      {intervalError !== undefined && (
+        <p className="settings-field__error" role="alert" data-testid="settings-backup-interval-error">
+          {intervalError}
+        </p>
+      )}
+
+      <label>
+        {BACKUP_SETTINGS_STRINGS.generations}
+        <input
+          type="number"
+          min={1}
+          max={100}
+          step={1}
+          data-testid="settings-backup-generations"
+          aria-label={BACKUP_SETTINGS_STRINGS.generations}
+          aria-invalid={generationsError !== undefined}
+          value={backup.generationsDraft}
+          disabled={loading}
+          onChange={(e) => backup.setGenerationsDraft(e.target.value)}
+        />
+      </label>
+      {generationsError !== undefined && (
+        <p
+          className="settings-field__error"
+          role="alert"
+          data-testid="settings-backup-generations-error"
+        >
+          {generationsError}
+        </p>
+      )}
+
+      <div className="settings-backup__actions">
+        <button
+          type="button"
+          data-testid="settings-backup-apply"
+          disabled={loading}
+          onClick={() => void backup.apply()}
+        >
+          {BACKUP_SETTINGS_STRINGS.apply}
+        </button>
+        {backup.appliedOnce && !backup.dirty && (
+          <span className="settings-backup__applied" data-testid="settings-backup-applied">
+            {BACKUP_SETTINGS_STRINGS.applied}
+          </span>
+        )}
+      </div>
+
+      <p className="settings-section__hint" data-testid="settings-backup-generation-count">
+        {generationText(backup)}
+      </p>
+      <p className="settings-section__hint">{BACKUP_SETTINGS_STRINGS.autoSaveNote}</p>
     </section>
   );
 }
