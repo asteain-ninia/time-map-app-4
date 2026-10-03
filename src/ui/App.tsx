@@ -3631,6 +3631,8 @@ export function App(): JSX.Element {
   // 増分 8C: `U` で「測る」を持つ／終える（設計書 §I.2 / §E.1 V15 の 1 手目）。左の
   // レールの「📏 測る」と同じ切り替え（`SurveyControls` の onClick と同じ 2 つの操作）を
   // 通す。メニューにも載せてある（結合点 #10）。読むだけでも効く（編集の関門に載せない）。
+  // 打鍵は **地図に焦点があるときだけ** 効き、押しっぱなしでは繰り返さない（増分 8C の手直し。
+  // 関門は打鍵の割り振りの側 `shell/map-focus-scope.ts`。メニューから選べば焦点に依らず効く）。
   useEffect(() => {
     registry.register(COMMAND_ID.ToolsSurvey, {
       run: () => {
