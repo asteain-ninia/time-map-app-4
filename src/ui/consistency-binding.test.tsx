@@ -280,10 +280,13 @@ describe('createLiveAddBinding', () => {
   // identifier — for UNNAMED faces (the default: the add form commits an empty
   // name). Root cause: displayNamesAt used `byId.get(id) ?? String(id)`, and the
   // `??` only fires when the id is ABSENT; a present-but-empty name ('') returned
-  // '' and never fell back. The conflict's displayName MUST carry an identifier
-  // (the feature id, mirroring 地物一覧's name→id rule) so FR-63 priority
-  // selection is disambiguatable. This drives the REAL U13 pipeline.
-  it('conflict display names fall back to the feature id when the name is EMPTY (FR-62)', () => {
+  // '' and never fell back. This drives the REAL U13 pipeline.
+  //
+  // 増分 8E（N-18）: 空白にしないための代わりの呼び名は **内部 ID ではなくなった**。以前は
+  // `f-a` のような id を出していたが、利用者には何の手がかりにもならない（設計書 §H.1 の
+  // 「内部語を出さない」）。いまは「名前のない面（1000年に作成）」と呼ぶ。2 件が同じ呼び名に
+  // なりうるのは、板の側の色見本（地図の塗りの色）で見分ける。
+  it('conflict display names are never blank and never the internal id when the name is EMPTY (FR-62 / N-18)', () => {
     let root = emptyProject();
     const binding = createLiveAddBinding({
       getRoot: () => root,
@@ -305,12 +308,14 @@ describe('createLiveAddBinding', () => {
     expect(second.status).toBe(PROCESS_STATUS.ConflictsPending);
     if (second.status !== PROCESS_STATUS.ConflictsPending) return;
     const conflict = second.conflicts[0]!;
-    // Neither side renders blank: both carry the feature id as the fallback label.
+    // Neither side renders blank, and neither is the internal id.
     expect(conflict.a.displayName.trim().length).toBeGreaterThan(0);
     expect(conflict.b.displayName.trim().length).toBeGreaterThan(0);
-    expect([conflict.a.displayName, conflict.b.displayName].sort()).toEqual(
-      ['f-a', 'f-b'].sort(),
-    );
+    expect([conflict.a.displayName, conflict.b.displayName]).toEqual([
+      '名前のない面（1000年に作成）',
+      '名前のない面（1000年に作成）',
+    ]);
+    expect(`${conflict.a.displayName}${conflict.b.displayName}`).not.toMatch(/f-[ab]/);
   });
 
   it('rejects a split whose inheritor is not effective at the anchor time as a TIME violation', () => {
