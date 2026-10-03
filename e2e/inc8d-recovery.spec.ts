@@ -24,8 +24,9 @@
 // 1 つなので、戻したあとの保存を「別の名前の新しいファイルができた」で見分けるために、
 // 2 回目は別の行き先で起動し直す。
 //
-// 保存の完了は **世代のファイルが新しく 1 つできたこと** で待つ（状態行の「保存しました」は
-// 前回の文が残っているので、待ちの印にならない。固定時間の待ちも使わない）。
+// 保存の完了は **世代のファイルが新しく 1 つできたこと** と **未保存の印が消えたこと** で待つ
+// （状態行の「保存しました」は前回の文が残っているので、待ちの印にならない。固定時間の待ちも
+// 使わない）。世代の数を数えるときは、間引きが終わるまで `expect.poll` で待つ。
 
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -56,6 +57,9 @@ async function saveAndWaitForNewBackup(page: Page, target: string): Promise<void
   await expect
     .poll(() => backupsIn(dir, base).some((name) => !before.has(name)), { timeout: 15_000 })
     .toBe(true);
+  // 新しい世代ができた時点では、まだ古い世代の間引きと描画プロセスへの返事が終わっていない
+  // （`runBackup` は作ってから消す）。未保存の印が消える ＝ 保存の返事が届いた、まで待つ。
+  await expect(page.getByTestId('app-identity-dirty')).toHaveCount(0);
 }
 
 /** ツール メニューから設定を開く。 */
@@ -116,9 +120,12 @@ async function applyBackupSettings(page: Page, interval: string, generations: st
   await page.getByTestId('settings-backup-interval').fill(interval);
   await page.getByTestId('settings-backup-generations').fill(generations);
   await page.getByTestId('settings-backup-apply').click();
+  // 世代数を下げたときは必ず確認が出る（司令塔の決定 2-3）。上げたときは出ずにそのまま書ける。
   const confirm = page.getByTestId('settings-backup-shrink-yes');
+  const applied = page.getByTestId('settings-backup-applied');
+  await expect(confirm.or(applied)).toBeVisible();
   if (await confirm.isVisible()) await confirm.click();
-  await expect(page.getByTestId('settings-backup-applied')).toBeVisible();
+  await expect(applied).toBeVisible();
   await page.getByTestId('settings-cancel').click();
   await expect(page.getByTestId('settings-dialog')).toHaveCount(0);
 }
@@ -244,7 +251,8 @@ test.describe('増分 8D: 復旧と設定（V14・V12 の④）', () => {
     const original = join(workDir, 'capped.gimoza');
     const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: original } });
     try {
-      // 残す世代を 3 にする（ファイルを開く前なので、消える世代は無く確認も出ない）。
+      // 残す世代を 3 にする（ファイルを開く前でも、下げたので「次に保存したファイルの古い世代が
+      // …消えます」の確認が出る。司令塔の決定 2-3）。
       await applyBackupSettings(page, '5', '3');
       await saveGenerations(page, original, '世代その1', ['世代その2', '世代その3']);
       expect(backupsIn(workDir, 'capped.gimoza')).toHaveLength(3); // 上限に着いた
@@ -466,6 +474,11 @@ test.describe('増分 8D: 復旧と設定（V14・V12 の④）', () => {
           await interval.fill('10');
           await page.getByTestId('settings-backup-generations').fill('2');
           await page.getByTestId('settings-backup-apply').click();
+          // 下げたので、開いているファイルが無くても確認が出る（司令塔の決定 2-3）。
+          await expect(page.getByTestId('settings-backup-shrink-confirm')).toContainText(
+            '次に保存したファイルの古い世代が',
+          );
+          await page.getByTestId('settings-backup-shrink-yes').click();
           await expect(page.getByTestId('settings-backup-applied')).toBeVisible();
           await page.getByTestId('settings-cancel').click();
 
@@ -477,7 +490,9 @@ test.describe('増分 8D: 復旧と設定（V14・V12 の④）', () => {
           await saveAndWaitForNewBackup(page, target);
           await renameProject(page, '3 回目');
           await saveAndWaitForNewBackup(page, target);
-          expect(backupsIn(workDir, 'gens.gimoza')).toHaveLength(2);
+          // 保存は新しい世代を **先に** 作ってから古いものを間引くので、新しい世代が現れた瞬間は
+          // まだ 3 個ある。間引きが終わるのを待って数える（再検証 2-2。再試行なしで毎回落ちていた）。
+          await expect.poll(() => backupsIn(workDir, 'gens.gimoza')).toHaveLength(2);
         } finally {
           await app.close();
         }
