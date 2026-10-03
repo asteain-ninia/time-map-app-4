@@ -33,6 +33,14 @@ import {
 } from '../../domain/basemap/index';
 import type { BaseMapReference } from '../../domain/persistence/index';
 
+import {
+  BASEMAP_ASPECT_CHOICE,
+  BASEMAP_ASPECT_STRINGS,
+  basemapAspectQuestion,
+  type BasemapAspectChoice,
+  type BasemapAspectQuestion,
+} from './basemap-aspect';
+
 /**
  * The base-map `source` marker stamped when a PRESET / empty project adopts a user
  * image. It only has to be a NON-empty, NON-preset string so the domain's
@@ -58,13 +66,30 @@ export const BASEMAP_REPLACE_OUTCOME = {
 export type BasemapReplaceOutcomeKind =
   (typeof BASEMAP_REPLACE_OUTCOME)[keyof typeof BASEMAP_REPLACE_OUTCOME];
 
+/**
+ * 差し替えた画像の縦横比をどう扱ったか（増分 8E / G-10）。
+ *   - `adequate`: もともと 2:1 だった（聞いていない）
+ *   - `corrected`: 余白を足して 2:1 にしてから使った
+ *   - `kept`: 2:1 でないまま使った（利用者がそう選んだ）
+ *   - `unchecked`: 縦横比を聞く口が渡されなかった（単体試験など。これまでどおりの経路）
+ */
+export type BasemapAspectHandling = 'adequate' | 'corrected' | 'kept' | 'unchecked';
+
 export type BasemapReplaceOutcome =
   | {
       readonly status: typeof BASEMAP_REPLACE_OUTCOME.Applied;
       readonly source: string;
       readonly meta: EquirectangularMeta;
+      /** 縦横比の扱い（増分 8E）。 */
+      readonly aspect: BasemapAspectHandling;
+      /** 2:1 でなかったときの比の書き方（「3:2」）。2:1 なら null。 */
+      readonly ratioLabel: string | null;
     }
-  | { readonly status: typeof BASEMAP_REPLACE_OUTCOME.Cancelled }
+  | {
+      readonly status: typeof BASEMAP_REPLACE_OUTCOME.Cancelled;
+      /** 縦横比の板で［やめる］を選んだ（増分 8E）。画像の選択を閉じただけなら付かない。 */
+      readonly atAspect?: true;
+    }
   | {
       readonly status: typeof BASEMAP_REPLACE_OUTCOME.Rejected;
       readonly reason: BaseMapImageRejection;
@@ -117,6 +142,23 @@ export interface BasemapReplacePorts {
    * both verdicts without a DOM.
    */
   readonly decodeProbe?: (bytes: Uint8Array, mimeType: string) => Promise<boolean>;
+  /**
+   * 2:1 でない画像のときに **利用者に聞く** 口（増分 8E / G-10。設計書 §F の「この画像は
+   * 3:2 です。2:1 に補正しますか／このまま使いますか」）。渡されなければ聞かずにそのまま
+   * 使う（これまでどおり。単体試験の既定）。
+   */
+  readonly confirmAspect?: (question: BasemapAspectQuestion) => Promise<BasemapAspectChoice>;
+  /**
+   * 「補正する」と答えられたときに、画像に余白を足して 2:1 にする口。null を返したら
+   * 補正できなかったとして差し替えを中止する。生きた画面では `padImageToTarget` を渡す。
+   */
+  readonly correctImage?: (
+    bytes: Uint8Array,
+    mimeType: string,
+    target: { readonly widthPx: number; readonly heightPx: number },
+  ) => Promise<Uint8Array | null>;
+  /** 補正できなかったときの知らせの文（FR-115）。 */
+  readonly correctFailedNotice?: string;
 }
 
 /**
@@ -194,6 +236,42 @@ export async function runBasemapReplace(
     };
   }
 
+  // 増分 8E（G-10）: **縦横比を見る**。地図は 2:1 で描くので、2:1 でない画像はそのまま
+  // 使うと引き伸ばされて歪む。聞く口があれば利用者に聞き、答えに従う（判定は
+  // `decideBasemapReplacement` の 1 本。比率と許し幅をここへ写さない）。
+  let adopted = bytes;
+  let aspect: BasemapAspectHandling = 'unchecked';
+  const question = basemapAspectQuestion(check);
+  if (ports.confirmAspect !== undefined) {
+    aspect = 'adequate';
+    if (question !== null) {
+      const choice = await ports.confirmAspect(question);
+      if (choice === BASEMAP_ASPECT_CHOICE.Cancel) {
+        return { status: BASEMAP_REPLACE_OUTCOME.Cancelled, atAspect: true };
+      }
+      aspect = 'kept';
+      if (choice === BASEMAP_ASPECT_CHOICE.Correct && question.corrected !== null) {
+        const fixed = await ports.correctImage?.(bytes, check.mimeType, question.corrected);
+        // 補正した結果も同じ関門に通す（寸法・容量の上限を超えていないか）。
+        const fixedCheck =
+          fixed === undefined || fixed === null
+            ? null
+            : (ports.checkBytes ?? checkBaseMapImageBytes)(fixed);
+        if (fixed === undefined || fixed === null || fixedCheck === null || !fixedCheck.ok) {
+          ports.notify?.(ports.correctFailedNotice ?? BASEMAP_REPLACE_REJECT_NOTICE);
+          return {
+            status: BASEMAP_REPLACE_OUTCOME.Rejected,
+            reason: fixedCheck !== null && !fixedCheck.ok
+              ? fixedCheck.reason
+              : BASE_MAP_IMAGE_REJECTION.Undecodable,
+          };
+        }
+        adopted = fixed;
+        aspect = 'corrected';
+      }
+    }
+  }
+
   const current = ports.getBaseMap();
   // META 保持 (座標契約 v2): 投影/範囲は現行のまま。swap-basemap.js と同義 — 画像のみ差替。
   const meta: EquirectangularMeta = current.meta;
@@ -201,6 +279,37 @@ export async function runBasemapReplace(
   // gets the user marker so resolveDisplayedBasemap paints the user map, not the preset.
   const source = isPresetOrEmpty(current.source) ? REPLACED_BASEMAP_SOURCE : current.source;
 
-  ports.applyReplacement({ source, meta, bytes });
-  return { status: BASEMAP_REPLACE_OUTCOME.Applied, source, meta };
+  ports.applyReplacement({ source, meta, bytes: adopted });
+  return {
+    status: BASEMAP_REPLACE_OUTCOME.Applied,
+    source,
+    meta,
+    aspect,
+    ratioLabel: question?.ratioLabel ?? null,
+  };
+}
+
+/**
+ * 差し替えの結末を状態行へ出す文（増分 8E / G-10。何が起きたか）。画像の選択を閉じただけ
+ * のとき・画像として読めなかったとき（こちらは従来どおり知らせの口で出す）は null。
+ */
+export function basemapReplaceResultText(
+  outcome: BasemapReplaceOutcome,
+): { readonly tone: 'success' | 'notice'; readonly text: string } | null {
+  switch (outcome.status) {
+    case BASEMAP_REPLACE_OUTCOME.Applied:
+      if (outcome.aspect === 'corrected') {
+        return { tone: 'success', text: BASEMAP_ASPECT_STRINGS.appliedCorrected };
+      }
+      if (outcome.aspect === 'kept' && outcome.ratioLabel !== null) {
+        return { tone: 'success', text: BASEMAP_ASPECT_STRINGS.appliedKept(outcome.ratioLabel) };
+      }
+      return { tone: 'success', text: BASEMAP_ASPECT_STRINGS.applied };
+    case BASEMAP_REPLACE_OUTCOME.Cancelled:
+      return outcome.atAspect === true
+        ? { tone: 'notice', text: BASEMAP_ASPECT_STRINGS.cancelled }
+        : null;
+    case BASEMAP_REPLACE_OUTCOME.Rejected:
+      return null;
+  }
 }

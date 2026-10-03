@@ -46,6 +46,8 @@ import { CommandRegistry } from './shell/commands';
 import './shell/shell.css';
 import './property/property.css';
 import './file-ops/file-ops.css';
+// 増分 8E（G-10）: 背景地図の縦横比を聞く板。
+import './file-ops/basemap-aspect.css';
 import './help-tools/help-tools.css';
 
 import { getCalendar } from '../domain/time/calendar';
@@ -4321,6 +4323,8 @@ export function App(): JSX.Element {
               onBaseMapImageChange={handleBaseMapImageChange}
               registerBasemapReplace={registerBasemapReplace}
               onModalOpenChange={setFileModalOpen}
+              // 増分 8E（G-10）: 背景地図の縦横比を聞く板も鍵盤の持ち主へ名乗る。
+              onBasemapAspectModalChange={toolModalChange('basemap-aspect')}
               onSaveStatusChange={setSaveStatus}
               statusMessages={statusMessageStore}
             />

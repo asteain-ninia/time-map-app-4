@@ -64,7 +64,14 @@ import {
   type SaveStatus,
 } from './save-context';
 import { dropLoadCommand } from './file-commands';
-import { runBasemapReplace } from './basemap-replace';
+import { basemapReplaceResultText, runBasemapReplace } from './basemap-replace';
+// 増分 8E（G-10）: 背景地図の縦横比を聞く板と、その置き場・補正。
+import {
+  BASEMAP_ASPECT_STRINGS,
+  BasemapAspectPromptStore,
+  padImageToTarget,
+} from './basemap-aspect';
+import { BasemapAspectDialog } from './BasemapAspectDialog';
 import { UnsavedWarningDialog } from './UnsavedWarningDialog';
 import { OverwriteConfirmDialog } from './OverwriteConfirmDialog';
 import { RepairDialog } from './RepairDialog';
@@ -148,6 +155,11 @@ export interface FileOpsControllerProps {
    * keyboard — otherwise Ctrl+Z / Delete leak THROUGH the warning to a domain op.
    */
   readonly onModalOpenChange?: (open: boolean) => void;
+  /**
+   * 背景地図の縦横比を聞く板（増分 8E / G-10）が出ている間「板が出ている」と名乗る口。
+   * 宿主（App）は鍵盤の持ち主の集合へ名前で足す（`toolModalChange('basemap-aspect')`）。
+   */
+  readonly onBasemapAspectModalChange?: (open: boolean) => void;
   /**
    * S7 出界図 結線 — forward the DISPLAYED project's base-map image bytes to the renderer
    * host (App caches them and hands them to the map renderer's `baseMap` getter). Called
@@ -1071,6 +1083,10 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // save/display bytes(R) — 資産とドメインの取り違え, next save writing R into B. A replace
   // that lands while the latch is held is dropped (no-op; the button re-dispatches).
   const registerBasemapReplace = props.registerBasemapReplace;
+  // 増分 8E（G-10）: 縦横比を聞く板と差し替えの手続きをつなぐ置き場（React の外）。
+  const aspectPromptRef = useRef<BasemapAspectPromptStore | null>(null);
+  aspectPromptRef.current ??= new BasemapAspectPromptStore();
+  const aspectPrompt = aspectPromptRef.current;
   useEffect(() => {
     if (api === null || registerBasemapReplace === undefined) return undefined;
     const run = (): Promise<void> =>
@@ -1100,11 +1116,21 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
           notify: (message: string) => {
             if (typeof globalThis.alert === 'function') globalThis.alert(message);
           },
+          // 増分 8E（G-10）: 2:1 でない画像は板で聞く。補正は余白を足して 2:1 にする。
+          confirmAspect: aspectPrompt.ask,
+          correctImage: padImageToTarget,
+          correctFailedNotice: BASEMAP_ASPECT_STRINGS.correctFailed,
         }),
-      ).then(() => undefined);
+      ).then((outcome) => {
+        // 増分 8E: 差し替えの結末を状態行へ（何が起きたか。補正したか・そのまま使ったか）。
+        const result = outcome === undefined ? null : basemapReplaceResultText(outcome);
+        if (result === null) return;
+        if (result.tone === 'success') statusMessagesRef.current?.success(result.text);
+        else statusMessagesRef.current?.notice(result.text);
+      });
     const cleanup = registerBasemapReplace(run);
     return typeof cleanup === 'function' ? cleanup : undefined;
-  }, [api, store, registerBasemapReplace, runExclusive]);
+  }, [api, store, registerBasemapReplace, runExclusive, aspectPrompt]);
 
   // --- supply the camera clamp range to U17 on every settings change (FR-10) -
   useEffect(() => {
@@ -1202,6 +1228,11 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
+      {/* 増分 8E（G-10）: 背景地図の縦横比を聞く板（document.body へのポータル）。 */}
+      <BasemapAspectDialog
+        store={aspectPrompt}
+        onModalChange={props.onBasemapAspectModalChange}
+      />
       {/* A1: 破壊的な判断を聞いている間は、背後のクリックを通さない層を敷く
           （教訓 5.14「重なる UI は入力を受ける層も同時に設計する」）。ダイアログの
           外を押しても何も起きない = 聞かれていることに答えるまで先へ進めない。
