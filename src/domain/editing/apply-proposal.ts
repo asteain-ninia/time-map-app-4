@@ -26,6 +26,7 @@ import {
   createAnchor,
   createAnchorSnapshot,
   type Anchor,
+  type AnchorSnapshot,
 } from '../anchor';
 import {
   RING_KIND,
@@ -419,7 +420,132 @@ export function applySplitProposal(
     calendar,
   );
 
+  // 5. **T より後ろの錨へも引き継ぐ**（統合 8A〜8D の継ぎ目の検証 2-3）。上の 3・4 は T の時点で
+  // 効いている錨しか触らないので、隣が分けた年より後ろに錨を持つと、そこで隣は切り口を持たず
+  // （片の切り口の点が隣の辺の途中に乗る T 字）、共有頂点も古い id のまま引く（id での共有が
+  // 切れ、あとで片の頂点を動かすと隣が付いてこない）。辺に足した頂点（増分 8A）と同じ歩き方
+  // （{@link carryIntoLaterAnchors}）で、後ろの錨へ同じ付け替えと切り口を入れる。
+  //
+  // **引き継ぐのは、継承先の形が分けた結果のままでいる間だけ**: 継承先の履歴に T より後ろの錨が
+  // あれば、そこからは記録どおり分ける前の形（古い id）に戻る（FR-55）。その先の隣まで新しい id
+  // にすると、今度はそこで継承先との共有が切れる。8A は押した地物の後ろの錨も書き換えるので
+  // この区切りが要らないが、分割は継承先の後ろの錨を書き換えないので、区切りで揃える。
+  const carryUntil =
+    existing === undefined ? null : nextEntryStartAfter(existing.history.series, anchorTime, calendar);
+  histories = carrySplitIntoLaterAnchors(
+    histories,
+    snapshot,
+    vertices,
+    anchorTime,
+    carryUntil,
+    calendar,
+  );
+
   return withHistories(root, histories);
+}
+
+/** 系列の中で、開始が `time` より後ろの最初の錨の開始（無ければ null）。 */
+function nextEntryStartAfter(
+  series: AnchorSeries,
+  time: TimePoint,
+  calendar: Calendar,
+): TimePoint | null {
+  let best: TimePoint | null = null;
+  for (const entry of series.entries) {
+    if (compareTime(entry.start, time, calendar) <= 0) continue;
+    if (best === null || compareTime(entry.start, best, calendar) < 0) best = entry.start;
+  }
+  return best;
+}
+
+/**
+ * 分割の「共有頂点の付け替え」（手順 3）と「共有辺の切り口」（手順 4）を、**T より後ろの錨**へ
+ * 引き継ぐ（統合 8A〜8D の継ぎ目の検証 2-3。歩き方は 8A の辺への挿入と同じ
+ * {@link carryIntoLaterAnchors}）。
+ *
+ * 各履歴の後ろの錨を古い順に見て、
+ * - **付け替え**: 写しが引く古い id のうち、その錨での体の座標が分けた結果の新しい体と同じもの
+ *   だけを新しい id へ付け替える（座標が違えば、記録された歴史でその頂点が動いている ―― 付け
+ *   替えると同じ id の体が年ごとに食い違う）。
+ * - **切り口**: 切られた辺の両端（古い id か新しい id）が続けて並ぶ輪・線へ、切り口の点を入れる
+ *   （T の時点と同じ {@link insertSeamsIntoFeature}）。
+ * - どちらも起きなかった錨で、その履歴は打ち切る（8A の「a と b が続く輪が無い錨で打ち切る」と
+ *   同じ。記録された歴史で境目が変わったので、それより先へは持ち込まない）。
+ * - `until`（継承先の次の錨の開始）から先へは持ち込まない（呼び出し側の注記）。
+ *
+ * 継承先そのものは触らない（継承先の後ろの錨は `until` で外れる。念のため id でも外す）。
+ * 純関数。変化の無い履歴は同じ値を返す。
+ */
+function carrySplitIntoLaterAnchors(
+  histories: readonly FeatureHistory[],
+  snapshot: SplitSnapshot,
+  splitVertices: readonly Vertex[],
+  anchorTime: TimePoint,
+  until: TimePoint | null,
+  calendar: Calendar,
+): FeatureHistory[] {
+  const remap = snapshot.vertexRemap;
+  const groups =
+    snapshot.sharedEdgeCuts.length === 0
+      ? []
+      : groupSharedEdgeCuts(snapshot.sharedEdgeCuts, splitVertices);
+  if (remap.size === 0 && groups.length === 0) return [...histories];
+  const newBodies = new Map<VertexId, Vertex>(splitVertices.map((v) => [v.id, v]));
+  const inheritorId = snapshot.inheritorFeatureId;
+  const seamEdges = groups.map((group) => ({
+    group,
+    startIds: endpointVariants(group.edgeStartVertexId, remap),
+    endIds: endpointVariants(group.edgeEndVertexId, remap),
+    seamIds: new Set(group.seams.map((s) => s.vertex.id)) as ReadonlySet<VertexId>,
+  }));
+
+  const rewrite = (snap: AnchorSnapshot): AnchorSnapshot | null | typeof STOP_CARRYING => {
+    // (a) 付け替え: 座標が同じ古い id だけ（A5 の作法: 地物ごとに自分の id を 1 度だけ歩く）。
+    const local = new Map<VertexId, VertexId>();
+    for (const f of snap.features) {
+      if (f.id === inheritorId) continue;
+      for (const id of referencedVertexIds(f)) {
+        const to = remap.get(id);
+        if (to === undefined || to === id || local.has(id)) continue;
+        const oldBody = getVertex(snap.vertices, id);
+        const newBody = newBodies.get(to);
+        if (oldBody === undefined || newBody === undefined) continue;
+        if (quantizedEqual(oldBody.coordinate, newBody.coordinate)) local.set(id, to);
+      }
+    }
+    let features: readonly Feature[] = snap.features;
+    let store: VertexStore = snap.vertices;
+    let touched = false;
+    if (local.size > 0) {
+      features = features.map((f) => (f.id === inheritorId ? f : repointThroughRemap(f, local)));
+      store = remapVertexStore(snap.vertices, splitVertices, features);
+      touched = true;
+    }
+    // (b) 切り口: 両端が続けて並ぶ輪・線へ（T の時点と同じ並べ方）。
+    for (const { group, startIds, endIds, seamIds } of seamEdges) {
+      const takes = features.some(
+        (f) => f.id !== inheritorId && featureHasSharedEdge(f, startIds, endIds, seamIds),
+      );
+      if (!takes) continue;
+      const withSeams = createVertexStore([
+        ...store.byId.values(),
+        ...group.seams.map((s) => s.vertex),
+      ]);
+      features = features.map((f) =>
+        f.id === inheritorId
+          ? f
+          : insertSeamsIntoFeature(f, startIds, endIds, group.seams, withSeams),
+      );
+      store = withSeams;
+      touched = true;
+    }
+    return touched ? createAnchorSnapshot(features, store) : STOP_CARRYING;
+  };
+
+  return histories.map((history) => {
+    const series = carryIntoLaterAnchors(history.series, anchorTime, until, calendar, rewrite);
+    return series === history.series ? history : { featureId: history.featureId, series };
+  });
 }
 
 /**
@@ -1743,23 +1869,55 @@ function applyEdgeInsertToHistories(
     // 無い錨に来たら、その履歴はそこで打ち切る（記録された歴史でその辺が変わったので、
     // それより先へは持ち込まない）。クリックで足した頂点は辺の上にあるので、後ろの年の形は
     // 変わらない（「保存は見ている年に効かせる」と矛盾しない）。
-    let carrying = true;
-    const entries = series.entries.map((entry) => {
-      if (!carrying) return entry;
-      if (compareTime(entry.start, anchorTime, calendar) <= 0) return entry;
-      const snap = entry.anchor.snapshot;
+    series = carryIntoLaterAnchors(series, anchorTime, null, calendar, (snap) => {
       if (!snap.features.some((f) => containersHaveEdge(f, startIds, endIds, seamIds))) {
-        carrying = false;
-        return entry;
+        return STOP_CARRYING;
       }
       const store = withBody(snap.vertices);
       const features = insertInto(snap.features, store);
-      if (features === null) return entry;
-      return withEntrySnapshot(entry, createAnchorSnapshot(features, store));
+      return features === null ? null : createAnchorSnapshot(features, store);
     });
-    if (entries.some((e, i) => e !== series.entries[i])) series = { entries };
     return series === history.series ? history : { featureId: history.featureId, series };
   });
+}
+
+/** {@link carryIntoLaterAnchors} の 1 錨ぶんの書き換えが「ここで打ち切る」と言うための印。 */
+const STOP_CARRYING = Symbol('stop-carrying');
+
+/**
+ * **T より後ろの錨へ、同じ書き換えを古い順に引き継ぐ**歩き方（増分 8A の手直しで辺に足した
+ * 頂点のために作り、統合の手直しで分割の切り口・頂点の付け替えにも使う。継ぎ目の検証 2-3）。
+ *
+ * - 開始が T より後ろ（`until` があればそれより前）の錨だけを、古い順に `rewrite` へ渡す。
+ * - `rewrite` は新しい写し（書き換える）・`null`（この錨は変えずに次へ）・{@link STOP_CARRYING}
+ *   （この錨から先へは持ち込まない ―― 記録された歴史でその辺・頂点が変わった）を返す。
+ * - 錨の開始・終わり・id は変えない（写しだけ差し替える）。変化が無ければ同じ系列を返す。
+ *
+ * 純関数。
+ */
+function carryIntoLaterAnchors(
+  series: AnchorSeries,
+  anchorTime: TimePoint,
+  until: TimePoint | null,
+  calendar: Calendar,
+  rewrite: (snapshot: AnchorSnapshot) => AnchorSnapshot | null | typeof STOP_CARRYING,
+): AnchorSeries {
+  let carrying = true;
+  const entries = series.entries.map((entry) => {
+    if (!carrying) return entry;
+    if (compareTime(entry.start, anchorTime, calendar) <= 0) return entry;
+    if (until !== null && compareTime(entry.start, until, calendar) >= 0) {
+      carrying = false;
+      return entry;
+    }
+    const next = rewrite(entry.anchor.snapshot);
+    if (next === STOP_CARRYING) {
+      carrying = false;
+      return entry;
+    }
+    return next === null ? entry : withEntrySnapshot(entry, next);
+  });
+  return entries.some((e, i) => e !== series.entries[i]) ? { entries } : series;
 }
 
 /** 地物の輪・線のうち、a–b の辺（向きは問わない）をまだ持っているものがあるか。 */
