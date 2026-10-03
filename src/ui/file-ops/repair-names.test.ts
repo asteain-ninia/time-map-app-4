@@ -9,10 +9,12 @@ import { describe, expect, it } from 'vitest';
 import { asFeatureId, type FeatureId } from '../../domain/ids';
 import {
   INCONSISTENCY,
+  REPAIR_OPTION,
+  repairOptionsFor,
   type DomainProject,
   type Inconsistency,
 } from '../../domain/persistence/index';
-import { describeInconsistency, INCONSISTENCY_LABELS } from './repair-flow';
+import { describeInconsistency, INCONSISTENCY_LABELS, repairOptionText } from './repair-flow';
 import { buildRepairNamer, repairTargetLabel } from './repair-names';
 
 /** 呼び名に要る形だけを持った地物（name・kind・id）。 */
@@ -99,6 +101,22 @@ describe('buildRepairNamer', () => {
     expect(describeInconsistency(inc, namer)).toBe(
       `${INCONSISTENCY_LABELS[INCONSISTENCY.OrphanHistory]}（対象: 持ち主の居ない歴史（中の地物: ラヴィエンド・ウィル同君王国、北州、名前のない面（1000年に作成） ほか 1 件））`,
     );
+  });
+
+  it('孤立した歴史を捨てる方法は「空」と言わず、中に何件の地物の記録があるかを言う（本体の取り込み）', () => {
+    const inc: Inconsistency = {
+      kind: INCONSISTENCY.OrphanHistory,
+      featureIds: [id('gone')],
+      featureNames: ['gone'],
+      detail: 'owner-feature-absent',
+    };
+    const drop = repairOptionsFor(inc).find((o) => o.id === REPAIR_OPTION.DropOrphanHistory);
+    expect(drop).toBeDefined();
+    const text = repairOptionText(drop!, inc, namer);
+    expect(text).toContain('持ち主の居ない歴史（中に 4 件の地物の記録）');
+    expect(text).not.toContain('空');
+    // 名前の引き先が無い呼び出しでも「空」とは言わない（U14 の文も直した）。
+    expect(repairOptionText(drop!)).not.toContain('空');
   });
 
   it('同じ名前の地物が並ぶときは作成年で見分ける（名前のない地物とは数えない）', () => {

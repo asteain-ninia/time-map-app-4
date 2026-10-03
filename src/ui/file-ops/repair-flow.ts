@@ -189,9 +189,30 @@ const DETAIL_TEXT: Readonly<Record<string, string>> = {
  * 修復方法の一覧が U14 の側で増えたり並び替わったりしても、画面が型で壊れないようにする
  * ため ―― 言い換えが要るものだけを部分的に持つ。
  */
-export function repairOptionText(option: RepairOption): string {
+export function repairOptionText(
+  option: RepairOption,
+  inc?: Inconsistency,
+  namer?: RepairNamer,
+): string {
+  // 孤立した歴史を「捨てる」方法は、中に何件の地物の記録があるかを言う（本体の取り込み）。
+  // 持ち主が居ないだけで中身はあるので、件数を見せないと「空のものを片付ける」と読める。
+  if (option.id === REPAIR_OPTION.DropOrphanHistory && inc !== undefined && namer !== undefined) {
+    const members = inc.featureIds.reduce(
+      (sum, id) => sum + (namer.historyMembers(id)?.length ?? 0),
+      0,
+    );
+    return REPAIR_OPTION_TEXT.dropOrphanHistoryWithCount(members);
+  }
   return REPAIR_OPTION_TEXT_OVERRIDES[option.id] ?? option.label;
 }
+
+/** 件数つきの方法の文（{@link repairOptionText}）。 */
+export const REPAIR_OPTION_TEXT = {
+  dropOrphanHistoryWithCount: (members: number): string =>
+    members === 0
+      ? '持ち主の居ない、中身の無い歴史を読み込みから除外します。'
+      : `持ち主の居ない歴史（中に ${String(members)} 件の地物の記録）を、中身ごと読み込みから除外します（中の地物も消えます）。`,
+} as const;
 
 const REPAIR_OPTION_TEXT_OVERRIDES: Partial<Record<RepairOptionId, string>> = {
   [REPAIR_OPTION.ReconcileChildIds]:

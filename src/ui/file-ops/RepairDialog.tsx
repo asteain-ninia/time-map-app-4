@@ -157,7 +157,7 @@ export function RepairDialog(props: RepairDialogProps): JSX.Element {
                       data-testid={`repair-fix-${String(row.index)}`}
                     >
                       {REPAIR_STRINGS.fixLabel}
-                      {repairOptionText(single)}
+                      {repairOptionText(single, row.inconsistency, namer)}
                     </p>
                   ) : (
                     <fieldset className="repair-row__options">
@@ -170,11 +170,11 @@ export function RepairDialog(props: RepairDialogProps): JSX.Element {
                             type="radio"
                             name={`repair-${String(row.index)}`}
                             data-testid={`repair-option-${String(row.index)}-${option.id}`}
-                            aria-label={repairOptionText(option)}
+                            aria-label={repairOptionText(option, row.inconsistency, namer)}
                             checked={choices.get(row.index) === option.id}
                             onChange={() => choose(row.index, option.id)}
                           />
-                          {repairOptionText(option)}
+                          {repairOptionText(option, row.inconsistency, namer)}
                         </label>
                       ))}
                     </fieldset>

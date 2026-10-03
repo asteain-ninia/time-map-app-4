@@ -157,7 +157,9 @@ const LABELS: Readonly<Record<RepairOptionId, string>> = {
   [REPAIR_OPTION.DropAggregateFeature]: '下位領域と一致しない集約地物を除外し、下位を最上位化します。',
   [REPAIR_OPTION.NormalizeSeries]: '錨を時間順に整列し、重複・矛盾を解消します。',
   [REPAIR_OPTION.DropOrphanHistory]:
-    '所有する地物が存在しない歴史（空のタイムライン）を読み込みから除外します。',
+    // 「空のタイムライン」と呼んでいたが、持ち主が居ないだけで中には地物の記録が残っている
+    // （中身のある歴史を「空」と言うのは事実と違う）。本体の取り込みで言い直した。
+    '持ち主の居ない歴史を、中に残っている地物の記録ごと読み込みから除外します（中の地物も消えます）。',
   [REPAIR_OPTION.MaterializeOrphanHistory]:
     '持ち主の居ない歴史の中に残っている地物を、全部の年ぶん地物ごとの歴史へ移します（地物は削除しません）。',
   [REPAIR_OPTION.DropDuplicateOwnerHistories]:
