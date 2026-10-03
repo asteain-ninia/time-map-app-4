@@ -23,7 +23,14 @@
 // DYNAMIC path renders its own list here with a mirrored dismiss effect (Escape /
 // outside-pointerdown), clearly the transitional shape.
 
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type MouseEvent as ReactMouseEvent,
+} from 'react';
 import { useStore } from 'zustand';
 
 import { ContextMenu, type ContextMenuItem } from '../shell/ContextMenu';
@@ -261,6 +268,65 @@ export function MapContextMenu<S>(props: MapContextMenuProps<S>): JSX.Element | 
   );
 }
 
+/** 二重クリックとみなす間隔（ms）と、2 回目の押した場所のずれの許容（px）。OS の既定に合わせる。 */
+const DOUBLE_CLICK_MS = 500;
+const DOUBLE_CLICK_SLOP_PX = 4;
+
+/**
+ * **項目を二重クリックしたときの 2 回目を飲み込む**（増分 8C の手直し / 反証 #4）。
+ *
+ * 項目は 1 回目のクリックで実行してメニューを閉じるので、2 回目は **閉じたあとの地図** に
+ * 落ちる。測っている間は地図の左クリックが測量の点になるので、「この線を消す」を二重クリック
+ * すると線が消えたうえに始点が置かれ、始点を置いた途中は大域の打鍵が止まる（`U` も効かない）。
+ * 1 回目と同じ場所（{@link DOUBLE_CLICK_SLOP_PX} 以内）で {@link DOUBLE_CLICK_MS} 以内に来た
+ * 次の左ボタンの押下を、その押下が起こす離し・クリックごと捕捉段で止める。条件に合わない押下が
+ * 来たら、それは飲まずに見張りをやめる（関係のないクリックを奪わない）。鍵盤で項目を押した
+ * （`detail` が 0）ときは見張らない。
+ */
+function swallowSecondClickOf(e: ReactMouseEvent<HTMLElement>): void {
+  if (e.detail === 0) return;
+  const maybeView = e.currentTarget.ownerDocument.defaultView;
+  if (maybeView === null) return;
+  const view: Window = maybeView;
+  const x = e.clientX;
+  const y = e.clientY;
+  const startedAt = e.timeStamp;
+  let swallowing = false;
+  const stop = (ev: Event): void => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  };
+  const onDown = (ev: PointerEvent): void => {
+    const near =
+      Math.abs(ev.clientX - x) <= DOUBLE_CLICK_SLOP_PX &&
+      Math.abs(ev.clientY - y) <= DOUBLE_CLICK_SLOP_PX;
+    // 2 回目を飲み込み終えたあとの押下（3 回目）や、条件に合わない押下は通して見張りをやめる。
+    if (swallowing || ev.button !== 0 || !near || ev.timeStamp - startedAt > DOUBLE_CLICK_MS) {
+      cleanup();
+      return;
+    }
+    swallowing = true;
+    stop(ev);
+  };
+  // 飲み込んだ押下に続く離し・クリック・二重クリックの知らせも止める。二重クリックの知らせは
+  // クリックと同じ流れの中で続けて来るので、クリックのあと次の順番が回ってきたら見張りをやめる。
+  const onFollow = (ev: Event): void => {
+    if (!swallowing) return;
+    stop(ev);
+    if (ev.type === 'click') view.setTimeout(() => cleanup(), 0);
+    if (ev.type === 'dblclick') cleanup();
+  };
+  const FOLLOW = ['pointerup', 'mousedown', 'mouseup', 'click', 'dblclick'] as const;
+  const timer = view.setTimeout(() => cleanup(), DOUBLE_CLICK_MS + 500);
+  function cleanup(): void {
+    view.clearTimeout(timer);
+    view.removeEventListener('pointerdown', onDown, true);
+    for (const type of FOLLOW) view.removeEventListener(type, onFollow, true);
+  }
+  view.addEventListener('pointerdown', onDown, true);
+  for (const type of FOLLOW) view.addEventListener(type, onFollow, true);
+}
+
 interface DynamicContextMenuProps {
   readonly request: ContextMenuRequest;
   /** The composed model, or `null` for a NO_MENU (only the trailing view command shows). */
@@ -359,7 +425,8 @@ function DynamicContextMenu(props: DynamicContextMenuProps): JSX.Element {
             className="context-menu__item"
             data-testid="context-menu-item"
             data-survey-line-id={item.lineId}
-            onClick={() => {
+            onClick={(e) => {
+              swallowSecondClickOf(e);
               onRemoveSurveyLine?.(item.lineId);
               onClose();
             }}
@@ -380,7 +447,8 @@ function DynamicContextMenu(props: DynamicContextMenuProps): JSX.Element {
             data-tool-commit={button.id}
             disabled={button.disabled === true}
             aria-disabled={button.disabled === true}
-            onClick={() => {
+            onClick={(e) => {
+              swallowSecondClickOf(e);
               if (button.disabled === true) return;
               button.onClick();
               onClose();
@@ -403,7 +471,8 @@ function DynamicContextMenu(props: DynamicContextMenuProps): JSX.Element {
               disabled={!item.enabled}
               aria-disabled={!item.enabled}
               title={disabledTitle}
-              onClick={() => {
+              onClick={(e) => {
+              swallowSecondClickOf(e);
                 if (!item.enabled || model === null) return;
                 onSelectItem?.(item.kind, model);
                 onClose();
@@ -430,7 +499,8 @@ function DynamicContextMenu(props: DynamicContextMenuProps): JSX.Element {
               data-command={commandId}
               disabled={!enabled}
               aria-disabled={!enabled}
-              onClick={() => {
+              onClick={(e) => {
+              swallowSecondClickOf(e);
                 if (!enabled) return;
                 registry.dispatch(commandId);
                 onClose();
