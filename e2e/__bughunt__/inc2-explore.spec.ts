@@ -192,7 +192,9 @@ test.describe('増分 2 の探索 — 実データのコピーで年をまたい
       // 開発ガイド §5.54: フォーカスを外す手で選択が動いていないことを見る。
       await expect(page.getByTestId('app-active-feature')).toHaveText(activeBeforeCtrlK ?? '');
       await page.keyboard.press('Control+k');
-      await expect(page.getByTestId('statusbar-result')).toContainText('この年に錨を作る記録');
+      // まとめ役の子では記録は親の年表に増えるので、状態行は **どこに増えたか**を親の名前で言う
+      // （増分 7 の手直し 2 回目 / バグ狩り 2-4。子のレーンには印が増えない）。
+      await expect(page.getByTestId('statusbar-result')).toContainText('デーレ共和国');
       await page.getByTestId('sidebar-tab-properties').click();
       const ctrlkRowsAfter = await page.locator('[data-testid^="anchor-row-"]').count();
       const ctrlkBadgeAfter =
