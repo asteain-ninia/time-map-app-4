@@ -265,3 +265,31 @@ describe('まとめ役の剪定は、その錨の区間のどの時点でも子�
     expect(afterB.histories.some((h) => h.featureId === fid('F'))).toBe(false);
   });
 });
+
+describe('削除の影響: 一部の年からだけ消えるまとめ役を「自動で消える」と数えない（手直し 3 回目 / 再検証 #3）', () => {
+  it('連邦の州 a を 1400 年で終わらせてから州 b を消すと、連邦は 1400 年からだけ消え、前の年は残る', () => {
+    // 連邦 F（1200 年から）。a は [1200, 1400)、b は 1200 年からずっと。F の記録は 1400 年で割られている。
+    const a = leafTile('a', 0, 0, 10, 10, 'F');
+    const b = leafTile('b', 10, 0, 10, 10, 'F');
+    const histories: FeatureHistory[] = [
+      {
+        featureId: fid('F'),
+        series: {
+          entries: [
+            { anchor: anchorOf('anchor-F-1200', [aggregate('F', ['a', 'b'])], []), start: timePointYear(1200), end: null },
+            { anchor: anchorOf('anchor-F-1400', [aggregate('F', ['b'])], []), start: timePointYear(1400), end: null },
+          ],
+        },
+      },
+      { featureId: fid('a'), series: { entries: [{ anchor: anchorOf('anchor-a', [a.feature], a.vertices), start: timePointYear(1200), end: timePointYear(1400) }] } },
+      { featureId: fid('b'), series: { entries: [{ anchor: anchorOf('anchor-b', [b.feature], b.vertices), start: timePointYear(1200), end: null }] } },
+    ];
+    const { state } = deletionStateFromHistories(histories, calendar);
+    const impact = describeDeletionImpact(state, fid('b'));
+    expect(impact.autoRemovedIds).not.toContain(fid('F'));
+    expect(impact.partlyRemovedIds).toContain(fid('F'));
+    const out = deleteFeatureFromHistories(histories, fid('b'), calendar)!;
+    expect(parentAt(out.histories, fid('a'), 1300)).toBe(fid('F'));
+    expect(parentAt(out.histories, fid('F'), 1500)).toBeNull();
+  });
+});
