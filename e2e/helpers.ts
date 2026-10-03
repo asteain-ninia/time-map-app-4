@@ -1134,3 +1134,115 @@ export async function loadSyntheticNested(
     { n: childCount, ys: years },
   );
 }
+
+// ---------------------------------------------------------------------------
+// 増分 8A — 頂点の候補一覧（設計書 §B.5 の台帳 #12）と、頂点の印の観測
+// ---------------------------------------------------------------------------
+
+/** 世界座標（経緯度）。 */
+export interface WorldPos {
+  readonly lon: number;
+  readonly lat: number;
+}
+
+/** 最後に描いたフレームの頂点の印の世界座標（`__E2E__.getVertexHandlePositions`）。 */
+export async function vertexHandlePositions(page: Page): Promise<WorldPos[]> {
+  return page.evaluate(() => {
+    const e2e = (window as unknown as {
+      __E2E__?: { getVertexHandlePositions: () => { lon: number; lat: number }[] };
+    }).__E2E__;
+    return e2e === undefined ? [] : e2e.getVertexHandlePositions();
+  });
+}
+
+/**
+ * 増分 8A の手直し（GPT #3）: いま見ている年の **確定済みの** 地物 `featureId` が引いている頂点を
+ * id → 座標で読む（`__E2E__.getCommittedVertices`）。頂点の印には id が無いので、
+ * 「どの頂点が動いたか」を id で照合するときに使う。
+ */
+export async function committedVertices(
+  page: Page,
+  featureId: string,
+): Promise<Map<string, WorldPos>> {
+  const rows = await page.evaluate((id) => {
+    const e2e = (window as unknown as {
+      __E2E__?: {
+        getCommittedVertices: (f: string) => { id: string; lon: number; lat: number }[];
+      };
+    }).__E2E__;
+    return e2e === undefined ? [] : e2e.getCommittedVertices(id);
+  }, featureId);
+  return new Map(rows.map((r) => [r.id, { lon: r.lon, lat: r.lat }]));
+}
+
+/** いま選んでいる頂点の id の全部（`__E2E__.getSelectedVertexIds`。並びは問わないので整列して返す）。 */
+export async function selectedVertexIds(page: Page): Promise<string[]> {
+  const ids = await page.evaluate(() => {
+    const e2e = (window as unknown as {
+      __E2E__?: { getSelectedVertexIds: () => string[] };
+    }).__E2E__;
+    return e2e === undefined ? [] : e2e.getSelectedVertexIds();
+  });
+  return [...ids].sort();
+}
+
+/** `before` の頂点のうち、`after` で座標が変わった・引かれなくなったものの id（整列）。 */
+export function changedVertexIds(
+  before: ReadonlyMap<string, WorldPos>,
+  after: ReadonlyMap<string, WorldPos>,
+): string[] {
+  const out: string[] = [];
+  for (const [id, p] of before) {
+    const q = after.get(id);
+    if (q === undefined || q.lon !== p.lon || q.lat !== p.lat) out.push(id);
+  }
+  return out.sort();
+}
+
+/** いま描いているカメラ（地図の入力層の `data-zoom` / `data-pan-x` / `data-pan-y`）。 */
+export async function liveCamera(
+  page: Page,
+): Promise<{ zoom: number; centerLon: number; centerLat: number }> {
+  const layer = page.getByTestId('map-input-layer');
+  return {
+    zoom: Number((await layer.getAttribute('data-zoom')) ?? '0'),
+    centerLon: Number((await layer.getAttribute('data-pan-x')) ?? '0'),
+    centerLat: Number((await layer.getAttribute('data-pan-y')) ?? '0'),
+  };
+}
+
+/** 世界座標 → 窓の座標（描画と同じ式。`render/vtransform.ts` の `worldToScreen`）。 */
+export async function worldToClient(page: Page, world: WorldPos): Promise<{ x: number; y: number }> {
+  const cam = await liveCamera(page);
+  const box = (await page.getByTestId('map-input-layer').boundingBox())!;
+  return {
+    x: box.x + box.width / 2 + (world.lon - cam.centerLon) * cam.zoom,
+    y: box.y + box.height / 2 - (world.lat - cam.centerLat) * cam.zoom,
+  };
+}
+
+/**
+ * **頂点の候補一覧を出す**（K-2 の走査と中身の検査の入口）。合成地物 1 件（一辺 0.05° の
+ * 小さな四角）を載せ、一覧から選んで視点を合わせる ―― ズームの上限でも四角は数 px なので、
+ * 真ん中を押せば 4 隅が全部掴める距離に入る。押した窓の座標を返す。
+ */
+export async function openVertexCandidatesOnTinySquare(
+  page: Page,
+): Promise<{ x: number; y: number }> {
+  await loadSyntheticProject(page, 1);
+  await leaveViewMode(page);
+  await page.getByTestId('sidebar-tab-list').click();
+  await page.getByTestId('unified-list-filter').fill('合成地物0000');
+  await page.getByTestId('feature-list-item-syn-0000').click();
+  await expect(page.getByTestId('app-active-feature')).toHaveText('syn-0000');
+  await expect.poll(async () => (await vertexHandlePositions(page)).length).toBe(4);
+  const handles = await vertexHandlePositions(page);
+  const centre = {
+    lon: handles.reduce((s, h) => s + h.lon, 0) / handles.length,
+    lat: handles.reduce((s, h) => s + h.lat, 0) / handles.length,
+  };
+  const at = await worldToClient(page, centre);
+  await page.mouse.click(at.x, at.y);
+  await expect(page.getByTestId('vertex-candidates')).toBeVisible();
+  return at;
+}

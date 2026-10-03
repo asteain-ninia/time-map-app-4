@@ -230,6 +230,35 @@ describe('edit-mode vertex drag drives U24 confirmRelease from the UI (受け入
     dispatcher.pointerUp(ptr(1, 40, 40));
     expect(outcomes).toHaveLength(0);
   });
+
+  // 増分 8A の手直し（設計書 §E.1 V9「ドラッグ中は Escape で元の位置へ」/ 設計適合 2-5）:
+  // Escape が呼ぶ口。取り消したあとに届く解放は何も確定しない。
+  it('cancelSelectEdit: ドラッグ中に取り消すと何も確定せず、そのあとの解放も確定しない', () => {
+    const previews: (DragSession | null)[] = [];
+    const { dispatcher, log, outcomes, selection } = setup(
+      vertexHit(asFeatureId('L'), asVertexId('v0')),
+      { onPreview: (s) => previews.push(s) },
+    );
+    dispatcher.pointerDown(ptr(1, 10, 10));
+    dispatcher.pointerMove(ptr(1, 40, 40));
+    expect(previews.at(-1)).not.toBeNull(); // 動かしている最中は下書きがある
+    expect(dispatcher.cancelSelectEdit()).toBe(true);
+    expect(previews.at(-1)).toBeNull(); // 下書きは捨てた ＝ 元の位置で描き直す
+    expect(selection.events).toContain('cancel');
+    expect(dispatcher.activeCount).toBe(0);
+    dispatcher.pointerUp(ptr(1, 40, 40));
+    expect(outcomes).toHaveLength(0);
+    expect(log).toEqual({ applyProposal: 0, checkTime: 0, detectSpatial: 0, makeCommand: 0 });
+  });
+
+  it('cancelSelectEdit: 取り消すものが無ければ false（Escape を食べない）・パンは触らない', () => {
+    const { dispatcher } = setup(vertexHit(asFeatureId('L'), asVertexId('v0')));
+    expect(dispatcher.cancelSelectEdit()).toBe(false);
+    dispatcher.pointerDown(ptr(2, 10, 10, POINTER_BUTTON.Middle)); // 中ボタンはパン
+    expect(dispatcher.isPanning).toBe(true);
+    expect(dispatcher.cancelSelectEdit()).toBe(false);
+    expect(dispatcher.isPanning).toBe(true);
+  });
 });
 
 // 受け入れ基準2 / FR-88 — a whole-feature MOVE from a feature-body hit also reaches
@@ -460,5 +489,42 @@ describe('edit-mode edge-handle drag drives an EdgeAdd session (FR-87)', () => {
     expect(outcomes).toHaveLength(0);
     expect(log.applyProposal).toBe(0);
     expect(dispatcher.activeCount).toBe(0);
+  });
+
+  // 増分 8A（N-06）: 辺の中点の印は **クリック**でも頂点が増える。
+  it('増分 8A: 中点の印をクリックすると、辺のちょうど中点に頂点を足して 1 回だけ確定する', () => {
+    const MID: WorldCoordinate = { lon: 55, lat: 66 };
+    const { dispatcher, log, outcomes, sessions } = edgeSetup({ edgeClickPoint: () => MID });
+    dispatcher.pointerDown(ptr(1, 10, 10));
+    dispatcher.pointerUp(ptr(1, 11, 10)); // しきい値の内側＝クリック
+    expect(log.makeCommand).toBe(1);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.kind).toBe('processed');
+    // 足す座標は押した点ではなく、渡された中点。
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.preview).toEqual(MID);
+    expect(dispatcher.activeCount).toBe(0);
+  });
+
+  it('増分 8A: 中点が引けない（辺がもう無い）クリックは何もしない', () => {
+    const { dispatcher, log, outcomes } = edgeSetup({ edgeClickPoint: () => undefined });
+    dispatcher.pointerDown(ptr(1, 10, 10));
+    dispatcher.pointerUp(ptr(1, 10, 10));
+    expect(outcomes).toHaveLength(0);
+    expect(log.applyProposal).toBe(0);
+  });
+
+  it('増分 8A: 頂点のクリックは中点の口があっても編集にならない（従来どおり）', () => {
+    let asked = 0;
+    const { dispatcher, outcomes } = setup(vertexHit(asFeatureId('L'), asVertexId('v0')), {
+      edgeClickPoint: () => {
+        asked += 1;
+        return { lon: 0, lat: 0 };
+      },
+    });
+    dispatcher.pointerDown(ptr(1, 10, 10));
+    dispatcher.pointerUp(ptr(1, 10, 10));
+    expect(outcomes).toHaveLength(0);
+    expect(asked).toBe(0);
   });
 });

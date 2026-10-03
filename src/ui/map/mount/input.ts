@@ -23,8 +23,12 @@ import {
   type MapCameraInput,
   type SelectionPort,
 } from '../ports';
-import type { NearVertexCandidate } from '../live-hit-test';
-import { VERTEX_CANDIDATE_MIN, type VertexCandidateStore } from '../vertex-candidates';
+import {
+  createVertexCandidateGesture,
+  watchCandidateStaleness,
+  type DescribedVertexCandidate,
+  type VertexCandidateStore,
+} from '../vertex-candidates';
 import type { FeatureId } from '../../../domain/ids';
 import type { MountStore, MountTransients } from './shared';
 
@@ -54,12 +58,15 @@ export interface MountInputOptions {
   readonly contextMenu: ContextMenuPort;
   /**
    * 頂点の候補一覧（設計書 §B.5 の台帳 #12 / V9）。押した位置の掴める距離に頂点が
-   * **2 つ以上**あるときだけ一覧を出し、そうでなければ畳む。渡さなければ何もしない
-   * （honest stub ―― 無い機能を有るように見せない）。
+   * **2 つ以上**あり、**動かさずに離した**ときだけ一覧を出し、そうでなければ畳む
+   * （増分 8A）。渡さなければ何もしない（honest stub ―― 無い機能を有るように見せない）。
    */
   readonly vertexCandidates?: {
     readonly store: VertexCandidateStore;
-    readonly probe: (point: { readonly x: number; readonly y: number }) => readonly NearVertexCandidate[];
+    readonly probe: (point: {
+      readonly x: number;
+      readonly y: number;
+    }) => readonly DescribedVertexCandidate[];
     readonly nameOf: (featureId: FeatureId) => string;
   };
 }
@@ -137,6 +144,31 @@ export function createMountInput(options: MountInputOptions): MountInput {
     return { x: clientX - box.left, y: clientY - box.top };
   };
 
+  // 頂点の候補一覧（#12 / V9）の押下 → 移動 → 解放。世界・年・道具・表示・カメラが
+  // 替わったら、出ている一覧も保留中の候補も捨てる（教訓 5.2）。
+  const candidateGesture =
+    vertexCandidates === undefined
+      ? undefined
+      : createVertexCandidateGesture({
+          store: vertexCandidates.store,
+          probe: vertexCandidates.probe,
+          activeFeature: () => store.getState().selection.activeFeature,
+          nameOf: vertexCandidates.nameOf,
+        });
+  const unwatchCandidates =
+    candidateGesture === undefined
+      ? (): void => {}
+      : watchCandidateStaleness(store, () => candidateGesture.cancel());
+  // 一覧の行に乗っている頂点を、地図の上で輪で囲む（増分 8A の手直し・設計適合 2-3）。
+  // 置き場の値を描画側の一時状態へ写し、1 フレーム描き直す。
+  const unwatchHover =
+    vertexCandidates === undefined
+      ? (): void => {}
+      : vertexCandidates.store.subscribeHover((hover) => {
+          transients.candidateHover = hover;
+          transients.scheduleEditPreviewRedraw();
+        });
+
   // FR-111 ステータスバーのカーソル座標 — the throttled bridge from the map pointer
   // path to the React-external cursor store. TRAILING throttle (the SAME
   // `throttleTrailing` the map-resize path uses — no new throttle implementation):
@@ -178,25 +210,13 @@ export function createMountInput(options: MountInputOptions): MountInput {
     const { x, y } = toSurface(e.clientX, e.clientY);
     // 頂点の候補一覧（#12 / V9）。**押すたびに畳んでから、要るときだけ出し直す** ――
     // 「地図の他所のクリックで必ず消える」を分岐ではなくこの順序で保証する
-    // （閉じ方が経路ごとに割れると、閉じたつもりで居座る＝教訓 5.56）。
-    if (vertexCandidates !== undefined) {
-      vertexCandidates.store.clear();
-      if (pointerButtonFromCode(e.button) === POINTER_BUTTON.Left) {
-        const found = vertexCandidates.probe({ x, y });
-        if (found.length >= VERTEX_CANDIDATE_MIN) {
-          vertexCandidates.store.set({
-            x,
-            y,
-            rows: found.map((c) => ({
-              featureId: c.featureId,
-              vertexId: c.vertexId,
-              featureName: vertexCandidates.nameOf(c.featureId),
-              distancePx: c.distancePx,
-            })),
-          });
-        }
-      }
-    }
+    // （閉じ方が経路ごとに割れると、閉じたつもりで居座る＝教訓 5.56）。出すのは
+    // 動かさずに離したときだけ（増分 8A。下の pointerup）。
+    candidateGesture?.press(
+      { x, y },
+      pointerButtonFromCode(e.button) === POINTER_BUTTON.Left,
+      e.pointerId,
+    );
     // Hand the capture target to the dispatcher so IT owns the pan's pointer
     // capture lifecycle end to end: capture on pan-start, release on EVERY
     // teardown path (release / cancel / mode-change abort). hookTarget is a
@@ -208,6 +228,7 @@ export function createMountInput(options: MountInputOptions): MountInput {
   const onPointerMove = (e: PointerEvent): void => {
     const { x, y } = toSurface(e.clientX, e.clientY);
     dispatcher.pointerMove(PointerDispatcher.normalize(e, x, y, true));
+    candidateGesture?.move({ x, y }, e.pointerId);
   };
   // FR-111 ステータスバーのカーソル座標 — on the map CELL (see `mapCell` above) so it sees
   // moves over the input layer AND over any tool bridge. Pushes into the React-EXTERNAL
@@ -231,12 +252,30 @@ export function createMountInput(options: MountInputOptions): MountInput {
     // The dispatcher releases the pan's pointer capture itself (it owns the
     // capture lifecycle, set in pointerDown above) — no manual release here.
     dispatcher.pointerUp(PointerDispatcher.normalize(e, x, y));
+    // 解放のあとに出す: クリックの選択（最寄りの頂点）が確定してから一覧が出る。
+    candidateGesture?.release({ x, y }, e.pointerId);
   };
   const onPointerCancel = (e: PointerEvent): void => {
     dispatcher.pointerCancel(e.pointerId);
+    candidateGesture?.cancel(e.pointerId);
   };
   const onPointerLeave = (): void => {
     dispatcher.pointerLeave();
+    // 地図の外で離した押下を、次の押下まで保留したままにしない（出ている一覧は残す）。
+    candidateGesture?.leave();
+  };
+  // **ドラッグ中の Escape は、元の位置へ戻して何も確定しない**（増分 8A の手直し /
+  // 設計書 §E.1 V9）。それまでは Escape が届いても編集の口が下書きを持ったままで、離すと
+  // 動かした位置で確定していた。窓の捕捉段で聞くのは、Escape の階段（鍵盤の持ち主の
+  // 規則・`use-dismissable`・大域の近道）より先に取るため ―― ドラッグを取り消した Escape は
+  // ここで食べ、選択を外す等の次の段へは渡さない。取り消すものが無ければ何もしない。
+  const keyWindow = hookTarget.ownerDocument.defaultView;
+  const onKeyDown = (e: KeyboardEvent): void => {
+    if (e.key !== 'Escape') return;
+    if (!dispatcher.cancelSelectEdit()) return;
+    candidateGesture?.cancel();
+    e.preventDefault();
+    e.stopImmediatePropagation();
   };
   // BUGHUNT2 ROOT FIX (FR-96) — suppress the NATIVE browser/OS context menu on the
   // map so OUR right-click menu (opened from the pointerdown above) is the only one
@@ -259,6 +298,7 @@ export function createMountInput(options: MountInputOptions): MountInput {
   hookTarget.addEventListener('contextmenu', onContextMenu);
   // `passive: false` so `preventDefault` actually suppresses page scroll on wheel.
   hookTarget.addEventListener('wheel', onWheel, { passive: false });
+  keyWindow?.addEventListener('keydown', onKeyDown, true);
   // The cursor readout listens on the map CELL (above the input layer AND the tool
   // overlays in the DOM tree), so it survives a tool bridge taking over the surface.
   mapCell.addEventListener('pointermove', onCursorMove);
@@ -358,6 +398,10 @@ export function createMountInput(options: MountInputOptions): MountInput {
 
   const dispose = (): void => {
     unsubscribeMode();
+    unwatchCandidates();
+    unwatchHover();
+    transients.candidateHover = null;
+    candidateGesture?.cancel();
     hookTarget.removeEventListener('pointerdown', onPointerDown);
     hookTarget.removeEventListener('pointermove', onPointerMove);
     hookTarget.removeEventListener('pointerup', onPointerUp);
@@ -365,6 +409,7 @@ export function createMountInput(options: MountInputOptions): MountInput {
     hookTarget.removeEventListener('pointerleave', onPointerLeave);
     hookTarget.removeEventListener('contextmenu', onContextMenu);
     hookTarget.removeEventListener('wheel', onWheel);
+    keyWindow?.removeEventListener('keydown', onKeyDown, true);
     mapCell.removeEventListener('pointermove', onCursorMove);
     mapCell.removeEventListener('pointerleave', onCursorLeave);
     // Stop the cursor readout BEFORE disposing the host: a trailing throttle call

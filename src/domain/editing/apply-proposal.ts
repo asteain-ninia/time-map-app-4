@@ -38,8 +38,10 @@ import {
   createAnchorEntry,
   applyPastEdit,
   resolveAt,
+  withEntrySnapshot,
   type AnchorSeries,
 } from '../anchor-series';
+import { compare as compareTime } from '../time/normalized';
 import type { Calendar } from '../time/calendar';
 import type { TimePoint } from '../time/time-point';
 import { applyCarryForward, carriedAttributesOf } from './carry-forward';
@@ -1640,7 +1642,192 @@ export function applyEditProposal(
       ? h // 対象の履歴は上で引き継ぎ済み。
       : carryVertexForwardIn(h, anchorTime, vertexCarries, calendar),
   );
+  // **辺に足した頂点を、その辺を共有するすべての地物にも入れる**（増分 8A の手直し・反証 重 2）。
+  // 上の 2 本は「既に引かれている頂点の体」を配るだけなので、まだ誰も引いていない新しい
+  // 頂点は届かない。対象の履歴も含めて全履歴を見る ―― まとめ役の子どうしのように、隣が
+  // 同じ錨の写しの中に居ることがあるため。判定は輪ごとで、押した地物の別の輪（隣り合う
+  // 穴どうし）にも入る。**T より後ろの錨へも、a と b がまだ続けて並ぶ輪には同じ頂点を
+  // 入れる**（再検証 重 2-1。押した地物の後ろの錨にも、隣の後ろの錨にも。錨の切れ目が
+  // 隣どうしで違うと、入れないままでは後ろの年に T 字が残る）。
+  if (snapshot.edgeInsert !== undefined) {
+    histories = applyEdgeInsertToHistories(
+      histories,
+      snapshot.edgeInsert,
+      snapshot.sharePair,
+      movedVertices,
+      anchorTime,
+      calendar,
+    );
+  }
   return withHistories(root, histories);
+}
+
+/**
+ * 辺に足した頂点を、**同じ辺（両端の id が続けて並ぶ辺。向きは問わない）を引いている
+ * ほかの地物**の輪・線にも入れる（増分 8A の手直し・反証 重 2）。並べ方の規則は分割の
+ * 「共有辺の途中を切る」（FR-95。{@link insertSeamsIntoFeature}）と同じ 1 本を使う。
+ *
+ * - 入れる id は、確定で吸着が共有に変わったなら **共有先の id**（`applySharePair` が押した
+ *   地物の中で付け替えるのと同じ id）、そうでなければ足した頂点の id。
+ * - 判定は **輪（線）ごと**。その id を既に引いている輪には入れない（同じ頂点を 2 度
+ *   引かせない）。押した地物も対象で、同じ辺を引く別の輪（隣り合う穴どうし）にも入る。
+ * - T の時点で効いている錨に入れ、さらに **T より後ろの錨へも引き継ぐ**（a と b が続けて
+ *   並ぶ輪が無い錨に来たら、その履歴はそこで打ち切る）。
+ * - 頂点の体は、その写しに同じ id の体が無いときだけ足す（共有先の体は正しい座標を持つ）。
+ *
+ * 純関数。変化の無い履歴は同じ値を返す。
+ */
+function applyEdgeInsertToHistories(
+  histories: readonly FeatureHistory[],
+  insert: { readonly startVertexId: VertexId; readonly endVertexId: VertexId; readonly vertexId: VertexId },
+  sharePair: { readonly dragged: VertexId; readonly target: VertexId } | undefined,
+  movedVertices: readonly Vertex[],
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): FeatureHistory[] {
+  const added = movedVertices.find((v) => v.id === insert.vertexId);
+  if (added === undefined) return [...histories];
+  const insertedId =
+    sharePair !== undefined && sharePair.dragged === insert.vertexId ? sharePair.target : insert.vertexId;
+  const body = insertedId === added.id ? added : createVertex(insertedId, added.coordinate);
+  const seam: SeamInsertion = { vertex: body, coordinate: body.coordinate };
+  const startIds: ReadonlySet<VertexId> = new Set([insert.startVertexId]);
+  const endIds: ReadonlySet<VertexId> = new Set([insert.endVertexId]);
+  const seamIds: ReadonlySet<VertexId> = new Set([insertedId]);
+  // 判定は **輪（線）ごと**（再検証 重 2-2）。押した地物も対象に含める ―― 押した地物が
+  // 同じ辺を 2 つの輪で引いている（隣り合う穴どうし）と、もう片方の輪にも入れる必要がある。
+  // 押した輪は既に a・新・b と並んでいて a–b の辺を持たないので、二重には入らない。
+  const withBody = (store: VertexStore): VertexStore =>
+    getVertex(store, insertedId) === undefined
+      ? createVertexStore([...store.byId.values(), body])
+      : store;
+  const insertInto = (features: readonly Feature[], store: VertexStore): readonly Feature[] | null => {
+    let changed = false;
+    const next = features.map((f) => {
+      const out = insertEdgeVertexIntoContainers(f, startIds, endIds, seamIds, seam, store);
+      if (out !== f) changed = true;
+      return out;
+    });
+    return changed ? next : null;
+  };
+
+  return histories.map((history) => {
+    let series = history.series;
+    // (1) T の時点で効いている錨（無ければ T に錨を立てる）。
+    const resolution = resolveAt(series, anchorTime, calendar);
+    if (
+      resolution.kind === 'present' &&
+      resolution.entry.anchor.snapshot.features.some((f) =>
+        containersTakingEdgeVertex(f, startIds, endIds, seamIds),
+      )
+    ) {
+      series = applyPastEdit(
+        series,
+        anchorTime,
+        (effective): Anchor => {
+          const effBase =
+            effective.kind === 'present'
+              ? effective.entry.anchor.snapshot
+              : createAnchorSnapshot([], createVertexStore([]));
+          const store = withBody(effBase.vertices);
+          const features = insertInto(effBase.features, store) ?? effBase.features;
+          return anchorFor(features, store, history.featureId, anchorTime);
+        },
+        calendar,
+      );
+    }
+    // (2) **T より後ろの錨へも引き継ぐ**（再検証 重 2-1。共有頂点の移動を後ろの錨へ引き継ぐ
+    // 増分 3 の決定 (2) と同じ考え方）。入れないと、隣どうしで錨の切れ目が違うとき、後ろの
+    // 年で片方にだけ頂点がある T 字が残り、足した頂点を動かすとそこで境界が裂ける。
+    // 古い順に歩き、**a と b がまだ続けて並ぶ輪**へ同じ頂点を入れる。a と b が続く輪が 1 つも
+    // 無い錨に来たら、その履歴はそこで打ち切る（記録された歴史でその辺が変わったので、
+    // それより先へは持ち込まない）。クリックで足した頂点は辺の上にあるので、後ろの年の形は
+    // 変わらない（「保存は見ている年に効かせる」と矛盾しない）。
+    let carrying = true;
+    const entries = series.entries.map((entry) => {
+      if (!carrying) return entry;
+      if (compareTime(entry.start, anchorTime, calendar) <= 0) return entry;
+      const snap = entry.anchor.snapshot;
+      if (!snap.features.some((f) => containersHaveEdge(f, startIds, endIds, seamIds))) {
+        carrying = false;
+        return entry;
+      }
+      const store = withBody(snap.vertices);
+      const features = insertInto(snap.features, store);
+      if (features === null) return entry;
+      return withEntrySnapshot(entry, createAnchorSnapshot(features, store));
+    });
+    if (entries.some((e, i) => e !== series.entries[i])) series = { entries };
+    return series === history.series ? history : { featureId: history.featureId, series };
+  });
+}
+
+/** 地物の輪・線のうち、a–b の辺（向きは問わない）をまだ持っているものがあるか。 */
+function containersHaveEdge(
+  feature: Feature,
+  startIds: ReadonlySet<VertexId>,
+  endIds: ReadonlySet<VertexId>,
+  seamIds: ReadonlySet<VertexId>,
+): boolean {
+  return vertexIdLists(feature).some(
+    ({ ids, closed }) => edgeIndexFor(ids, startIds, endIds, seamIds, closed) >= 0,
+  );
+}
+
+/** a–b の辺を持ち、足す頂点をまだ引いていない輪・線があるか（＝入れる先がある）。 */
+function containersTakingEdgeVertex(
+  feature: Feature,
+  startIds: ReadonlySet<VertexId>,
+  endIds: ReadonlySet<VertexId>,
+  seamIds: ReadonlySet<VertexId>,
+): boolean {
+  return vertexIdLists(feature).some(
+    ({ ids, closed }) =>
+      edgeIndexFor(ids, startIds, endIds, seamIds, closed) >= 0 &&
+      !ids.some((id) => seamIds.has(id)),
+  );
+}
+
+/**
+ * 地物の輪・線のうち、a–b の辺を持ち、足す頂点をまだ引いていないものへ頂点を入れる
+ * （輪ごとの判定。並べ方は {@link spliceSeamsAfter}）。何も入らなければ同じ値を返す。
+ */
+function insertEdgeVertexIntoContainers(
+  feature: Feature,
+  startIds: ReadonlySet<VertexId>,
+  endIds: ReadonlySet<VertexId>,
+  seamIds: ReadonlySet<VertexId>,
+  seam: SeamInsertion,
+  store: VertexStore,
+): Feature {
+  const spliced = (ids: readonly VertexId[], closed: boolean): VertexId[] | null => {
+    if (ids.some((id) => seamIds.has(id))) return null; // 同じ輪に 2 度引かせない。
+    const idx = edgeIndexFor(ids, startIds, endIds, seamIds, closed);
+    return idx < 0 ? null : spliceSeamsAfter(ids, idx, [seam], store);
+  };
+  switch (feature.kind) {
+    case FEATURE_KIND.Line: {
+      const ids = spliced(feature.vertexIds, false);
+      return ids === null ? feature : (withLineVertexIds(feature as LineFeature, ids) as Feature);
+    }
+    case FEATURE_KIND.Leaf: {
+      const rings = (feature as LeafFeature).shape.rings;
+      let changed = false;
+      const nextRings: Ring[] = rings.map((ring) => {
+        const ids = spliced(ring.vertexIds, true);
+        if (ids === null) return ring;
+        changed = true;
+        return ring.kind === RING_KIND.Territory
+          ? withTerritoryRingVertexIds(ring, ids)
+          : withHoleRingVertexIds(ring, ids);
+      });
+      return changed
+        ? (withLeafShape(feature as LeafFeature, createShape(nextRings)) as Feature)
+        : feature;
+    }
+    default:
+      return feature;
+  }
 }
 
 /** 1 つの履歴に頂点の引き継ぎを掛ける（変化が無ければ同じ値を返す）。 */

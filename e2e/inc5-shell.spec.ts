@@ -38,6 +38,7 @@ import {
   leaveViewMode,
   openDepthOptions,
   openSurveyCoords,
+  openVertexCandidatesOnTinySquare,
   placeVertices,
   returnToViewMode,
   squareCorners,
@@ -939,6 +940,32 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
       }
     });
   }
+
+  test('K-2: 台帳 #12 の頂点の候補一覧は、出ていても地図の他所の押下が入力層に届き、閉じたら居座らない', async () => {
+    // 増分 8A。候補一覧は **一時の吹き出し**（板ではない）なので、出ているあいだも覆って
+    // よいのは一覧の矩形だけで、残りの点は地図の入力層へ届かなければならない。
+    const { app, page } = await launchApp();
+    try {
+      const at = await openVertexCandidatesOnTinySquare(page);
+      const hits = await scanMapGrid(page);
+      expectMapReachable(hits, { extra: ['popover:vertex-candidates'] });
+      // 一覧の外の地図の点を **実際に押す**と、一覧は消える（地図の他所のクリック）。
+      const b = (await page.getByTestId('map-input-layer').boundingBox())!;
+      const elsewhere = { x: b.x + b.width * 0.1, y: b.y + b.height * 0.9 };
+      expect(Math.hypot(elsewhere.x - at.x, elsewhere.y - at.y)).toBeGreaterThan(100);
+      await page.mouse.click(elsewhere.x, elsewhere.y);
+      await expect(page.getByTestId('vertex-candidates')).toHaveCount(0);
+      expectMapReachable(await scanMapGrid(page));
+      // もう一度出して、Escape でも消える。
+      await page.mouse.click(at.x, at.y);
+      await expect(page.getByTestId('vertex-candidates')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('vertex-candidates')).toHaveCount(0);
+      expectMapReachable(await scanMapGrid(page));
+    } finally {
+      await app.close();
+    }
+  });
 
   test('K-2: 初回起動のガイドが出ていても、地図の 25 点はすべて地図へ届く', async () => {
     // **ガイドを畳まずに走査する**（2026-09-07 の手直し）。旧版のガイドは右パネルから

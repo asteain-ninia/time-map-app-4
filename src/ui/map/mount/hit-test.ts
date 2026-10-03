@@ -40,6 +40,18 @@ import type {
   SelectionPort,
 } from '../ports';
 import { createNeighboursQuery } from '../slide-snap-neighbours';
+import { resolveDisplayFor } from '../display-resolution-cache';
+import { edgeAddMidpoint } from '../edge-click';
+import { grabRadiusPx } from '../grab-radius';
+import { withRubberBand } from '../rubber-band';
+import {
+  createListPickOnce,
+  describeNearVertices,
+  preferListPick,
+  type CandidateRelevantState,
+  type DescribedVertexCandidate,
+  type ListPick,
+} from '../vertex-candidates';
 import {
   worldToScreen as projectWorldToScreen,
   screenToWorld as unprojectScreenToWorld,
@@ -135,8 +147,9 @@ export interface MountHitTest {
   /**
    * **掴める距離に居る頂点を全部返す**（設計書 §B.5 の台帳 #12 / V9）。母集合・可視判定・
    * ラップの数え方は `hitTester` と同じ 1 本（`verticesNearPoint`）を通る（教訓 5.29）。
+   * 増分 8A で座標と「引いている地物の全部」を足した。
    */
-  readonly probeVertexCandidates: (point: ScreenPoint) => readonly NearVertexCandidate[];
+  readonly probeVertexCandidates: (point: ScreenPoint) => readonly DescribedVertexCandidate[];
   /** 候補一覧から 1 つ選んだときの選択の書き込み（U22 の並びをそのまま作る）。 */
   readonly selectVertex: (featureId: FeatureId, vertexId: VertexId) => void;
 }
@@ -179,8 +192,29 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
   // nearest committed vertex within a screen-px grab radius (頂点優先), else the leaf
   // body under the cursor (world containment, 穴透過), else a point/line near the
   // cursor, else empty.
+  // 増分 8A の手直し（反証 重 3）: 一覧から選んだときに立てる **使い捨ての印**。
+  // ディスパッチャは押下のたびに（左右・中ボタン、地図でも道具の橋渡しでも）まず
+  // `hitTest` を 1 回呼ぶので、ここで印を「この押下の分」へ移して消す ―― 次の押下では
+  // どのボタンであっても必ず消えている。効かせるのは下の `editSession.begin`（左ボタンの
+  // 編集ドラッグの入口）だけで、右クリックのメニューと選択の書き込みには当たり判定の
+  // 結果をそのまま渡す。
+  const listPick = createListPickOnce();
+  let pressPick: ListPick | null = null;
+  const candidateContextOf = (): CandidateRelevantState => {
+    const s = store.getState();
+    return {
+      domain: s.domain,
+      currentTime: s.currentTime,
+      mode: s.mode,
+      activeTool: s.activeTool,
+      displayControl: s.displayControl,
+      filter: s.filter,
+      camera: s.camera,
+    };
+  };
   const hitTester: HitTester = {
     hitTest: (point) => {
+      pressPick = listPick.take();
       const s = store.getState();
       const { camera, viewport } = ports.readCamera();
       return liveHitTestAt(
@@ -220,6 +254,8 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
           handlesDrawn:
             s.mode !== EDIT_MODE.View && toolShowsVertexHandles(s.activeTool),
           point,
+          // 増分 8A: 掴める距離を画面倍率に連動させる（下限 8px。`grab-radius.ts`）。
+          radiusPx: grabRadiusPx(camera, viewport),
         },
         // World coordinate of the click (renderer inverse) for the world-space leaf
         // containment.
@@ -260,13 +296,20 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
       );
     },
   };
-  const selectionPort = createLiveSelectionPort(
-    {
-      getSelection: () => store.getState().selection,
-      restoreSelection: (sel) => store.getState().restoreSelection(sel),
+  // 増分 8A（N-07）: 空いた所からのドラッグの間だけ、矩形選択の枠を描く（`withRubberBand`）。
+  const selectionPort = withRubberBand(
+    createLiveSelectionPort(
+      {
+        getSelection: () => store.getState().selection,
+        restoreSelection: (sel) => store.getState().restoreSelection(sel),
+      },
+      surfaceToWorld,
+      rectangleResolver,
+    ),
+    (band) => {
+      transients.rubberBand = band;
+      transients.scheduleEditPreviewRedraw();
     },
-    surfaceToWorld,
-    rectangleResolver,
   );
   // ROOT FIX (bughunt: 実アプリで頂点/地物のドラッグ編集が PointerDispatcher に未結線 —
   // confirmRelease 到達不能, 教訓5.7「ロジックがあっても UI から呼ばれず機能しない状態を
@@ -333,7 +376,7 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
       return queryPx / camera.zoom;
     },
   });
-  const editSession = createEditSessionPort<MountDomainRoot>({
+  const editSessionInner = createEditSessionPort<MountDomainRoot>({
     // The dragged handle world position uses the SAME renderer inverse the hit-test
     // and selection use, so the press / preview / release resolve against one camera.
     screenToWorld: surfaceToWorld,
@@ -441,7 +484,36 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
       transients.liveEditSession = session;
       transients.scheduleEditPreviewRedraw();
     },
+    // 増分 8A（N-06）: 辺の中点の印をクリックしたら、その辺のちょうど中点に頂点を足す。
+    // 中点は描いている印と同じ `computeHandles` から引く（`edge-click.ts`）。
+    edgeClickPoint: (session) => {
+      const s = store.getState();
+      return edgeAddMidpoint(
+        resolveDisplayFor(s.domain, s.currentTime, s.displayControl),
+        session,
+      );
+    },
   });
+  // 増分 8A の手直し（反証 重 3）: 一覧から選んだ直後の左ドラッグ 1 回だけ、選んだ頂点を
+  // 最寄りより優先して掴む（`preferListPick`。条件はそちらの注記）。印はこの押下の
+  // `hitTest` で既に消えているので、2 回目の押下には効かない。
+  const editSession: EditSessionPort = {
+    begin: (hit, point, modifiers) => {
+      const pick = pressPick;
+      pressPick = null;
+      const preferred = preferListPick(
+        hit,
+        pick,
+        modifiers,
+        { context: candidateContextOf(), selection: store.getState().selection },
+        () => probeNear(point),
+      );
+      return editSessionInner.begin(preferred, point, modifiers);
+    },
+    update: (point) => editSessionInner.update(point),
+    release: (point, wasDrag) => editSessionInner.release(point, wasDrag),
+    cancel: () => editSessionInner.cancel(),
+  };
   // BUGHUNT2 ROOT FIX — the LIVE right-click context-menu port (FR-96). On a
   // right-button press the dispatcher calls this port (dispatch.ts:「Right button
   // is always a context-menu request」); it promotes the hit feature into the LIVE
@@ -489,7 +561,7 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
 
   // 頂点の候補一覧（#12）。`hitTester` と **同じ入力** を渡すので、一覧に出る顔ぶれは
   // 「いま掴める頂点」とちょうど一致する（描画 ⊇ ヒット ＝ 候補）。
-  const probeVertexCandidates = (point: ScreenPoint): readonly NearVertexCandidate[] => {
+  const probeNear = (point: ScreenPoint): readonly NearVertexCandidate[] => {
     const s = store.getState();
     const { camera, viewport } = ports.readCamera();
     return verticesNearPoint(
@@ -504,8 +576,18 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
         handlesDrawn:
           s.mode !== EDIT_MODE.View && toolShowsVertexHandles(s.activeTool),
         point,
+        // 当たり判定と同じ掴める距離（増分 8A）。
+        radiusPx: grabRadiusPx(camera, viewport),
       },
       surfaceToWorld(point),
+    );
+  };
+  // 一覧の行に出す座標と「引いている地物の全部」を足す（増分 8A。現状.md B42）。
+  const probeVertexCandidates = (point: ScreenPoint): readonly DescribedVertexCandidate[] => {
+    const s = store.getState();
+    return describeNearVertices(
+      resolveDisplayFor(s.domain, s.currentTime, s.displayControl),
+      probeNear(point),
     );
   };
 
@@ -515,6 +597,8 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
     s.restoreSelection(
       replaceVertices(withActiveFeature(s.selection, featureId), featureId, new Set([vertexId])),
     );
+    // 直後の左ドラッグ 1 回だけ、この頂点を最寄りより優先して掴む（反証 重 3 の手直し）。
+    listPick.arm({ featureId, vertexId, context: candidateContextOf() });
   };
 
   return {

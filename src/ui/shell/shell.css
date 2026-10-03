@@ -2744,8 +2744,8 @@ body {
 /* #12 頂点の候補一覧（V9）。クリック位置の右下 8px。**一覧の矩形だけ**が押下を受ける。 */
 .vertex-candidates {
   position: absolute;
-  width: 216px;
-  max-height: 180px;
+  width: 280px;
+  max-height: 240px;
   overflow-y: auto;
   z-index: 3;
   padding: 6px;
@@ -2793,8 +2793,23 @@ body {
 }
 
 .vertex-candidates__dist {
+  flex: none;
   color: var(--c-text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+.vertex-candidates__more {
+  margin: 4px 0 0;
+  color: var(--c-text-muted);
+  font-size: 11px;
+}
+
+/* 増分 8A の手直し: 21 件目より先を出す「もっと見る」（GPT #1）。 */
+.vertex-candidates__more button {
+  margin-left: 6px;
+  font: inherit;
+  padding: 1px 6px;
+  cursor: pointer;
 }
 
 /* 第6工程: the TOOL SCAFFOLDS (add / knife / merge / reparent / ring-edit / drill)

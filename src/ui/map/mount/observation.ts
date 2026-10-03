@@ -15,6 +15,10 @@ import {
   type RailViewSnapshot,
 } from '../../e2e/rail-observation';
 import { buildCommittedFeatures, drawnFeatureFills } from '../committed-features';
+import { featureByIdAt, verticesAt } from '../../live-lookup';
+import { asFeatureId } from '../../../domain/ids';
+import { referencedVertexIds } from '../../../domain/feature';
+import { getVertex } from '../../../domain/vertex';
 import type { Camera as RenderCamera } from '../../../render/camera';
 import type { MountStore } from './shared';
 
@@ -243,6 +247,28 @@ export function createMountObservation(
         clientY: number,
       ): { readonly lon: number; readonly lat: number } | null =>
         rendererRef.current?.screenToWorld(clientX, clientY) ?? null,
+      /**
+       * 増分 8A の手直し（GPT #3）: いま見ている年の **確定済みの** 地物 `featureId` が引いて
+       * いる頂点を、id と座標で返す（頂点の印には id が無いので、「どの頂点が動いたか」を
+       * id で照合するための口）。引けなければ空。
+       */
+      getCommittedVertices: (
+        featureId: string,
+      ): readonly { readonly id: string; readonly lon: number; readonly lat: number }[] => {
+        const s = store.getState();
+        const feature = featureByIdAt(s.domain, s.currentTime, asFeatureId(featureId));
+        if (feature === undefined) return [];
+        const vertices = verticesAt(s.domain, s.currentTime);
+        const out: { id: string; lon: number; lat: number }[] = [];
+        for (const id of referencedVertexIds(feature)) {
+          const v = getVertex(vertices, id);
+          if (v !== undefined) out.push({ id: String(id), lon: v.coordinate.lon, lat: v.coordinate.lat });
+        }
+        return out;
+      },
+      /** 増分 8A の手直し: いま選んでいる頂点の id の全部（`app-active-vertex` は 1 つしか出さない）。 */
+      getSelectedVertexIds: (): readonly string[] =>
+        [...store.getState().selection.vertexIds].map(String),
       /**
        * 増分 6 の中身 8: **時刻レールの観測 3 口**。実体はレールが
        * `ui/e2e/rail-observation.ts` の登録簿へ置き、ここは読むだけである

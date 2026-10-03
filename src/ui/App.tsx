@@ -212,6 +212,7 @@ import { DepthOptions } from './map/DepthOptions';
 import { MapViewControls } from './map/MapViewControls';
 import { VertexCandidateList } from './map/VertexCandidateList';
 import { VertexCandidateStore } from './map/vertex-candidates';
+import { HandleCapNotice } from './map/HandleCapNotice';
 import './map/grid-toggle.css';
 import { buildForest } from '../domain/hierarchy/forest';
 // 増分 7: 所属変更の対象展開（FR-48 後半）と、削除の影響の説明（設計書 §A.3）。
@@ -3892,7 +3893,11 @@ export function App(): JSX.Element {
             <VertexCandidateList
               store={vertexCandidateStore}
               onPick={(featureId, vertexId) => selectVertexRef.current?.(featureId, vertexId)}
+              // 増分 8A: 出ているあいだ鍵盤の持ち主は `popover`（設計書 §B.5 #12）。
+              onOpenChange={popoverOpenChange('vertex-candidates')}
             />
+            {/* 増分 8A: 頂点の印が上限のせいで出ていないとき、理由と［拡大］を「次の一手」へ。 */}
+            <HandleCapNotice store={store} optionBar={optionBarStore} cameraRef={rendererRef} />
             <SurveyMapBridge
               store={store}
               screenToWorld={screenToWorld}

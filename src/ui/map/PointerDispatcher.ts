@@ -444,6 +444,28 @@ export class PointerDispatcher {
   }
 
   /**
+   * **進行中の選択・編集の押下を取り消す**（増分 8A の手直し / 設計書 §E.1 V9「ドラッグ中は
+   * Escape で元の位置へ」）。頂点・辺・地物のドラッグも矩形選択も、何も確定せずに捨てる
+   * （編集の口は `cancel` ＝下書きを捨てて元の位置で描き直す）。パンは触らない。
+   * このあと届く同じポインタの解放は、記録が無いので何もしない。
+   * 取り消したものがあれば true（呼び出し側はそのときだけ Escape を食べる）。
+   */
+  cancelSelectEdit(): boolean {
+    let cancelled = false;
+    for (const [pointerId, rec] of this.active) {
+      if (rec.kind !== DISPATCH_TARGET.SelectEdit) continue;
+      this.active.delete(pointerId);
+      releasePointerCapture(rec, pointerId);
+      this.opts.selection.cancel();
+      if (rec.editing && this.opts.editSession !== undefined) {
+        this.opts.editSession.cancel();
+      }
+      cancelled = true;
+    }
+    return cancelled;
+  }
+
+  /**
    * The pointer left the map area (pointerleave). Treated like a cancel for every
    * live pointer so a pan/selection can never be left dangling when the cursor
    * exits (教訓 5.2, 受け入れ基準 6). Does NOT apply a final camera move.
