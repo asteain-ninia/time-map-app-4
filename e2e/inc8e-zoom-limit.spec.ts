@@ -51,4 +51,47 @@ test.describe('増分 8E — G-21: ズームの上下限を理由つきで断る
       await app.close();
     }
   });
+
+  // 増分 8E の手直し（設計適合 S2-5・GPT 重 2）: ホイールでも上下限で理由を出す。
+  test('ホイールで上限を超えて回すと、脇と状態行に理由が出る', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await hoverMapCenter(page);
+      const note = page.getByTestId('map-zoom-limit-note');
+      for (let i = 0; i < 80 && (await note.count()) === 0; i += 1) {
+        await page.mouse.wheel(0, -100);
+        await page.waitForTimeout(20);
+      }
+      await expect(note).toHaveText('拡大の上限（50倍）です');
+      await expect(page.getByTestId('statusbar-result')).toContainText(
+        'これ以上は拡大できません。拡大の上限（50倍）に達しています。',
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  // 増分 8E の手直し（GPT 重 2）: 消えた脇の文が、元の倍率へ戻っただけで復活しない。
+  test('上限で断ったあと、ホイールで縮小して元の倍率へ戻しても、脇の文は復活しない', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await pressUntilNote(page, 'map-zoom-in');
+      const note = page.getByTestId('map-zoom-limit-note');
+      await hoverMapCenter(page);
+      await page.mouse.wheel(0, 100);
+      await expect(note).toHaveCount(0);
+      // 1 ノッチ戻すと倍率は上限に戻るが、このノッチは断っていない（上限の手前から動いた）。
+      await page.mouse.wheel(0, -100);
+      await page.waitForTimeout(300);
+      await expect(note).toHaveCount(0);
+    } finally {
+      await app.close();
+    }
+  });
 });
+
+/** 地図の中ほどへポインタを置く（ホイールは地図の入力層が受ける）。 */
+async function hoverMapCenter(page: Page): Promise<void> {
+  const b = (await page.getByTestId('map-input-layer').boundingBox())!;
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+}
