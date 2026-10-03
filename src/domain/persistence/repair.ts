@@ -41,6 +41,10 @@ import {
 } from '../feature';
 import { materializeOwnSeries } from '../affiliation/materialize';
 import {
+  absentParentIntervals,
+  clearParentWithin,
+  cutSeries,
+  emptyAggregateIntervals,
   presenceOf,
   subtractIntervals,
   syncAggregateChildIds,
@@ -78,8 +82,18 @@ import type { DomainProject, FeatureHistory } from './serialize';
 export const REPAIR_OPTION = {
   /** 存在しない頂点参照 → 当該地物を除外する。 */
   DropFeatureWithMissingVertex: 'drop-feature-missing-vertex',
-  /** ツリー位相不整合 → 親参照を切って最上位化する。 */
+  /** ツリー位相不整合 → 親参照を切って最上位化する（全部の年で）。 */
   DetachToTopLevel: 'detach-to-top-level',
+  /**
+   * その年に居ない親を指している → **親が居ない区間だけ**最上位にする（増分 7 の手直し 3 回目 1-2。
+   * ほかの年の所属はそのまま。既定）。
+   */
+  DetachToTopLevelWithin: 'detach-to-top-level-within',
+  /**
+   * 下位領域が 1 件も無いまとめ役 → **子の居ない区間だけ**そのまとめ役を無くす（子の居る年の記録は
+   * そのまま。増分 7 の手直し 3 回目 1-2。既定）。一度も子を持たないまとめ役には効かない。
+   */
+  RemoveEmptyAggregateIntervals: 'remove-empty-aggregate-intervals',
   /** ツリー位相不整合 → 当該地物を除外する。 */
   DropTopologyFeature: 'drop-topology-feature',
   /** 集約の childIds と parentId の乖離 → childIds を parentId から再構築する。 */
@@ -126,7 +140,11 @@ export interface RepairOption {
 const LABELS: Readonly<Record<RepairOptionId, string>> = {
   [REPAIR_OPTION.DropFeatureWithMissingVertex]:
     '存在しない頂点を参照している地物を読み込みから除外します。',
-  [REPAIR_OPTION.DetachToTopLevel]: '親参照を解除して、この地物を最上位に変更します。',
+  [REPAIR_OPTION.DetachToTopLevel]: '親参照を解除して、この地物を最上位に変更します（全部の年で）。',
+  [REPAIR_OPTION.DetachToTopLevelWithin]:
+    '上位領域が居ない年の間だけ、この地物を最上位にします（ほかの年の所属と記録はそのまま残ります）。',
+  [REPAIR_OPTION.RemoveEmptyAggregateIntervals]:
+    '下位領域が 1 件も居ない年の間だけ、このまとめ役を無くします（下位領域の居る年の記録はそのまま残ります）。',
   [REPAIR_OPTION.DropTopologyFeature]: '階層が壊れている地物を読み込みから除外します。',
   [REPAIR_OPTION.ReconcileChildIds]:
     '集約地物の下位領域一覧（childIds）を、各地物の親参照（parentId）に合わせて再構築します。',
@@ -174,6 +192,15 @@ export function repairOptionsFor(inc: Inconsistency): RepairOption[] {
           opt(REPAIR_OPTION.DropTopologyFeature),
         ];
       }
+      // その年に居ない親を指す形は、**親が居ない区間だけ**外すのを既定にする（増分 7 の手直し
+      // 3 回目 1-2）。全部の年で外すと、ほかの年の正しい所属まで消える。
+      if (inc.detail === HIERARCHY_VIOLATION.DanglingParent) {
+        return [
+          opt(REPAIR_OPTION.DetachToTopLevelWithin),
+          opt(REPAIR_OPTION.DetachToTopLevel),
+          opt(REPAIR_OPTION.DropTopologyFeature),
+        ];
+      }
       return [opt(REPAIR_OPTION.DetachToTopLevel), opt(REPAIR_OPTION.DropTopologyFeature)];
     case INCONSISTENCY.ShapePreservation:
       // A declared LEAF that has ACQUIRED children (detail=leaf-with-children) is the
@@ -187,6 +214,14 @@ export function repairOptionsFor(inc: Inconsistency): RepairOption[] {
       if (inc.detail === SHAPE_DETAIL_LEAF_WITH_CHILDREN) {
         return [
           opt(REPAIR_OPTION.MaterializeDirectDomain),
+          opt(REPAIR_OPTION.DropShapeRoleFeature),
+        ];
+      }
+      // 下位領域の居ないまとめ役は、**子の居ない区間だけ**無くすのを既定にする（増分 7 の手直し
+      // 3 回目 1-2）。読み込みから除外すると、子の居た年の記録まで全部の年から消える。
+      if (inc.detail === 'aggregate-no-children') {
+        return [
+          opt(REPAIR_OPTION.RemoveEmptyAggregateIntervals),
           opt(REPAIR_OPTION.DropShapeRoleFeature),
         ];
       }
@@ -357,6 +392,58 @@ function detachToTopLevel(project: DomainProject, ids: readonly FeatureId[]): Do
   return mapSnapshotFeatures(project, (features) =>
     features.map((f) => (detach.has(f.id) ? withParentId(f, undefined) : f)),
   );
+}
+
+/**
+ * その年に居ない親を指している地物の親を、**親が居ない区間だけ**外す（増分 7 の手直し 3 回目 1-2）。
+ * 地物が自分の系列を持たなければ、先に全部の年の記録を自分の系列へ起こす（中身は捨てない）。
+ * 親の子の並びも時刻ごとに揃える。純粋。
+ */
+function detachWhereParentAbsent(
+  project: DomainProject,
+  ids: readonly FeatureId[],
+  calendar: Calendar,
+): DomainProject {
+  let histories: readonly FeatureHistory[] = project.histories;
+  for (const id of ids) {
+    histories = materializeOwnSeries(histories, [id], calendar).histories;
+    const parents = new Set<FeatureId>();
+    for (const [parentId, intervals] of absentParentIntervals(histories, id, calendar)) {
+      histories = clearParentWithin(histories, [id], parentId, intervals, calendar);
+      parents.add(parentId);
+    }
+    if (parents.size > 0) histories = syncAggregateChildIds(histories, parents, calendar);
+  }
+  return histories === project.histories ? project : { ...project, histories };
+}
+
+/**
+ * 下位領域の居ないまとめ役を、**子の居ない区間だけ**無くす（増分 7 の手直し 3 回目 1-2）。一度も
+ * 子を持たないまとめ役・自分の系列を持たないまとめ役には効かない（そのまま返す ―― 未解決として
+ * 次の方法を選ぶことになる）。上位領域の子の並びも時刻ごとに揃える。純粋。
+ */
+function removeEmptyAggregateIntervals(
+  project: DomainProject,
+  ids: readonly FeatureId[],
+  calendar: Calendar,
+): DomainProject {
+  let histories: readonly FeatureHistory[] = project.histories;
+  for (const id of ids) {
+    const intervals = emptyAggregateIntervals(histories, id, calendar);
+    if (intervals.length === 0) continue;
+    const index = histories.findIndex((h) => h.featureId === id);
+    const own = index >= 0 ? histories[index] : undefined;
+    if (own === undefined) continue;
+    const cut = cutSeries(own.series, id, intervals, calendar);
+    histories = histories.map((h, i) => (i === index ? { featureId: id, series: cut } : h));
+    const parents = new Set<FeatureId>();
+    for (const entry of own.series.entries) {
+      const parentId = entry.anchor.snapshot.features.find((f) => f.id === id)?.parentId;
+      if (parentId !== undefined) parents.add(parentId);
+    }
+    if (parents.size > 0) histories = syncAggregateChildIds(histories, parents, calendar);
+  }
+  return histories === project.histories ? project : { ...project, histories };
 }
 
 /** Detach any feature whose parent is in `ids` (so children of a dropped aggregate survive). */
@@ -1029,6 +1116,10 @@ export function applyRepair(
       return materializeDirectDomain(project, inc, calendar);
     case REPAIR_OPTION.DetachToTopLevel:
       return detachToTopLevel(project, inc.featureIds);
+    case REPAIR_OPTION.DetachToTopLevelWithin:
+      return detachWhereParentAbsent(project, inc.featureIds, calendar);
+    case REPAIR_OPTION.RemoveEmptyAggregateIntervals:
+      return removeEmptyAggregateIntervals(project, inc.featureIds, calendar);
     case REPAIR_OPTION.ReconcileChildIds:
       return reconcileChildIds(project, calendar);
     case REPAIR_OPTION.DropOverlappingFeature:

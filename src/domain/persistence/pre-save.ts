@@ -211,21 +211,30 @@ export function preSaveConfirmLines(
     const at = p.atTime;
     const year = at === undefined ? '' : yearLabel(at);
     const name = (id: FeatureId): string => nameOf(id, at) ?? nameOf(id, undefined) ?? String(id);
+    // **次に開くときに、既定の修復が実際に何をするか**まで言う（増分 7 の手直し 3 回目 1-3）。
+    // 既定の修復はどれも区間の単位で、ほかの年の記録には触らない（`repair.ts` の先頭の方法）。
     if (p.kind === PRE_SAVE_PROBLEM.ParentAbsentThatYear && p.parentId !== undefined) {
       lines.push(
-        `「${name(p.featureId)}」は${year}に、その年には居ない上位領域「${name(p.parentId)}」を指しています`,
+        `「${name(p.featureId)}」は${year}に、その年には居ない上位領域「${name(p.parentId)}」を指しています` +
+          ` → 次に開くと、上位領域が居ない年の間だけ最上位にします`,
       );
     } else if (p.kind === PRE_SAVE_PROBLEM.ChildListMismatch) {
       const related = (p.relatedIds ?? []).map(name).join('・');
       lines.push(
-        related === ''
+        (related === ''
           ? `「${name(p.featureId)}」の下位領域の一覧が、${year}の実際の所属と食い違っています`
-          : `「${name(p.featureId)}」の下位領域の一覧が、${year}の実際の所属と食い違っています（${related}）`,
+          : `「${name(p.featureId)}」の下位領域の一覧が、${year}の実際の所属と食い違っています（${related}）`) +
+          ` → 次に開くと、一覧を各年の実際の所属に合わせます`,
       );
     } else if (p.kind === PRE_SAVE_PROBLEM.EmptyAggregate) {
-      lines.push(`まとめ役「${name(p.featureId)}」には、${year}に下位領域が 1 件もありません`);
+      lines.push(
+        `まとめ役「${name(p.featureId)}」には、${year}に下位領域が 1 件もありません` +
+          ` → 次に開くと、下位領域の居ない年の間だけ「${name(p.featureId)}」を無くします（ほかの年の記録は残ります）`,
+      );
     } else {
-      lines.push(`「${name(p.featureId)}」の上位領域のつながりが、${year}に食い違っています`);
+      lines.push(
+        `「${name(p.featureId)}」の上位領域のつながりが、${year}に食い違っています → 次に開くと直し方を聞かれます`,
+      );
     }
   }
   return lines;
