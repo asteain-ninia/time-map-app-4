@@ -210,8 +210,14 @@ function findHistoryContainingIn(
 }
 
 /**
- * `featureId` を載せている錨のうち、`anchorTime` に効いているものの **終わり**（無ければ null）。
+ * `featureId` を載せている錨のうち、`anchorTime` に効いているものが **実際に効いている区間の
+ * 終わり**（書かれた終わりと、その系列の次の錨の始まりの早いほう。どちらも無ければ null）。
  * 終わりが `anchorTime` 以前なら（壊れたデータへの防御）null を返す。純粋。
+ *
+ * **次の錨の始まりでも区切る**（B39 の手直し 2 回目 / 検証 3-2。司令塔の決定）: 年 T に作る
+ * 分け残しは、親の次の錨の始まりで終わる。親の後ろの記録は所有者が書いた形（たとえば 500 年に
+ * 東の帯を隣へ渡した）なので書き換えない。分け残しを先まで続けると、親が手放した土地が古い形の
+ * まま居残り、隣と重なる。
  */
 function effectiveEndAt(
   histories: readonly FeatureHistory[],
@@ -223,7 +229,11 @@ function effectiveEndAt(
   if (found === undefined) return null;
   const effective = resolveAt(found.history.series, anchorTime, calendar);
   if (effective.kind !== 'present') return null;
-  const end = effective.entry.end;
+  let end = effective.entry.end;
+  for (const entry of found.history.series.entries) {
+    if (compareTime(entry.start, anchorTime, calendar) <= 0) continue;
+    if (end === null || compareTime(entry.start, end, calendar) < 0) end = entry.start;
+  }
   if (end === null || compareTime(end, anchorTime, calendar) <= 0) return null;
   return end;
 }
@@ -1617,8 +1627,9 @@ export function applyAffiliationProposal(
     // **分け残しは元の面と一緒に終わる**（B39 の直し。B77 のうち分け残しの分だけ）。
     // 分け残しは元の面の土地の残りなので、元の面が 1500 年で終わるなら分け残しも
     // 1500 年で終わるのが自然である（終わらせないと、元の面が消えた後の年にも土地だけが
-    // 居残る）。元の面（＝まとめ役になった上位領域）の、この年に効いている錨の終わりを
-    // 写す。新しく作るまとめ役のほうは子と同じとは限らないので触らない（B77 の残り）。
+    // 居残る）。元の面（＝まとめ役になった上位領域）の、この年に効いている錨が実際に効いている
+    // 区間の終わり（書かれた終わりと次の錨の始まりの早いほう。B39 の手直し 2 回目）を写す。
+    // 新しく作るまとめ役のほうは子と同じとは限らないので触らない（B77 の残り）。
     const end =
       created.directDomain === true && created.parentId !== undefined
         ? effectiveEndAt(root.histories, created.parentId, anchorTime, calendar)
@@ -1637,12 +1648,22 @@ export function applyAffiliationProposal(
   return withHistories(root, histories);
 }
 
+/** ある年に当てる分け残しの削り（{@link applyAddUnderAggregate}）。 */
+export interface DirectDomainCarveStep {
+  readonly at: TimePoint;
+  readonly carves: readonly DirectDomainCarve[];
+}
+
 /**
  * **まとめ役の下に面を足した後始末**（B39 の直し）。追加の確定と同じ取り消し単位に畳む。
  *
  *   1. 分け残しの削り（{@link DirectDomainCarve}）: 新しい子と重なった分け残しを
  *      「分け残し − 子」に書き換える。覆い尽くされた分け残しはその年から消す。
  *      頂点は書き換えた地物が引くものだけに剪定する（古い外周を残骸として残さない）。
+ *      削りは年ごと（`steps`）に当てる。先頭は子を描いた年、続くのは分け残しの **後ろの錨**
+ *      のうち新しい子がまだ居る錨の始まり（B39 の手直し 2 回目 / 検証 2-1。8A・8B の
+ *      「後ろの錨へ引き継ぐ」と同じ考え方）。後ろの錨は始まりちょうどの年に書くので、
+ *      錨は増えず写しだけが差し替わる。
  *   2. 子の並び（`childIds`）を、その年からの実際の所属に揃える。追加は新しい系列を
  *      足すだけで親の子の並びを書き換えないので、揃えないと次に開いたときに
  *      「子の並びの食い違い」で修復を聞かれる。揃える向きは常に `parentId` から（U08）。
@@ -1653,23 +1674,24 @@ export function applyAffiliationProposal(
 export function applyAddUnderAggregate(
   root: DomainProject,
   parentId: FeatureId,
-  carves: readonly DirectDomainCarve[],
-  anchorTime: TimePoint,
+  steps: readonly DirectDomainCarveStep[],
   calendar: Calendar,
 ): DomainProject {
   let histories = root.histories;
-  for (const carve of carves) {
-    histories =
-      carve.after === null
-        ? removeFeatureAtTime(histories, carve.directDomainId, anchorTime, calendar)
-        : rewriteFeatureSnapshotAtTime(
-            histories,
-            carve.directDomainId,
-            carve.after,
-            carve.newVertices,
-            anchorTime,
-            calendar,
-          );
+  for (const step of steps) {
+    for (const carve of step.carves) {
+      histories =
+        carve.after === null
+          ? removeFeatureAtTime(histories, carve.directDomainId, step.at, calendar)
+          : rewriteFeatureSnapshotAtTime(
+              histories,
+              carve.directDomainId,
+              carve.after,
+              carve.newVertices,
+              step.at,
+              calendar,
+            );
+    }
   }
   // まとめ役が自分の系列を持たず別のまとめ役の錨に居候している（実データの州の形）なら、
   // 揃える前に自分の系列へ起こす（司令塔の決定 (1) の「記録の置き場」。所属変更の手順 0 と

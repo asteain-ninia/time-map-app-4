@@ -48,7 +48,6 @@ import type { MergeSnapshot } from '../domain/merge/index';
 import type { FeatureSnapshot } from '../domain/editing/index';
 import {
   applyAddProposal,
-  applyAddUnderAggregate,
   applyAffiliationProposal,
   applyDrillProposal,
   applyEditProposal,
@@ -91,10 +90,13 @@ import { resolveLeafShape } from '../domain/hierarchy/resolve-shape';
 import { difference, isOk } from '../domain/geometry/index';
 import { isMultiPolygonEmpty, type GeoMultiPolygon } from '../domain/geometry/types';
 import { alignMultiPolygon, referenceLonForMultiPolygon } from '../domain/geo/index';
-import { planDirectDomainCarves } from '../domain/promotion/index';
+import {
+  ADD_FOLLOW_UP,
+  followUpFrom,
+  settleAddUnderAggregate,
+} from '../domain/editing/add-follow-up';
 import type { IdGeneratorState } from '../domain/id-generator';
 import {
-  FEATURE_KIND,
   isDirectDomainLeaf,
   pruneVertexStore,
   referencedVertexIds,
@@ -307,6 +309,8 @@ type OverlapExemption = (
   b: FeatureId,
   features: readonly Feature[],
   proposalFeatureId: FeatureId,
+  resultState: DomainRoot,
+  time: TimePoint,
 ) => boolean;
 
 /**
@@ -319,8 +323,12 @@ type OverlapExemption = (
  * 外すのは「足した面 × 同じ親の分け残し（印のある末端）」の組だけで、隣の国との重なり
  * などは今までどおり聞く。追加の束ねだけが使う（編集・分ける等で分け残しに重ねたときは
  * 削らないので、聞くのが正しい）。
+ *
+ * **外すのは、確定の後始末が本当に分け残しを削るときだけ**（B39 の手直し 2 回目 / 検証 3-1）。
+ * 後始末の決め方（`followUpFrom`）を確定の側と同じ 1 本で読む ―― 決め方が割れると「外したのに
+ * 削らない」ができる。後始末が削らない形（さかのぼって描いた形など）なら外さず、板が出る。
  */
-const exemptNewChildOverDirectDomain: OverlapExemption = (a, b, features, newId) => {
+const exemptNewChildOverDirectDomain: OverlapExemption = (a, b, features, newId, root, time) => {
   if (a !== newId && b !== newId) return false;
   const otherId = a === newId ? b : a;
   const added = features.find((f) => f.id === newId);
@@ -329,8 +337,7 @@ const exemptNewChildOverDirectDomain: OverlapExemption = (a, b, features, newId)
   if (!isDirectDomainLeaf(other)) return false;
   const parentId = added.parentId;
   if (parentId === undefined || other.parentId !== parentId) return false;
-  const parent = features.find((f) => f.id === parentId);
-  return parent?.kind === FEATURE_KIND.Aggregate;
+  return followUpFrom(features, root, newId, time, calendar) === ADD_FOLLOW_UP.Settle;
 };
 
 /**
@@ -358,7 +365,9 @@ function detectSpatialAt<Snapshot>(
     const pairs =
       exemptPair === undefined
         ? detected
-        : detected.filter((pair) => !exemptPair(pair.a, pair.b, features, proposal.featureId));
+        : detected.filter(
+            (pair) => !exemptPair(pair.a, pair.b, features, proposal.featureId, resultState, time),
+          );
     const names = displayNamesAt(resultState, time);
     return conflictsFromOverlapPairs(pairs, names, () => ({ kind: 'point', at: time }));
   };
@@ -1114,21 +1123,10 @@ export function createAddUnderAggregateCommandForRoot(
   at: TimePoint,
   ids: { readonly idState: IdGeneratorState; readonly now: () => number },
 ): Command<DomainRoot> | null {
-  const features = featuresAt(root, at);
-  const added = features.find((f) => f.id === newFeatureId);
-  const parentId = added?.parentId;
-  if (parentId === undefined) return null;
-  const parent = features.find((f) => f.id === parentId);
-  if (parent === undefined || parent.kind !== FEATURE_KIND.Aggregate) return null;
-  const carves = planDirectDomainCarves(features, verticesAt(root, at), newFeatureId, ids);
-  const next = applyAddUnderAggregate(root, parentId, carves, at, calendar);
-  if (next === root) return null;
-  return makeCommand(
-    root,
-    next,
-    [parentId, ...carves.map((c) => c.directDomainId)],
-    UI_COMMAND_LABEL.Add,
-  );
+  const next = settleAddUnderAggregate(root, newFeatureId, at, calendar, ids);
+  if (next === null || next === root) return null;
+  const parentId = featuresAt(root, at).find((f) => f.id === newFeatureId)?.parentId;
+  return makeCommand(root, next, parentId === undefined ? [] : [parentId], UI_COMMAND_LABEL.Add);
 }
 
 // --- U31 全錨削除 → DomainRoot whole-state-swap (FR-41 / FR-73 / FR-85) -------

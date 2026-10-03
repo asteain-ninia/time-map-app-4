@@ -248,6 +248,7 @@ import { deletionStateFromHistories, describeDeletionImpact } from '../domain/de
 import { maxDerivedDepth } from '../domain/hierarchy/depth';
 import { FEATURE_KIND, featureDisplayName } from '../domain/feature';
 import { findHistoryContaining, toAffiliationEditProposal } from '../domain/editing/apply-proposal';
+import { ADD_FOLLOW_UP, followUpFrom } from '../domain/editing/add-follow-up';
 import { compare as compareTimePoints } from '../domain/time/normalized';
 import { toYearPoint } from '../domain/time/time-point';
 import {
@@ -2809,26 +2810,35 @@ export function App(): JSX.Element {
    * 失わせない）。修復ダイアログは受け皿として残っている。
    */
   const composeAddWithParentFollowUp = useCallback(
-    (addCommand: Command<DomainRoot>, newFeatureId: FeatureId, at: TimePoint): Command<DomainRoot> => {
+    (
+      addCommand: Command<DomainRoot>,
+      newFeatureId: FeatureId,
+      at: TimePoint,
+    ): { readonly command: Command<DomainRoot>; readonly deferred: boolean } => {
       const afterAdd = addCommand.execute(store.getState().domain).state;
       const features = featuresAt(afterAdd, at);
-      const added = features.find((f) => f.id === newFeatureId);
-      const parentId = added?.parentId;
-      if (parentId === undefined) return addCommand;
-      const parent = features.find((f) => f.id === parentId);
-      if (parent === undefined) return addCommand;
-      if (parent.kind === FEATURE_KIND.Aggregate) {
+      // **後始末の決め方は 1 本**（`domain/editing/add-follow-up.ts`）。重なりの検出から
+      // 分け残しとの組を外すかどうかも同じ答えを読む（B39 の手直し 2 回目 / 検証 3-1）。
+      const kind = followUpFrom(features, afterAdd, newFeatureId, at, calendar);
+      const only = { command: addCommand, deferred: false };
+      if (kind === ADD_FOLLOW_UP.Defer) return { command: addCommand, deferred: true };
+      if (kind === ADD_FOLLOW_UP.Settle) {
         // 2 人目以降（または既存のまとめ役の下）: 分け残しを削り、子の並びを揃える。
         const followUp = createAddUnderAggregateCommandForRoot(afterAdd, newFeatureId, at, {
           idState: createIdGeneratorState(),
           now: () => Date.now(),
         });
         return followUp === null
-          ? addCommand
-          : createCompositeCommand(UI_COMMAND_LABEL.Add, [addCommand, followUp]);
+          ? only
+          : {
+              command: createCompositeCommand(UI_COMMAND_LABEL.Add, [addCommand, followUp]),
+              deferred: false,
+            };
       }
-      // 点・線は親になれない（候補に出ない）。形を持つ末端だけを集約化する。
-      if (parent.kind !== FEATURE_KIND.Leaf) return addCommand;
+      if (kind !== ADD_FOLLOW_UP.Promote) return only;
+      // 1 人目: 形を持つ末端の親を集約化する（所属変更と同じ経路）。
+      const parentId = features.find((f) => f.id === newFeatureId)?.parentId;
+      if (parentId === undefined) return only;
       const built = buildAffiliationProposalForTargets(
         features,
         [newFeatureId],
@@ -2839,13 +2849,42 @@ export function App(): JSX.Element {
           vertexStore: verticesAt(afterAdd, at),
         },
       );
-      if (built.status === AFFILIATION_STATUS.Rejected) return addCommand;
+      if (built.status === AFFILIATION_STATUS.Rejected) return only;
       const binding = createLiveAffiliationBinding({ getRoot: () => afterAdd });
       const processed = binding.startProcess(toAffiliationEditProposal(built.proposal, at));
-      if (processed.status !== PROCESS_STATUS.Committed) return addCommand;
-      return createCompositeCommand(UI_COMMAND_LABEL.Add, [addCommand, processed.command]);
+      if (processed.status !== PROCESS_STATUS.Committed) return only;
+      return {
+        command: createCompositeCommand(UI_COMMAND_LABEL.Add, [addCommand, processed.command]),
+        deferred: false,
+      };
     },
-    [store],
+    [store, calendar],
+  );
+
+  /**
+   * **追加の確定の入口は 1 つ**（B39 の手直し 2 回目 / 検証 3-1）。直接の確定（`onAddCommitted`）と
+   * 重なりの板を通った確定（`onConflictCommitted`）の両方がここを通り、同じ後始末を同じ
+   * 取り消し単位に畳む。以前は板を通った確定が後始末を通らず、分け残しとの重なりを検出から
+   * 外したのに削らない、ができていた（子がまるごと分け残しに重なって残った）。
+   * 確定できた（後始末まで記録した）なら true。
+   */
+  const recordAddCommit = useCallback(
+    (
+      result: ProcessResult<DomainRoot>,
+      newFeatureId: FeatureId,
+      preference: NextTargetPreference | undefined,
+      at: TimePoint,
+    ): boolean => {
+      if (result.status !== PROCESS_STATUS.Committed) {
+        recordCommit(result, preference, at);
+        return false;
+      }
+      const composed = composeAddWithParentFollowUp(result.command, newFeatureId, at);
+      recordCommand(composed.command, preference, at);
+      if (composed.deferred) announceResult(APP_STRINGS.addedShapeDeferred);
+      return true;
+    },
+    [recordCommit, recordCommand, composeAddWithParentFollowUp, announceResult],
   );
 
   const onAddCommitted = useCallback(
@@ -2854,18 +2893,9 @@ export function App(): JSX.Element {
       newFeatureId: FeatureId,
       committed?: { readonly sharedVertexCount: number },
     ) => {
-      if (result.status === PROCESS_STATUS.Committed) {
-        // B39: 親が形を持つ末端なら集約化を、まとめ役なら分け残しの削りを **同じ取り消し
-        // 単位**に畳む。
-        const at = store.getState().currentTime;
-        recordCommand(
-          composeAddWithParentFollowUp(result.command, newFeatureId, at),
-          { featureId: newFeatureId },
-          at,
-        );
-      } else {
-        recordCommit(result, { featureId: newFeatureId }, store.getState().currentTime);
-      }
+      // B39: 親が形を持つ末端なら集約化を、まとめ役なら分け残しの削りを **同じ取り消し
+      // 単位**に畳む（入口は `recordAddCommit` の 1 つ）。
+      recordAddCommit(result, newFeatureId, { featureId: newFeatureId }, store.getState().currentTime);
       // 増分 3: **吸着して境界を共有したことを、状態行の「直前の結果」に日本語で出す**
       // （設計書 §H.5。成功を一度も知らせない＝ C6 への手当ての 1 件）。`recordCommit` が
       // 出す「地物の追加を行いました」を、共有したときだけ上書きする。
@@ -2874,7 +2904,7 @@ export function App(): JSX.Element {
         announceResult(APP_STRINGS.addedWithSharedVertices(shared));
       }
     },
-    [recordCommit, recordCommand, store, announceResult, composeAddWithParentFollowUp],
+    [recordAddCommit, store, announceResult],
   );
 
   // KNIFE COMMIT (C3 — 教訓 5.11 / U12): record as one history unit and promote the
@@ -3299,6 +3329,8 @@ export function App(): JSX.Element {
         anchorTime: proposal.anchorTime,
         // 教訓 5.11: promote the added feature once the conflict commit lands.
         preference: { featureId: proposal.featureId },
+        // B39 の手直し 2 回目: 板を通った確定も、追加の後始末の入口を通す。
+        addedFeatureId: proposal.featureId,
       });
     },
     [hostBootstrap],
@@ -3390,11 +3422,15 @@ export function App(): JSX.Element {
       // the same feature a direct commit would (教訓 5.11; was being dropped).
       // fr100: recolor at the PAUSED proposal's anchor time (stashed on the conflict
       // state) — the fallback current time covers only a legacy-shaped state.
-      recordCommit(
-        result,
-        conflictState?.preference,
-        conflictState?.anchorTime ?? store.getState().currentTime,
-      );
+      const conflictAt = conflictState?.anchorTime ?? store.getState().currentTime;
+      // 止まっていたのが **追加** なら、直接の確定と同じ入口で後始末まで通す（B39 の手直し
+      // 2 回目 / 検証 3-1）。ほかの道具は今までどおり。
+      const addedId = conflictState?.addedFeatureId;
+      if (addedId !== undefined) {
+        recordAddCommit(result, addedId, conflictState?.preference, conflictAt);
+      } else {
+        recordCommit(result, conflictState?.preference, conflictAt);
+      }
       // Survive vertex-delete (bughunt5 HOLE-1): the deleted vertex ids linger in the
       // selection because reresolve cannot prune them (makeCommand reports deletion at
       // feature-history level only). Clear them in the SAME order the DIRECT survive
@@ -3420,7 +3456,7 @@ export function App(): JSX.Element {
       setConflictState(null);
       reArmActiveTool();
     },
-    [recordCommit, reArmActiveTool, conflictState, store],
+    [recordCommit, recordAddCommit, reArmActiveTool, conflictState, store],
   );
 
   const onConflictCancel = useCallback(() => {
@@ -5102,6 +5138,12 @@ interface ConflictPending {
    * (backward-compatible — a conflict commit with no owner clears nothing).
    */
   readonly clearVertexOwner?: FeatureId;
+  /**
+   * 止まっていたのが **面・線・点の追加** なら、その新しい地物の id（B39 の手直し 2 回目）。
+   * 板を通った確定でも、直接の確定と同じ後始末（親の集約化・分け残しの削り・子の並び）を
+   * 同じ取り消し単位で通すために使う。ほかの道具では無い。
+   */
+  readonly addedFeatureId?: FeatureId;
 }
 
 /**

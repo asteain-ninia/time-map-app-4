@@ -53,6 +53,12 @@ export interface DirectDomainCarve {
 export interface PlanDirectDomainCarveOptions {
   readonly idState: IdGeneratorState;
   readonly now: TimeSource;
+  /**
+   * 採番で避ける id の集合（共有して使い回す）。渡せば、その年の地物・頂点に加えてここに
+   * 載っている id も避け、新しく採った id をここへ足す。複数の年の錨を続けて削るとき、
+   * 年をまたいで同じ id を 2 度採らないために使う（B39 の手直し 2 回目）。
+   */
+  readonly reserved?: Set<string>;
 }
 
 /**
@@ -78,7 +84,8 @@ export function planDirectDomainCarves(
   if (childShape === undefined) return [];
 
   // 採番の衝突を避ける（教訓 5.37。所属変更の採番と同じ形）。
-  const existing = new Set<string>(features.map((f) => f.id));
+  const existing = options.reserved ?? new Set<string>();
+  for (const f of features) existing.add(f.id);
   for (const v of vertices.byId.keys()) existing.add(v);
   let gen = options.idState;
   const mint = (prefix: string): string => {

@@ -37,6 +37,7 @@ import {
 import { deriveAnchorId } from '../anchor-id';
 import {
   FEATURE_KIND,
+  isDirectDomainLeaf,
   referencedVertexIds,
   withAggregateChildIds,
   withParentId,
@@ -701,6 +702,22 @@ export interface CascadedEnd {
   readonly whole: boolean;
 }
 
+/** `id` が（どこかの錨で）`parentId` を親にする **印のある分け残し**（末端）か。 */
+function isMarkedDirectDomainOf(
+  histories: readonly FeatureHistory[],
+  id: FeatureId,
+  parentId: FeatureId,
+): boolean {
+  const own = histories.find((h) => h.featureId === id);
+  return (
+    own?.series.entries.some((e) =>
+      e.anchor.snapshot.features.some(
+        (f) => f.id === id && isDirectDomainLeaf(f) && f.parentId === parentId,
+      ),
+    ) === true
+  );
+}
+
 /** {@link editFeatureInterval} の結果。 */
 export type FeatureIntervalEditResult =
   | {
@@ -764,7 +781,24 @@ function coreEdit(
       ? base.filter((_, i) => i !== index)
       : base.map((h, i) => (i === index ? { featureId, series: run.series } : h));
 
-  const promoted = directChildrenWithin(base, featureId, lost, calendar);
+  const children = directChildrenWithin(base, featureId, lost, calendar);
+  // **印のある分け残しは最上位へ昇格させず、一緒に居なくする**（B39 の手直し 2 回目 / 検証 2-3。
+  // 司令塔の決定）。分け残しは元の面の土地の残りとして導かれた面で、本物の子ではない。
+  // まとめ役を「この年に終わった」にしたのに分け残しだけが最上位の面として残ると、終わらせた
+  // はずの土地が地図に居残る（印のせいで上位領域の候補にも出ない）。居なくなる区間で、その
+  // 分け残しの記録を切る（区間の外は触らない）。
+  const directDomains = children.filter((id) => isMarkedDirectDomainOf(base, id, featureId));
+  for (const ddId of directDomains) {
+    const i = base.findIndex((h) => h.featureId === ddId);
+    const h = i >= 0 ? base[i] : undefined;
+    if (h === undefined) continue;
+    const cut = cutSeries(h.series, ddId, lost, calendar);
+    base =
+      cut.entries.length === 0
+        ? base.filter((_, k) => k !== i)
+        : base.map((x, k) => (k === i ? { featureId: ddId, series: cut } : x));
+  }
+  const promoted = children.filter((id) => !directDomains.includes(id));
   base = clearParentWithin(base, promoted, featureId, lost, calendar);
 
   // **編集した地物自身が、その年には居ない親を指す形にしない**（1-1。子の開始年を親より前へ

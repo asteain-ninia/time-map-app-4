@@ -285,10 +285,26 @@ export function buildDirectDomainForLeaf(
   // 差分が空 (U06 トレランス内面積ゼロ) → 直轄領を生成しない (退化ガード)。
   if (isMultiPolygonEmpty(diff.result)) return { kind: 'empty', originalShape };
 
-  const built = buildDirectDomainShape(diff.result, {
-    nextVertexId: ports.nextVertexId,
-    nextRingId: ports.nextRingId,
-  });
+  // **元の面の頂点 id を座標の一致で引き継ぐ**（B39 の手直し 2 回目 / 検証 2-4。開発ガイドの
+  // 「共有する点は 1 つの出どころから」）。分け残しの外周は元の面の外周そのものなので、新しく
+  // 採番すると、元の面と境を共有していた隣との共有が黙って切れる（座標は同じなので検査も
+  // 何も言わない。あとで隣の境の頂点を動かすと分け残しが付いてこない）。子を引いて新しく
+  // 生まれる角だけを採番する。
+  const ownVertices: Vertex[] = [];
+  for (const ring of leaf.shape.rings) {
+    for (const vid of ring.vertexIds) {
+      const body = vertices.byId.get(vid);
+      if (body !== undefined) ownVertices.push(body);
+    }
+  }
+  const built = buildDirectDomainShape(
+    diff.result,
+    {
+      nextVertexId: ports.nextVertexId,
+      nextRingId: ports.nextRingId,
+    },
+    ownVertices,
+  );
   if (built === undefined) return { kind: 'unresolved', stage: 'build' };
 
   const ddName = directDomainName(leaf.attributes.name, nameOverride);
