@@ -35,10 +35,11 @@ import type { DomainProject } from '../persistence/serialize';
 import { INCONSISTENCY, checkConsistency } from '../persistence/consistency';
 import {
   applyAddProposal,
-  applyAddUnderAggregate,
   applyAffiliationProposal,
   toAffiliationEditProposal,
 } from '../editing/apply-proposal';
+import { ADD_FOLLOW_UP, addFollowUpKind, settleAddUnderAggregate } from '../editing/add-follow-up';
+import { editFeatureInterval, endRunAt } from '../affiliation/interval-edit';
 import { buildAffiliationProposalForTargets } from '../affiliation/proposal';
 import { parentExisting } from '../affiliation/decision';
 
@@ -122,22 +123,50 @@ function addFirstChild(root: DomainProject, child: { feature: LeafFeature; verti
     eff.features,
     [child.feature.id],
     parentExisting(child.feature.parentId!),
-    { idState: createIdGeneratorState(), now: () => 1, vertexStore: eff.store },
+    { idState: createIdGeneratorState(), now: tick, vertexStore: eff.store },
   );
   expect(built.status, JSON.stringify(built)).toBe('proposal');
   if (built.status !== 'proposal') throw new Error('unreachable');
   return applyAffiliationProposal(afterAdd, toAffiliationEditProposal(built.proposal, at), calendar);
 }
 
+/** 末端どうしの面積を持つ重なり（その年の整合の検査が出すもの）の件数。 */
+function overlapCount(root: DomainProject): number {
+  return checkConsistency(root, calendar).inconsistencies.filter(
+    (i) => i.kind === INCONSISTENCY.TerminalExclusion || i.kind === INCONSISTENCY.AnchorSpatialOverlap,
+  ).length;
+}
+
+/** 採番の時刻（呼ぶたびに進める ―― 実アプリの `Date.now()` と同じく、確定ごとに違う）。 */
+let clock = 100;
+const tick = (): number => (clock += 1);
+
 /** 2 人目以降: 追加（親＝まとめ役）のあと、分け残しを削り子の並びを揃える。 */
 function addLaterChild(root: DomainProject, child: { feature: LeafFeature; vertices: Vertex[] }, at = T0): DomainProject {
   const afterAdd = add(root, child, at);
-  const eff = effectiveAt(afterAdd, at);
-  const carves = planDirectDomainCarves(eff.features, eff.store, child.feature.id, {
+  const now = tick();
+  const settled = settleAddUnderAggregate(afterAdd, child.feature.id, at, calendar, {
     idState: createIdGeneratorState(),
-    now: () => 2,
+    now: () => now,
   });
-  return applyAddUnderAggregate(afterAdd, child.feature.parentId!, carves, at, calendar);
+  expect(settled).not.toBeNull();
+  return settled!;
+}
+
+/**
+ * 画面の確定と同じ決め方（`addFollowUpKind`）で後始末を選んで当てる。返り値の `kind` で
+ * どの後始末を通ったかも見る。
+ */
+function addChild(
+  root: DomainProject,
+  child: { feature: LeafFeature; vertices: Vertex[] },
+  at = T0,
+): { root: DomainProject; kind: string } {
+  const afterAdd = add(root, child, at);
+  const kind = addFollowUpKind(afterAdd, child.feature.id, at, calendar);
+  if (kind === ADD_FOLLOW_UP.Promote) return { root: addFirstChild(root, child, at), kind };
+  if (kind === ADD_FOLLOW_UP.Settle) return { root: addLaterChild(root, child, at), kind };
+  return { root: afterAdd, kind };
 }
 
 function ringArea(ring: GeoRing): number {
@@ -288,6 +317,155 @@ describe('B39 — 面の中に子を順に描くと、平らな形になり修�
     expect([...children].sort()).toEqual(
       [asFeatureId('C1'), asFeatureId('C2'), asFeatureId('C3'), dds[0]!.id].sort(),
     );
+    const report = checkConsistency(root, calendar);
+    expect(report.inconsistencies, JSON.stringify(report.inconsistencies)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B39 の手直し 2 回目（検証 docs/ui-redesign/審査/B39-検証Opus.md の 3-2・2-1・2-2・2-3・2-4）
+// ---------------------------------------------------------------------------
+
+/** 錨を並べた系列を持つ履歴を作る（錨ごとに地物と頂点）。 */
+function historyOf(
+  ownerId: FeatureId,
+  entries: readonly { at: TimePoint; features: Feature[]; vertices: Vertex[] }[],
+): DomainProject['histories'][number] {
+  return {
+    featureId: ownerId,
+    series: {
+      entries: entries.map((e) =>
+        createAnchorEntry(
+          createAnchor(deriveAnchorId(ownerId, e.at), createAnchorSnapshot(e.features, createVertexStore(e.vertices))),
+          e.at,
+          null,
+        ),
+      ),
+    },
+  };
+}
+
+const Y = (y: number): TimePoint => timePointYear(y);
+
+describe('B39 の手直し 2 回目 — 年をまたぐ形・隣との共有・終わらせ方', () => {
+  it('3-2: 年 T に作る分け残しは親の次の錨の始まりで終わり、親が後で手放した土地は戻らない', () => {
+    // P は 0 年に 100×100、500 年に東の帯（80〜100）を Q へ渡して 80×100。
+    const p0 = square('P', 0, 0, 100, 100);
+    const e1 = createVertex(asVertexId('P5-1'), createCoordinate(80, 0));
+    const e2 = createVertex(asVertexId('P5-2'), createCoordinate(80, 100));
+    const p500v = [p0.vertices[0]!, e1, e2, p0.vertices[3]!];
+    const p500f = createLeafFeature(
+      P,
+      createBasicAttributes('P', 0, 3000),
+      COLOR,
+      createShape([createTerritoryRing(asRingId('P-r500'), p500v.map((v) => v.id))]),
+    );
+    // Q は 500 年から、P と境の 2 頂点を共有する東の帯。
+    const q1 = createVertex(asVertexId('Q-1'), createCoordinate(100, 0));
+    const q2 = createVertex(asVertexId('Q-2'), createCoordinate(100, 100));
+    const qFeature = createLeafFeature(
+      asFeatureId('Q'),
+      createBasicAttributes('Q', 0, 3000),
+      COLOR,
+      createShape([createTerritoryRing(asRingId('Q-r'), [e1.id, q1.id, q2.id, e2.id])]),
+    );
+    let root: DomainProject = {
+      ...emptyProject(),
+      histories: [
+        historyOf(P, [
+          { at: Y(0), features: [p0.feature], vertices: p0.vertices },
+          { at: Y(500), features: [p500f], vertices: p500v },
+        ]),
+        historyOf(asFeatureId('Q'), [{ at: Y(500), features: [qFeature], vertices: [e1, q1, q2, e2] }]),
+      ],
+    };
+    expect(overlapCount(root)).toBe(0);
+    root = addChild(root, square('C1', 10, 10, 30, 30, P), Y(100)).root;
+    const ddAt300 = effectiveAt(root, Y(300)).features.find(isDirectDomainLeaf);
+    expect(ddAt300).toBeDefined();
+    // 分け残しは 500 年（P の次の錨の始まり）で終わる。
+    const ddHistory = root.histories.find((h) => h.featureId === ddAt300!.id)!;
+    expect(ddHistory.series.entries.map((e) => e.end)).toEqual([Y(500)]);
+    expect(effectiveAt(root, Y(600)).features.some(isDirectDomainLeaf)).toBe(false);
+    // 東の帯が分け残しとして戻って Q と重なる、が無い。
+    expect(overlapCount(root)).toBe(0);
+  });
+
+  it('2-1: 100・300・200 年の順に子を描いても、分け残しの後ろの錨へ削りが入り重なりが無い', () => {
+    let root = add(emptyProject(), square('P', 0, 0, 100, 100));
+    root = addChild(root, square('C1', 10, 10, 30, 30, P), Y(100)).root;
+    root = addChild(root, square('C2', 50, 10, 70, 30, P), Y(300)).root;
+    const third = addChild(root, square('C3', 10, 50, 30, 70, P), Y(200));
+    expect(third.kind).toBe(ADD_FOLLOW_UP.Settle);
+    root = third.root;
+    const report = checkConsistency(root, calendar);
+    expect(report.inconsistencies, JSON.stringify(report.inconsistencies)).toHaveLength(0);
+    const at300 = effectiveAt(root, Y(300));
+    const dd300 = at300.features.find(isDirectDomainLeaf) as LeafFeature;
+    expect(area(resolveLeafShape(dd300.shape, at300.store)!)).toBeCloseTo(10000 - 3 * 400, 6);
+    const at200 = effectiveAt(root, Y(200));
+    const dd200 = at200.features.find(isDirectDomainLeaf) as LeafFeature;
+    expect(area(resolveLeafShape(dd200.shape, at200.store)!)).toBeCloseTo(10000 - 2 * 400, 6);
+  });
+
+  it('2-2: 1 人目より前の年に 2 人目を描いたら、後始末をせず従来の形に落とす（分け残しは 2 つにならない）', () => {
+    let root = add(emptyProject(), square('P', 0, 0, 100, 100));
+    root = addChild(root, square('C1', 10, 10, 30, 30, P), Y(100)).root;
+    const second = addChild(root, square('C2', 50, 10, 70, 30, P), Y(50));
+    expect(second.kind).toBe(ADD_FOLLOW_UP.Defer);
+    root = second.root;
+    const allDd = new Set<string>();
+    for (const h of root.histories) {
+      for (const e of h.series.entries) {
+        for (const f of e.anchor.snapshot.features) if (isDirectDomainLeaf(f)) allDd.add(f.id);
+      }
+    }
+    expect(allDd.size).toBe(1);
+  });
+
+  it('2-4: 1 人目で親を集約化しても、親と隣が共有していた頂点の id を分け残しが引き継ぐ（T 字 0）', () => {
+    const p = square('P', 0, 0, 100, 100);
+    // Q は P の東隣で、境の 2 頂点（100,0）（100,100）を P と共有する。
+    const qOwn = [
+      createVertex(asVertexId('Q-1'), createCoordinate(200, 0)),
+      createVertex(asVertexId('Q-2'), createCoordinate(200, 100)),
+    ];
+    const qShape = createShape([
+      createTerritoryRing(asRingId('Q-r'), [p.vertices[1]!.id, qOwn[0]!.id, qOwn[1]!.id, p.vertices[2]!.id]),
+    ]);
+    const q = createLeafFeature(asFeatureId('Q'), createBasicAttributes('Q', 0, 3000), COLOR, qShape);
+    let root = add(emptyProject(), p);
+    root = add(root, { feature: q, vertices: [p.vertices[1]!, qOwn[0]!, p.vertices[2]!, qOwn[1]!] });
+    root = addChild(root, square('C1', 10, 10, 30, 30, P)).root;
+    const dd = effectiveAt(root, T0).features.find(isDirectDomainLeaf) as LeafFeature;
+    const outer = dd.shape.rings.find((r) => r.parentRingId === undefined)!;
+    // 外周は元の 4 頂点そのもの（隣と共有していた 2 頂点を含む。境の上に新しい頂点が増えない ＝ T 字 0）。
+    expect([...outer.vertexIds].sort()).toEqual(p.vertices.map((v) => v.id).sort());
+    const report = checkConsistency(root, calendar);
+    expect(report.inconsistencies, JSON.stringify(report.inconsistencies)).toHaveLength(0);
+  });
+
+  it('2-3: まとめ役を「この年に終わった」にすると、印のある分け残しも一緒に終わる（最上位に残らない）', () => {
+    let root = add(emptyProject(), square('P', 0, 0, 100, 100));
+    root = addChild(root, square('C1', 10, 10, 30, 30, P)).root;
+    root = addChild(root, square('C2', 50, 10, 70, 30, P)).root;
+    const own = root.histories.find((h) => h.featureId === P)!;
+    const r = resolveAt(own.series, Y(500), calendar);
+    if (r.kind !== 'present') throw new Error('P が 500 年に居ない');
+    const anchorId = r.entry.anchor.id;
+    const ended = editFeatureInterval(
+      root.histories,
+      P,
+      (series) => endRunAt(series, P, anchorId, Y(500), calendar),
+      calendar,
+    );
+    expect(ended.ok).toBe(true);
+    if (!ended.ok) return;
+    // 最上位へ移るのは本物の子 2 人だけ（分け残しは昇格させない）。
+    expect([...ended.promoted].sort()).toEqual([asFeatureId('C1'), asFeatureId('C2')]);
+    root = { ...root, histories: ended.histories };
+    expect(effectiveAt(root, Y(400)).features.some(isDirectDomainLeaf)).toBe(true);
+    expect(effectiveAt(root, Y(600)).features.some(isDirectDomainLeaf)).toBe(false);
     const report = checkConsistency(root, calendar);
     expect(report.inconsistencies, JSON.stringify(report.inconsistencies)).toHaveLength(0);
   });

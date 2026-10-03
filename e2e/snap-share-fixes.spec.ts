@@ -208,6 +208,9 @@ test.describe('増分 3 の手直し — 実アプリで固定する', () => {
         const value = await select.inputValue();
         await page.getByTestId('add-name').fill(name);
         await page.getByTestId('add-save').click();
+        // 保存は 1 コマ遅れて走る（B39 の進行表示）。素性欄が閉じる（＝保存が走り終えた）のを
+        // 待たないと、次の手（最後の Ctrl+S）が子の確定より先に走り、保存ファイルに子が居ない。
+        await expect(page.getByTestId('add-property-form')).toHaveCount(0);
         await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
         return { value, options };
       };

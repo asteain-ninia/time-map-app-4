@@ -7,9 +7,10 @@
 // 通して見る ―― 2 人目で「重なりの解決」の板が出る、既定が分け残しを指す、といった
 // 配線の欠陥は単体では緑のまま残る（開発ガイド §5.49）。
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { expect, test, type Page } from '@playwright/test';
 import { strFromU8, unzipSync } from 'fflate';
@@ -20,6 +21,7 @@ import {
   drawFace,
   enterEditMode,
   launchApp,
+  launchAppWithProject,
   leafReport,
   loadProject,
   placeVertices,
@@ -220,4 +222,141 @@ test.describe('B39 — 面の中に子を描くと平らに並び、開き直し
       await app.close();
     }
   });
+
+  // 検証 3-1（B39 の手直し 2 回目）: 3 人目が 1 人目と分け残しの両方に重なると、重なりの板が出る
+  // （聞くのは 1 人目との重なりだけ ―― 分け残しとの重なりは後始末で削るので聞かない）。板で答えて
+  // 確定しても、直接の確定と同じ後始末を通り、分け残しが削られて重なりが残らない。
+  test('重なりの板を通って確定した子でも、分け残しが削られ重なりが残らない（開き直しで板なし）', async () => {
+    test.setTimeout(240_000);
+    const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-b39c-'));
+    const target = join(workDir, 'b39c.gimoza');
+    const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });
+    try {
+      await armAddAreaTool(page);
+      const b = await addInputLayerBox(page);
+      const cx = b.x + b.width / 2;
+      const cy = b.y + b.height / 2;
+      const parentId = await drawFace(page, squareCorners(cx + 60, cy, 150), { name: '親' });
+      await drawChild(page, { x: cx + 10, y: cy - 70, half: 30 }, '子1');
+      await drawChild(page, { x: cx + 110, y: cy - 70, half: 30 }, '子2');
+      const before = await leafReport(page, { names: ['親 直轄領'] });
+      const ddBefore = before.entries[0]!.areaKm2!;
+
+      // 3 人目: 頂点は 3 つとも分け残しの中（1 人目の外）、辺が 1 人目の角を横切る三角形。
+      await armAddAreaTool(page);
+      await placeVertices(page, [
+        [cx + 10, cy - 25],
+        [cx + 70, cy - 25],
+        [cx + 70, cy - 70],
+      ]);
+      await page.getByTestId('add-complete').click();
+      await expect(page.getByTestId('add-parent')).toHaveValue(parentId);
+      await page.getByTestId('add-name').fill('子3');
+      await page.getByTestId('add-save').click();
+      const dialog = page.getByTestId('conflict-dialog');
+      await expect(dialog).toBeVisible();
+      // 聞かれるのは「子1 ／ 子3」の 1 行だけ（分け残しとの重なりは聞かない）。
+      const rows = page.getByTestId('conflict-rows').locator(':scope > li');
+      await expect(rows).toHaveCount(1);
+      await expect(rows.first().getByTestId('conflict-row-features')).not.toContainText('直轄領');
+      await rows.first().getByRole('radio', { name: /子1/ }).check();
+      await page.getByTestId('conflict-apply').click();
+      await expect(dialog).toHaveCount(0);
+
+      // 分け残しは削られ、どの組も重ならない。
+      await expect
+        .poll(async () =>
+          (await leafReport(page, { names: ['子1', '子2', '子3', '親 直轄領'] })).entries.length,
+        )
+        .toBe(4);
+      const after = await leafReport(page, { names: ['子1', '子2', '子3', '親 直轄領'] });
+      expect(after.maxPairOverlapKm2).toBe(0);
+      expect(after.entries.find((e) => e.name === '親 直轄領')!.areaKm2!).toBeLessThan(ddBefore);
+
+      await page.keyboard.press('Control+s');
+      await expect(page.getByTestId('statusbar-result')).toContainText('保存しました');
+      expect(await reopenWithoutBoards(page, target)).toBe('loaded');
+    } finally {
+      await app.close();
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  });
 });
+
+// 実データ（DERLE_TMAP_DIR か derle-import/ に複写元が無ければ skip）。正準ファイルは開かず、
+// 一時ディレクトリへ複写して開く（教訓 5.48）。
+const REAL_DATA_FILE = 'derle-world-full-2026-08-16.gimoza';
+const dataDir =
+  process.env['DERLE_TMAP_DIR'] ??
+  resolve(dirname(fileURLToPath(import.meta.url)), '..', 'derle-import');
+const canonicalPath = join(dataDir, REAL_DATA_FILE);
+
+test.describe('B39 — 実データ（デーレ界）で、重なりの板を通った子の後始末', () => {
+  test.skip(!existsSync(canonicalPath), `実データが無い (${canonicalPath})`);
+
+  test('ナイー共和国の中に子を 2 人描き、3 人目が 1 人目と分け残しに重なる → 板 → 確定で重なり 0', async () => {
+    test.setTimeout(240_000);
+    const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-b39-real-'));
+    const workingCopy = join(workDir, REAL_DATA_FILE);
+    copyFileSync(canonicalPath, workingCopy);
+    const canonicalBefore = statSync(canonicalPath);
+    const { app, page } = await launchAppWithProject(workingCopy);
+    try {
+      const map = (await page.getByTestId('map-input-layer').boundingBox())!;
+      const cx = map.x + map.width / 2 - 200;
+      const cy = map.y + map.height / 2 + 80;
+      // 全体表示の (−200, +80) はナイー共和国の内陸。そこへ寄って、頂点の遠い所に描く。
+      await page.mouse.move(cx, cy);
+      for (let k = 0; k < 8; k += 1) {
+        await page.mouse.wheel(0, -300);
+        await page.waitForTimeout(150);
+      }
+      await armAddAreaTool(page);
+      await placeVertices(page, squareCorners(cx - 60, cy, 20));
+      await page.getByTestId('add-complete').click();
+      const parentId = await page.getByTestId('add-parent').inputValue();
+      expect(parentId).not.toBe('');
+      await page.getByTestId('add-name').fill('子1');
+      await page.getByTestId('add-save').click();
+      await expect(page.getByTestId('add-property-form')).toHaveCount(0);
+      const second = await drawChild(page, { x: cx, y: cy, half: 20 }, '子2');
+      expect(second.defaultParent).toBe(parentId);
+
+      // 3 人目: 頂点は 3 つとも分け残しの中（1 人目の外）、辺が 1 人目の角を横切る三角形。
+      await armAddAreaTool(page);
+      await placeVertices(page, [
+        [cx - 72, cy + 36],
+        [cx - 25, cy + 36],
+        [cx - 25, cy - 5],
+      ]);
+      await page.getByTestId('add-complete').click();
+      await expect(page.getByTestId('add-parent')).toHaveValue(parentId);
+      await page.getByTestId('add-name').fill('子3');
+      await page.getByTestId('add-save').click();
+      const dialog = page.getByTestId('conflict-dialog');
+      await expect(dialog).toBeVisible();
+      const rows = page.getByTestId('conflict-rows').locator(':scope > li');
+      await expect(rows).toHaveCount(1);
+      await expect(rows.first().getByTestId('conflict-row-features')).not.toContainText('直轄領');
+      await rows.first().getByRole('radio', { name: /子1/ }).check();
+      await page.getByTestId('conflict-apply').click();
+      await expect(dialog).toHaveCount(0);
+
+      const names = ['子1', '子2', '子3'];
+      await expect
+        .poll(async () => (await leafReport(page, { names })).entries.length)
+        .toBe(3);
+      // 分け残し（「ナイー共和国 直轄領」）を含めて、どの組も重ならない。
+      const report = await leafReport(page, { names: [...names, 'ナイー共和国 直轄領'] });
+      expect(report.entries.map((e) => e.name).sort()).toEqual([...names, 'ナイー共和国 直轄領'].sort());
+      expect(report.maxPairOverlapKm2).toBe(0);
+    } finally {
+      await app.close();
+      rmSync(workDir, { recursive: true, force: true });
+    }
+    const canonicalAfter = statSync(canonicalPath);
+    expect(canonicalAfter.size).toBe(canonicalBefore.size);
+    expect(canonicalAfter.mtimeMs).toBe(canonicalBefore.mtimeMs);
+  });
+});
+
