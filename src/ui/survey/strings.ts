@@ -47,9 +47,11 @@ export const SURVEY_STRINGS = {
   removeLineOfKm: (km: string): string => `${km} の線を消す`,
   /**
    * 距離の文が **ほかの候補と同じになったとき** だけ添える端点（増分 8C の手直し / GPT #1）。
-   * 「1,234km の線を消す（北 10.0° 東 20.0° → 北 10.0° 東 40.0°）」。
+   * 「1,234km の線を消す（北緯 10.0° 東経 20.0° → 北緯 10.0° 東経 40.0°）」。
    */
   removeLineOfKmWithEnds: (km: string, ends: string): string => `${km} の線を消す（${ends}）`,
+  /** 端点まで同じ線（同じ 2 点を 2 回測った）に添える、測った順。 */
+  endsWithOrder: (ends: string, order: number): string => `${ends}・測った順で ${String(order)} 本目`,
   /** 右クリックで線を消したあとの状態行（増分 8C の手直し / 反証 #2）。［戻す］を添える。 */
   lineRemoved: '測量の線を消しました',
   /** 状態行の［戻す］ボタンの文字。 */
