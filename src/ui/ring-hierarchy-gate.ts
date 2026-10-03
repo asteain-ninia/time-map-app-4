@@ -21,7 +21,9 @@
 // 何か 1 つでも違反があったか」で見ていたので、もとから壊れていた面では、別の穴を隣の穴へ
 // 入れるような **新しい破損も素通し** していた。いまは違反 1 件ずつ（種類・環・相手の環）を
 // 編集の前と後で比べ、**後にだけある違反** があれば、面がもとから壊れていても断る。
-// もとからある違反だけが残っている（または減った）なら止めない。
+// もとからある違反だけが残っている（または減った）なら止めない。「親の外へ出る」違反は、
+// 交わる（はみ出す）と完全に外を同じ組の違反と読む（外へ出ていた穴を戻す途中は止めない）。
+// ただし、はみ出す → 完全に外 の悪化は新しい破損として断る（再手直し。再検証 2-1）。
 //
 // 断ったときの文は、**どの面のどの年の形が壊れるか** を添える（増分 8E の手直し。反証 2-2）。
 // 壊れるのは引いた面とは別の面（頂点を共有している隣の面の穴）や、画面に見えていない後ろの
@@ -166,8 +168,8 @@ export function ringHierarchyViolationsIntroduced(
         const leaf = live !== undefined && isLeaf(live) ? live : candidate;
         const result = validateCandidate(leaf.shape, store);
         if (result.valid) continue;
-        const priorKeys = violationKeysBefore(before, candidate.id, at);
-        const fresh = result.violations.filter((v) => !priorKeys.has(violationKey(v)));
+        const prior = violationKeysBefore(before, candidate.id, at);
+        const fresh = result.violations.filter((v) => isNewViolation(v, prior));
         if (fresh.length === 0) continue;
         out.push({
           kind: RING_HIERARCHY_GATE_KIND,
@@ -205,16 +207,66 @@ export function violationKey(v: RingViolation): string {
   return `${v.kind}|${String(v.ringId)}|${String(related)}`;
 }
 
+/**
+ * 「親の外へ出る」違反の 2 つの種類（**交わる**＝はみ出す／**完全に外**）を 1 つに寄せた種類
+ * （増分 8E の再手直し。再検証 2-1）。U07 は同じ（子の環・親の環）の組でも、交わるなら
+ * `*-crosses-parent`、完全に外なら `*-not-contained` と別の種類で記録する。種類まで鍵に入れて
+ * いた版は、外へ出ていた穴を 1 頂点ずつ戻す途中（完全に外 → はみ出す。**良くなった**）を
+ * 「後にだけある違反」と読んで断っていた。
+ */
+const OUTSIDE_PARENT_KIND: Partial<Record<RingViolation['kind'], string>> = {
+  [RING_VIOLATION.HoleCrossesParent]: 'hole-outside-parent',
+  [RING_VIOLATION.HoleNotContained]: 'hole-outside-parent',
+  [RING_VIOLATION.NestedTerritoryCrossesParent]: 'nested-territory-outside-parent',
+  [RING_VIOLATION.NestedTerritoryNotContained]: 'nested-territory-outside-parent',
+};
+
+/** 「完全に外」の種類（はみ出す → 完全に外 は **悪化** なので、引き続き新しい破損と読む）。 */
+const FULLY_OUTSIDE_KINDS: ReadonlySet<RingViolation['kind']> = new Set([
+  RING_VIOLATION.HoleNotContained,
+  RING_VIOLATION.NestedTerritoryNotContained,
+]);
+
+/**
+ * 違反 1 件のゆるい鍵: {@link violationKey} と同じだが、「親の外へ出る」の 2 種類を 1 つに寄せる。
+ */
+export function looseViolationKey(v: RingViolation): string {
+  const merged = OUTSIDE_PARENT_KIND[v.kind];
+  return merged === undefined ? violationKey(v) : `${merged}|${String(v.ringId)}|${String(v.relatedRingId ?? '')}`;
+}
+
+/** 編集の前の違反の鍵（そのままの鍵と、ゆるい鍵）。 */
+export interface PriorViolationKeys {
+  readonly exact: ReadonlySet<string>;
+  readonly loose: ReadonlySet<string>;
+}
+
+/**
+ * 編集の後の違反 1 件が **新しい破損** か。
+ *   - 同じ組の「親の外へ出る」違反が前に無かった → 新しい
+ *   - 前と同じ鍵 → 新しくない（もとからある）
+ *   - 同じ組で種類だけ変わった: はみ出す → 完全に外（悪化）は新しい、完全に外 → はみ出す
+ *     （戻している途中。良くなった）は新しくない
+ */
+export function isNewViolation(v: RingViolation, prior: PriorViolationKeys): boolean {
+  if (!prior.loose.has(looseViolationKey(v))) return true;
+  if (prior.exact.has(violationKey(v))) return false;
+  return FULLY_OUTSIDE_KINDS.has(v.kind);
+}
+
 /** 編集の前の同じ年の同じ面が持っていた違反の鍵（無ければ空＝壊れていなかった）。 */
 function violationKeysBefore(
   before: DomainProject,
   featureId: FeatureId,
   at: TimePoint,
-): ReadonlySet<string> {
+): PriorViolationKeys {
   const prior = featuresAt(before, at).find((f) => f.id === featureId);
-  if (prior === undefined || !isLeaf(prior)) return new Set();
+  if (prior === undefined || !isLeaf(prior)) return { exact: new Set(), loose: new Set() };
   const result = validateCandidate(prior.shape, verticesAt(before, at));
-  return new Set(result.violations.map(violationKey));
+  return {
+    exact: new Set(result.violations.map(violationKey)),
+    loose: new Set(result.violations.map(looseViolationKey)),
+  };
 }
 
 /** 違反 1 件の壊れ方（文の言い方）。違反した環が穴か飛び地かを形から引く。 */
