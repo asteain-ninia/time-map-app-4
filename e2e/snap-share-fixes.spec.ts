@@ -208,6 +208,9 @@ test.describe('増分 3 の手直し — 実アプリで固定する', () => {
         const value = await select.inputValue();
         await page.getByTestId('add-name').fill(name);
         await page.getByTestId('add-save').click();
+        // 保存は 1 コマ遅れて走る（B39 の進行表示）。素性欄が閉じる（＝保存が走り終えた）のを
+        // 待たないと、次の手（最後の Ctrl+S）が子の確定より先に走り、保存ファイルに子が居ない。
+        await expect(page.getByTestId('add-property-form')).toHaveCount(0);
         await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
         return { value, options };
       };
@@ -248,9 +251,10 @@ test.describe('増分 3 の手直し — 実アプリで固定する', () => {
       rmSync(workDir, { recursive: true, force: true });
     }
 
-    // 開き直しの往復（旧 B39: 面の下に子を作るたびに修復を聞かれた）は、子を確定した時点で
-    // 親を集約化するようになったので起きない。2 人目以降が平らに並ぶこと・開き直しで板が
-    // 出ないこと・取り消しの単位は `e2e/b39-nest-flat.spec.ts` が固定する。
+    // **開き直しの往復**では、面の下に子を作ると親が「自分の形を持ったまま子を持つ」状態
+    // （`leaf-with-children`）なので、修復を聞かれる（B39。確定のときに親を作り替える直しは
+    // 2026-10-04 に試して戻した）。勧められる修復で 親 →［子…, 直轄領］の平らな形になり、
+    // 何も消えないことは `e2e/b39-nest-flat.spec.ts` が固定する。ここでは書き出しの側までを固定する。
   });
 
   test('D1: 作図中に年を動かすと確認が出て、答えるまで年は動かない', async () => {

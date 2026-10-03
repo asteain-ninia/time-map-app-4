@@ -22,7 +22,7 @@
 // module never resolves time itself; the caller backs the predicate with U09 /
 // the displayed feature data.
 
-import { FEATURE_KIND, featureDisplayName, isDirectDomainLeaf, type Feature } from '../feature';
+import { FEATURE_KIND, featureDisplayName, type Feature } from '../feature';
 import type { FeatureId } from '../ids';
 
 /** A parent candidate: the face id plus its display name (for the選択 UI). */
@@ -65,13 +65,6 @@ export function parentCandidates(
   const out: ParentCandidate[] = [];
   for (const feature of displayedFeatures) {
     if (!isFaceFeature(feature)) continue;
-    // **分け残し（直轄領）は親にしない**（B39 の直し / 司令塔の決定 (8) を新しい面にも
-    // 効かせる）。所属変更の候補（`isLegalNewParent`）は既に外しているのに、新しく描く面の
-    // 候補にだけ残っていた。残すと、面の中に 2 人目を描いたとき入れ子の既定がいちばん内側の
-    // 分け残しを指し、確定のたびに「分け残しの分け残し」の鎖ができる。分け残しの中に描いた
-    // 面は、その上位領域（まとめ役）の子として並べ、分け残しのほうを削る（追加の確定の側）。
-    // 見分けは名前ではなく **データの印**（`isDirectDomainLeaf`）。
-    if (isDirectDomainLeaf(feature)) continue;
     if (!existsAt(feature.id)) continue;
     out.push({ featureId: feature.id, displayName: featureDisplayName(feature) });
   }

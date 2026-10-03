@@ -61,6 +61,9 @@ export const PERSISTENCE_MESSAGES = {
   repairDropShapeRoleFeature: '形状の規則に違反している地物を読み込みから除外します。',
   repairMaterializeDirectDomain:
     '直轄領（元の形状から下位領域を除いた領域）を生成して集約化し、元の領域を保持したまま修復します（地物は削除しません）。',
+  repairKeepLeafWithChildren:
+    'この地物をそのまま残して読み込みます（記録は何も変えません。下位領域と重なって見えるので、あとで整えてください）。',
+  repairKeepOverlap: 'そのまま残して読み込みます（重なりは残ります。記録は何も変えません）。',
   repairDropRingHierarchyFeature:
     'リング階層（領土と穴の入れ子関係・包含）が壊れている地物を読み込みから除外します。',
   repairDropOverlappingFeature: '重なっている地物の一方を読み込みから除外します。',

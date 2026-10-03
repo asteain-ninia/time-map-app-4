@@ -51,27 +51,6 @@ describe('parentCandidates (FR-77 / 教訓 5.3 / 5.18)', () => {
     expect(cands[0]?.displayName).toBe('A');
   });
 
-  it('B39: 印のある分け残し（直轄領）は候補に出さない。名前が「直轄領」でも印が無ければ出す', () => {
-    const shape = createShape([
-      createTerritoryRing(asRingId('r-dd'), [asVertexId('v1'), asVertexId('v2'), asVertexId('v3')]),
-    ]);
-    const marked = createLeafFeature(
-      asFeatureId('DD'),
-      createBasicAttributes('親 直轄領', 0, 100),
-      color,
-      shape,
-      { parentId: asFeatureId('P'), directDomain: true },
-    );
-    const namedOnly = createLeafFeature(
-      asFeatureId('N2'),
-      createBasicAttributes('隣 直轄領', 0, 100),
-      color,
-      shape,
-    );
-    const cands = parentCandidates([leaf('A'), marked, namedOnly], () => true);
-    expect(cands.map((c) => c.featureId)).toEqual([asFeatureId('A'), asFeatureId('N2')]);
-  });
-
   it('returns an empty list (a valid value) when no covering face exists', () => {
     const cands = parentCandidates([line('N')], () => true);
     expect(cands).toEqual([]);

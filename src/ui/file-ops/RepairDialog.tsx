@@ -40,6 +40,7 @@ import {
   repairOptionText,
   setRepairChoice,
   type RepairChoices,
+  type RepairRowContext,
 } from './repair-flow';
 import type { RepairNamer } from './repair-names';
 import { REPAIR_DIALOG_TEXT, REPAIR_STRINGS } from './strings';
@@ -64,6 +65,11 @@ export interface RepairDialogProps {
    * プロジェクトから作る（{@link buildRepairNamer}）。無ければ報告の名前の欄だけで呼ぶ。
    */
   readonly namer?: RepairNamer | undefined;
+  /**
+   * 選択肢を並べるために見る、読み込んだプロジェクト（2026-10-04、ガード B）。読み込みの流れが
+   * 適用に使う行と **同じ context** で並べる。無ければ報告だけで並べる。
+   */
+  readonly context?: RepairRowContext | undefined;
 }
 
 const INITIAL_POSITION = { x: 280, y: 120 } as const;
@@ -81,12 +87,12 @@ function timeScopeOf(inc: Inconsistency): string | null {
 }
 
 export function RepairDialog(props: RepairDialogProps): JSX.Element {
-  const { report, onResolve, unresolved, zIndex, namer } = props;
+  const { report, onResolve, unresolved, zIndex, namer, context } = props;
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   // The rows are derived ONCE from the report (the option lists come from U14 per
   // inconsistency, 動的・種別ごと, 過剰共有しない).
-  const rows = useMemo(() => buildRepairRows(report), [report]);
+  const rows = useMemo(() => buildRepairRows(report, context), [report, context]);
   // どの行も最初（おすすめ）の方法を選んだ状態から始める（増分 8D）。
   const [choices, setChoices] = useState<RepairChoices>(() => defaultRepairChoices(rows));
 
@@ -148,6 +154,11 @@ export function RepairDialog(props: RepairDialogProps): JSX.Element {
                   </p>
                   {scope !== null && <p className="repair-row__time">{scope}</p>}
                   {detail !== null && <p className="repair-row__detail">{detail}</p>}
+                  {row.note !== undefined && (
+                    <p className="repair-row__note" data-testid={`repair-note-${String(row.index)}`}>
+                      {row.note}
+                    </p>
+                  )}
 
                   {/* The per-kind options come from U14 for THIS inconsistency
                       (動的・種別ごと, 過剰共有しない). 1 つしか無ければ選ばせない（N-22）。 */}

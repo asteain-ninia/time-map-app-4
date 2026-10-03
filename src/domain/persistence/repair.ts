@@ -106,6 +106,18 @@ export const REPAIR_OPTION = {
    * を実体化して当該末端を集約地物へ昇格する（面積保存・地物削除ゼロの非破壊修復）。
    */
   MaterializeDirectDomain: 'materialize-direct-domain',
+  /**
+   * 形状保持規則違反（子を持つ末端）→ **そのまま残して読み込む**（記録を何も変えない。2026-10-04、
+   * B39 の再検証 3-1）。分け残しを作る修復で解けない形（幾何が解けない・面積が合わない）でも、
+   * 読み込みを止めず、親を消さずに開ける道を残す。読み込んだあとに件数を知らせる。
+   */
+  KeepLeafWithChildren: 'keep-leaf-with-children',
+  /**
+   * 末端排他違反 / 錨間オーバーラップ → **そのまま残して読み込む**（重なりは残る。記録を何も
+   * 変えない。2026-10-04、B39 の戻しの再検証 / B91）。以前の選択肢は「一方を除外」だけで、
+   * それが既定だったので、何も触らずに押すと利用者の描いた地物が消えた。こちらを既定にする。
+   */
+  KeepOverlap: 'keep-overlap',
   /** リング階層不整合（穴の親不在・包含/交差違反など）→ 当該地物を除外する。 */
   DropRingHierarchyFeature: 'drop-ring-hierarchy-feature',
   /** 末端排他違反 / 錨間オーバーラップ → 当該地物の一方を除外する。 */
@@ -152,6 +164,8 @@ const LABELS: Readonly<Record<RepairOptionId, string>> = {
   [REPAIR_OPTION.DropShapeRoleFeature]: PERSISTENCE_MESSAGES.repairDropShapeRoleFeature,
   [REPAIR_OPTION.MaterializeDirectDomain]:
     PERSISTENCE_MESSAGES.repairMaterializeDirectDomain,
+  [REPAIR_OPTION.KeepLeafWithChildren]: PERSISTENCE_MESSAGES.repairKeepLeafWithChildren,
+  [REPAIR_OPTION.KeepOverlap]: PERSISTENCE_MESSAGES.repairKeepOverlap,
   [REPAIR_OPTION.DropRingHierarchyFeature]:
     PERSISTENCE_MESSAGES.repairDropRingHierarchyFeature,
   [REPAIR_OPTION.DropOverlappingFeature]: PERSISTENCE_MESSAGES.repairDropOverlappingFeature,
@@ -214,9 +228,12 @@ export function repairOptionsFor(inc: Inconsistency): RepairOption[] {
       // same canonicalisation the 所属変更 commit performs. Offered FIRST (recommended);
       // Drop stays as a last-resort fallback. Other shape sub-causes (leaf-empty-shape /
       // aggregate-no-children) carry NO shape to materialise, so they keep Drop only.
+      // 分け残しを作る修復で解けないときにも、親を消さずに開けるよう「そのまま残す」を
+      // 2 番目に置く（2026-10-04、B39 の再検証 3-1。除外は最後の手段）。
       if (inc.detail === SHAPE_DETAIL_LEAF_WITH_CHILDREN) {
         return [
           opt(REPAIR_OPTION.MaterializeDirectDomain),
+          opt(REPAIR_OPTION.KeepLeafWithChildren),
           opt(REPAIR_OPTION.DropShapeRoleFeature),
         ];
       }
@@ -233,7 +250,8 @@ export function repairOptionsFor(inc: Inconsistency): RepairOption[] {
       return [opt(REPAIR_OPTION.DropRingHierarchyFeature)];
     case INCONSISTENCY.TerminalExclusion:
     case INCONSISTENCY.AnchorSpatialOverlap:
-      return [opt(REPAIR_OPTION.DropOverlappingFeature)];
+      // **既定は「そのまま残す」**（2026-10-04、B91）。除外は最後の手段。
+      return [opt(REPAIR_OPTION.KeepOverlap), opt(REPAIR_OPTION.DropOverlappingFeature)];
     case INCONSISTENCY.AggregateSumMismatch:
       return [opt(REPAIR_OPTION.DropAggregateFeature)];
     case INCONSISTENCY.TimeConflict:
@@ -762,6 +780,72 @@ interface DirectDomainInterval {
   readonly vertices: readonly Vertex[];
 }
 
+/** 錨 i が実際に効く終わり（自分の書かれた終わりか、次の錨の始まりの早いほう）。 */
+function entryEffectiveEnd(
+  entries: readonly AnchorEntry[],
+  i: number,
+  calendar: Calendar,
+): TimePoint | null {
+  const entry = entries[i];
+  if (entry === undefined) return null;
+  const next = entries[i + 1];
+  if (entry.end === null) return next?.start ?? null;
+  if (next === undefined) return entry.end;
+  return compare(entry.end, next.start, calendar) <= 0 ? entry.end : next.start;
+}
+
+/**
+ * `targetId` が **末端として** 載っている錨を、`targetId` を親にする地物が **現れる年** と
+ * **居なくなる年** で割る（割った後ろの片は前の片の写しで、前の片の終わりを引き継ぐ）。子の居る
+ * 片だけが「子を持つ末端」として修復の対象になり、子の居なくなった年から後ろの片は元の末端の
+ * まま残る。帳簿の割り方で、どの年の姿も変えない。純粋。
+ *
+ * 居なくなる年でも割る（2026-10-04、B39 の戻しの再検証 3-1・2-1）: 以前は割らずに、子の居なく
+ * なった年から先も親をまとめ役のまま続けていたので、分け残し（子のぶんの穴がある）だけが親の
+ * 後ろの記録の上に居残り、親の土地に穴があいた・親の境の直しが黙って戻った・隣が除外された。
+ * いまは分け残しの区間も親のその片の終わりで区切る（{@link materializeDirectDomain}）。
+ */
+function splitLeafAtChildBoundaries(
+  project: DomainProject,
+  targetId: FeatureId,
+  calendar: Calendar,
+): DomainProject {
+  const boundaries: TimePoint[] = [];
+  for (const history of project.histories) {
+    const entries = history.series.entries;
+    entries.forEach((entry, i) => {
+      const hasChild = entry.anchor.snapshot.features.some(
+        (f) => f.id !== targetId && f.parentId === targetId,
+      );
+      if (!hasChild) return;
+      boundaries.push(entry.start);
+      const end = entryEffectiveEnd(entries, i, calendar);
+      if (end !== null) boundaries.push(end);
+    });
+  }
+  if (boundaries.length === 0) return project;
+  let changed = false;
+  const histories = project.histories.map((history) => {
+    let series = history.series;
+    for (const t of boundaries) {
+      const r = resolveAt(series, t, calendar);
+      if (r.kind !== 'present') continue;
+      if (compare(r.entry.start, t, calendar) === 0) continue;
+      const here = r.entry.anchor.snapshot.features.find((f) => f.id === targetId);
+      if (here === undefined || here.kind !== FEATURE_KIND.Leaf) continue;
+      const copy = withUniqueAnchorId(
+        series.entries,
+        createAnchor(deriveAnchorId(history.featureId, t), r.entry.anchor.snapshot),
+      );
+      series = normalizeSeries([...series.entries, createAnchorEntry(copy, t, r.entry.end)], calendar);
+    }
+    if (series === history.series) return history;
+    changed = true;
+    return { featureId: history.featureId, series };
+  });
+  return changed ? { ...project, histories } : project;
+}
+
 /**
  * Materialise the FR-37 直轄領 for a leaf-with-children inconsistency: at every anchor the
  * target leaf is a declared leaf that has children, replace the leaf with its shapeless
@@ -770,12 +854,19 @@ interface DirectDomainInterval {
  * re-validation guard reports Unresolved rather than committing a lossy result.
  */
 function materializeDirectDomain(
-  project: DomainProject,
+  input: DomainProject,
   inc: Inconsistency,
   calendar: Calendar,
 ): DomainProject {
   const targetId = inc.featureIds[0];
-  if (targetId === undefined) return project;
+  if (targetId === undefined) return input;
+
+  // **親の記録の続きのどの時点の子も見る**（2026-10-04、B39 の再検証 3-1）。以前は親の錨の
+  // 始まりの年にしか子を探さなかったので、1000 年に描いた親の中へ 1100 年に子を描くと、
+  // 1000 年には子が居ず何もせず、修復を押しても解けずに読み込みが止まった。子が現れる・
+  // 居なくなる年で親（末端）の錨を割ってから、錨ごとに見る（増分 7 の手直し 3 回目で他の
+  // 2 つの修復に入れた「区間」の考え方と同じ。割った錨は中身が同じ写しで、記録は変わらない）。
+  const project = splitLeafAtChildBoundaries(input, targetId, calendar);
 
   // Deterministic, project-disjoint id minting (教訓 5.37 / 5.20 / NFR 5.8): the generator
   // starts fresh, reads a FIXED time source, and skips every id already in the project, so
@@ -797,6 +888,7 @@ function materializeDirectDomain(
     nextFeatureId: () => asFeatureId(mint('f')),
   };
 
+
   const promotions: LeafPromotion[] = [];
   const intervals: DirectDomainInterval[] = [];
 
@@ -814,15 +906,15 @@ function materializeDirectDomain(
       if (childIds.length === 0) continue; // not a leaf-with-children at this anchor.
 
       const leaf = features.find((f) => f.id === targetId);
-      if (leaf === undefined || leaf.kind !== FEATURE_KIND.Leaf) return project; // defensive.
+      if (leaf === undefined || leaf.kind !== FEATURE_KIND.Leaf) return input; // defensive.
 
       // 面積 BEFORE: a declared leaf-with-children resolves to 元形状 ∪ 子の和 (resolve-shape).
       const areaBefore = resolveFeatureArea(forest, store, targetId);
-      if (areaBefore.status !== 'ok') return project;
+      if (areaBefore.status !== 'ok') return input;
 
       // 直轄領 geometry via the promotion unit's single source of truth (教訓 5.29).
       const built = buildDirectDomainForLeaf(leaf, forest, childIds, store, ports);
-      if (built.kind === 'unresolved') return project; // 差分解決不能 → bail (元形状の沈黙損失防止).
+      if (built.kind === 'unresolved') return input; // 差分解決不能 → bail (元形状の沈黙損失防止).
 
       let directDomain: LeafFeature | undefined;
       let newVertices: readonly Vertex[] = [];
@@ -858,17 +950,21 @@ function materializeDirectDomain(
           ? createVertexStore([...store.byId.values(), ...newVertices])
           : store;
       const areaAfter = resolveFeatureArea(buildForest(afterFeatures), afterStore, targetId);
-      if (areaAfter.status !== 'ok') return project;
-      if (!areasEqualWithinTolerance(areaBefore.area, areaAfter.area)) return project; // 面積損失 → bail.
+      if (areaAfter.status !== 'ok') return input;
+      if (!areasEqualWithinTolerance(areaBefore.area, areaAfter.area)) return input; // 面積損失 → bail.
 
       promotions.push({ historyIndex: hi, entryIndex: ei, promoted });
       if (directDomain !== undefined) {
-        intervals.push({ start: entry.start, end: entry.end, directDomain, vertices: newVertices });
+        // 分け残しの区間は **親のこの片が実際に効いている区間**（書かれた終わりと、親の次の錨の
+        // 始まりの早いほう）で区切る（2026-10-04、B92）。書かれた終わりだけを写すと、終わりの無い
+        // 片の分け残しが親の後ろの記録の上に居残る。
+        const end = entryEffectiveEnd(history.series.entries, ei, calendar);
+        intervals.push({ start: entry.start, end, directDomain, vertices: newVertices });
       }
     }
   }
 
-  if (promotions.length === 0) return project; // the leaf was never a leaf-with-children.
+  if (promotions.length === 0) return input; // the leaf was never a leaf-with-children.
 
   const promotionByKey = new Map<string, Feature>();
   for (const p of promotions) promotionByKey.set(`${p.historyIndex}:${p.entryIndex}`, p.promoted);
@@ -1077,6 +1173,120 @@ function orphanResidentsWithOwnSeries(
  * 件数が出るのはいまのところ「各地物に自分の年表を作って残す」だけ（同じ年に自分の系列の
  * 記録と食い違う孤立した歴史の記録は、自分の系列の側を正として捨てる）。
  */
+/** 記録を何も変えずに「そのまま残す」選択肢（読み込みの流れが、その行を残したまま開く）。 */
+export const KEEP_REPAIR_OPTIONS: ReadonlySet<RepairOptionId> = new Set<RepairOptionId>([
+  REPAIR_OPTION.KeepLeafWithChildren,
+  REPAIR_OPTION.KeepOverlap,
+]);
+
+/** {@link repairOptionsInContext} の結果: 並べた選択肢と、並びを変えた理由（1 行。無ければ省略）。 */
+export interface RepairOptionsInContext {
+  readonly options: readonly RepairOption[];
+  readonly note?: string;
+}
+
+/** 子を持つ末端の行で、既定を「そのまま残す」にしたときの 1 行の理由。 */
+export const KEEP_LEAF_WITH_CHILDREN_NOTE = 'この形は自動では整わないので、そのまま開きます。';
+
+/**
+ * 読み込んだプロジェクトを見て選択肢を並べる（2026-10-04、B39 の戻しの再検証のガード B）。
+ * 子を持つ末端の行で、分け残しを作る修復では解けきらない形なら、既定（先頭）を「そのまま残す」
+ * にし、「分け残しを作る」を 2 番目に置く。判定は修復を当てずにできる
+ * （{@link leafWithChildrenMayNotSettle}）。それ以外は {@link repairOptionsFor} のまま。純粋。
+ */
+export function repairOptionsInContext(
+  inc: Inconsistency,
+  project: DomainProject,
+  calendar: Calendar,
+): RepairOptionsInContext {
+  const options = repairOptionsFor(inc);
+  const targetId = inc.featureIds[0];
+  if (
+    inc.kind !== INCONSISTENCY.ShapePreservation ||
+    inc.detail !== SHAPE_DETAIL_LEAF_WITH_CHILDREN ||
+    targetId === undefined ||
+    !leafWithChildrenMayNotSettle(project, targetId, calendar)
+  ) {
+    return { options };
+  }
+  const keep = options.find((o) => o.id === REPAIR_OPTION.KeepLeafWithChildren);
+  if (keep === undefined) return { options };
+  return {
+    options: [keep, ...options.filter((o) => o.id !== REPAIR_OPTION.KeepLeafWithChildren)],
+    note: KEEP_LEAF_WITH_CHILDREN_NOTE,
+  };
+}
+
+/**
+ * 子を持つ末端 `targetId` が、分け残しを作る修復で解けきらないかもしれない形か（修復を当てずに
+ * 判定する）。次のどちらかなら真:
+ *
+ *   - 親が、子の現れる年より後・子の居なくなる年より前に錨を持つ（親の記録が子の居る間に変わる）。
+ *   - 子が、親の次の錨より前に居なくなる（子の居なくなった年から親の錨が作り替えられない）。
+ *
+ * どちらも、分け残しが親の後ろの記録の上に居残る・親の土地に穴があく・隣を除外する修復へ
+ * 進む形（再検証 3-1・2-1）。純粋。
+ */
+export function leafWithChildrenMayNotSettle(
+  project: DomainProject,
+  targetId: FeatureId,
+  calendar: Calendar,
+): boolean {
+  const parentStarts: TimePoint[] = [];
+  const pieces = new Map<FeatureId, TimeInterval[]>();
+  for (const history of project.histories) {
+    const entries = history.series.entries;
+    entries.forEach((entry, i) => {
+      const feats = entry.anchor.snapshot.features;
+      if (feats.some((f) => f.id === targetId)) parentStarts.push(entry.start);
+      const next = entries[i + 1];
+      const end =
+        entry.end === null
+          ? (next?.start ?? null)
+          : next !== undefined && compare(next.start, entry.end, calendar) < 0
+            ? next.start
+            : entry.end;
+      for (const f of feats) {
+        if (f.id === targetId || f.parentId !== targetId) continue;
+        const list = pieces.get(f.id) ?? [];
+        list.push({ start: entry.start, end });
+        pieces.set(f.id, list);
+      }
+    });
+  }
+  // 子ごとに、途切れずに続いている区間へつなぐ（錨が割れているだけの所は「居なくなる」ではない）。
+  const childRuns: TimeInterval[] = [];
+  for (const list of pieces.values()) {
+    const sorted = [...list].sort((x, y) => compare(x.start, y.start, calendar));
+    let cur: { start: TimePoint; end: TimePoint | null } | null = null;
+    for (const iv of sorted) {
+      if (cur !== null && cur.end !== null && compare(iv.start, cur.end, calendar) <= 0) {
+        if (iv.end === null || compare(iv.end, cur.end, calendar) > 0) cur.end = iv.end;
+        continue;
+      }
+      if (cur !== null) childRuns.push(cur);
+      cur = { start: iv.start, end: iv.end };
+    }
+    if (cur !== null) childRuns.push(cur);
+  }
+  for (const run of childRuns) {
+    // 親が子の居る間（現れた年より後・居なくなる年より前）に錨を持つ。
+    const inside = parentStarts.some(
+      (s) =>
+        compare(s, run.start, calendar) > 0 && (run.end === null || compare(s, run.end, calendar) < 0),
+    );
+    if (inside) return true;
+    // 子が親の次の錨より前に居なくなる（親の次の錨が無ければ、居なくなること自体）。
+    if (run.end !== null) {
+      const nextParent = parentStarts
+        .filter((s) => compare(s, run.start, calendar) > 0)
+        .sort((a, b) => compare(a, b, calendar))[0];
+      if (nextParent === undefined || compare(run.end, nextParent, calendar) < 0) return true;
+    }
+  }
+  return false;
+}
+
 export function applyRepairWithReport(
   project: DomainProject,
   inc: Inconsistency,
@@ -1122,6 +1332,9 @@ export function applyRepair(
       return dropFeatures(project, inc.featureIds);
     case REPAIR_OPTION.MaterializeDirectDomain:
       return materializeDirectDomain(project, inc, calendar);
+    case REPAIR_OPTION.KeepLeafWithChildren:
+    case REPAIR_OPTION.KeepOverlap:
+      return project; // 記録を変えない（読み込みの流れが、この行を残したまま開く）。
     case REPAIR_OPTION.DetachToTopLevel:
       return detachToTopLevel(project, inc.featureIds);
     case REPAIR_OPTION.DetachToTopLevelWithin:

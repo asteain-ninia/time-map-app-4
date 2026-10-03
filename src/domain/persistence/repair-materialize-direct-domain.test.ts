@@ -160,6 +160,7 @@ describe('FR-37 直轄領 materialisation repair — options', () => {
     const opts = repairOptionsFor(inc).map((o) => o.id);
     expect(opts).toEqual([
       REPAIR_OPTION.MaterializeDirectDomain,
+      REPAIR_OPTION.KeepLeafWithChildren,
       REPAIR_OPTION.DropShapeRoleFeature,
     ]);
   });
@@ -246,9 +247,19 @@ describe('FR-37 直轄領 materialisation repair — single anchor', () => {
     expect(idsAfter.has(idToString(cId))).toBe(true);
   });
 
-  it('mints the 直轄領 feature/vertex/ring ids DISJOINT from every existing id', () => {
+  it('mints the 直轄領 feature/ring ids DISJOINT from every existing id; reuses only the original vertex ids at the same coordinate', () => {
     const { project } = leafWithChildProject();
     const idsBefore = rawIds(project);
+    // 元の頂点の座標（B39 の手直し 2 回目 / 検証 2-4: 分け残しは元の面の外周の頂点 id を座標の一致で
+    // 引き継ぐ ―― 隣との共有を切らない。新しく生まれる角だけを採番する）。
+    const coordBefore = new Map<string, string>();
+    for (const h of project.histories) {
+      for (const e of h.series.entries) {
+        for (const v of e.anchor.snapshot.vertices.byId.values()) {
+          coordBefore.set(idToString(v.id), `${String(v.coordinate.lon)},${String(v.coordinate.lat)}`);
+        }
+      }
+    }
     const inc = shapeInc(project, 'leaf-with-children');
     const repaired = applyRepair(project, inc, REPAIR_OPTION.MaterializeDirectDomain, CAL);
 
@@ -256,21 +267,25 @@ describe('FR-37 直轄領 materialisation repair — single anchor', () => {
     const ddHistory = repaired.histories.find((h) => !idsBefore.has(idToString(h.featureId)));
     expect(ddHistory).toBeDefined();
 
-    // EVERY id the repair introduced (直轄領 feature + its vertices + rings) is disjoint.
+    // The feature + ring ids the repair introduced are disjoint; vertex ids are either fresh or an
+    // original vertex reused at exactly the same coordinate.
     const introduced = new Set<string>();
     introduced.add(idToString(ddHistory!.featureId));
+    let fresh = 0;
     for (const e of ddHistory!.series.entries) {
-      for (const v of e.anchor.snapshot.vertices.byId.keys()) introduced.add(idToString(v));
+      for (const v of e.anchor.snapshot.vertices.byId.values()) {
+        const before = coordBefore.get(idToString(v.id));
+        if (before === undefined) fresh += 1;
+        else expect(`${String(v.coordinate.lon)},${String(v.coordinate.lat)}`).toBe(before);
+      }
       for (const f of e.anchor.snapshot.features) {
         if (f.kind === 'leaf') {
-          for (const r of f.shape.rings) {
-            introduced.add(idToString(r.id));
-            for (const vid of r.vertexIds) introduced.add(idToString(vid));
-          }
+          for (const r of f.shape.rings) introduced.add(idToString(r.id));
         }
       }
     }
     expect(introduced.size).toBeGreaterThan(0);
+    expect(fresh).toBeGreaterThan(0); // 子を引いて生まれた角は新しく採番する
     for (const id of introduced) expect(idsBefore.has(id)).toBe(false);
   });
 

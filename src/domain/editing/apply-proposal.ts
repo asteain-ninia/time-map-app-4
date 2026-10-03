@@ -80,7 +80,6 @@ import type { MergeSnapshot } from '../merge/proposal';
 import type { AffiliationProposal } from '../affiliation/proposal';
 import { materializeOwnSeries, residentFeatureIds } from '../affiliation/materialize';
 import { syncAggregateChildIds as syncAggregateChildIdsInHistories } from '../affiliation/interval-edit';
-import type { DirectDomainCarve } from '../promotion/carve';
 import type { SplitSharedEdgeCut, SplitSnapshot } from '../knife/proposal';
 import type { DrillSnapshot } from '../drill/proposal';
 import type { VertexRemap } from '../shared-vertex';
@@ -210,7 +209,7 @@ function findHistoryContainingIn(
 }
 
 /**
- * `featureId` を載せている錨のうち、`anchorTime` に効いているものの **終わり**（無ければ null）。
+ * `featureId` を載せている錨のうち、`anchorTime` に効いているものの **書かれた終わり**（無ければ null）。
  * 終わりが `anchorTime` 以前なら（壊れたデータへの防御）null を返す。純粋。
  */
 function effectiveEndAt(
@@ -1614,11 +1613,11 @@ export function applyAffiliationProposal(
     if (created === undefined) continue;
     const vertexStore = pruneVertexStore(createVertexStore(snapshot.newVertices), [created]);
     const anchor = anchorFor([created], vertexStore, createdId, anchorTime);
-    // **分け残しは元の面と一緒に終わる**（B39 の直し。B77 のうち分け残しの分だけ）。
+    // **分け残しは元の面と一緒に終わる**（B39 の 1 回目の直し。B77 のうち分け残しの分だけ）。
     // 分け残しは元の面の土地の残りなので、元の面が 1500 年で終わるなら分け残しも
     // 1500 年で終わるのが自然である（終わらせないと、元の面が消えた後の年にも土地だけが
-    // 居残る）。元の面（＝まとめ役になった上位領域）の、この年に効いている錨の終わりを
-    // 写す。新しく作るまとめ役のほうは子と同じとは限らないので触らない（B77 の残り）。
+    // 居残る）。元の面（＝まとめ役になった上位領域）の、この年に効いている錨の **書かれた
+    // 終わり** を写す。新しく作るまとめ役のほうは子と同じとは限らないので触らない（B77 の残り）。
     const end =
       created.directDomain === true && created.parentId !== undefined
         ? effectiveEndAt(root.histories, created.parentId, anchorTime, calendar)
@@ -1638,45 +1637,25 @@ export function applyAffiliationProposal(
 }
 
 /**
- * **まとめ役の下に面を足した後始末**（B39 の直し）。追加の確定と同じ取り消し単位に畳む。
+ * **まとめ役の下に面を足したあと、子の並び（`childIds`）を揃える**（B39 の 1 回目の直しで入れ、
+ * 後始末を戻したあとも残したもの）。追加は新しい系列を足すだけで親の子の並びを書き換えないので、
+ * 揃えないと次に開いたときに「子の並びの食い違い」で修復を聞かれる。揃える向きは常に
+ * `parentId` から（U08）。地物の形・所属は何も変えない（分け残しも削らない）。
  *
- *   1. 分け残しの削り（{@link DirectDomainCarve}）: 新しい子と重なった分け残しを
- *      「分け残し − 子」に書き換える。覆い尽くされた分け残しはその年から消す。
- *      頂点は書き換えた地物が引くものだけに剪定する（古い外周を残骸として残さない）。
- *   2. 子の並び（`childIds`）を、その年からの実際の所属に揃える。追加は新しい系列を
- *      足すだけで親の子の並びを書き換えないので、揃えないと次に開いたときに
- *      「子の並びの食い違い」で修復を聞かれる。揃える向きは常に `parentId` から（U08）。
- *      親が別のまとめ役の錨に居候しているときは、先に自分の系列へ起こす。
+ * まとめ役が自分の系列を持たず別のまとめ役の錨に居候している（実データの州の形）なら、
+ * 揃える前に自分の系列へ起こす（司令塔の決定 (1) の「記録の置き場」。所属変更の手順 0 と
+ * 同じ 1 本）。子の並びを年ごとに揃える `syncAggregateChildIds` は自分の系列を持つ
+ * まとめ役しか見ないので、起こさないと居候の親の子の並びが古いまま残る。既に自分の系列を
+ * 持っていれば何もしない。
  *
  * 純粋。何も変わらなければ `root` をそのまま返す。
  */
-export function applyAddUnderAggregate(
+export function syncAggregateChildrenAfterAdd(
   root: DomainProject,
   parentId: FeatureId,
-  carves: readonly DirectDomainCarve[],
-  anchorTime: TimePoint,
   calendar: Calendar,
 ): DomainProject {
-  let histories = root.histories;
-  for (const carve of carves) {
-    histories =
-      carve.after === null
-        ? removeFeatureAtTime(histories, carve.directDomainId, anchorTime, calendar)
-        : rewriteFeatureSnapshotAtTime(
-            histories,
-            carve.directDomainId,
-            carve.after,
-            carve.newVertices,
-            anchorTime,
-            calendar,
-          );
-  }
-  // まとめ役が自分の系列を持たず別のまとめ役の錨に居候している（実データの州の形）なら、
-  // 揃える前に自分の系列へ起こす（司令塔の決定 (1) の「記録の置き場」。所属変更の手順 0 と
-  // 同じ 1 本）。子の並びを年ごとに揃える `syncAggregateChildIds` は自分の系列を持つ
-  // まとめ役しか見ないので、起こさないと居候の親の子の並びが古いまま残り、開き直しで
-  // 「子の並びの食い違い」を聞かれる。既に自分の系列を持っていれば何もしない。
-  histories = materializeOwnSeries(histories, [parentId], calendar).histories;
+  let histories = materializeOwnSeries(root.histories, [parentId], calendar).histories;
   histories = syncAggregateChildIdsInHistories(histories, [parentId], calendar);
   return histories === root.histories ? root : withHistories(root, histories);
 }

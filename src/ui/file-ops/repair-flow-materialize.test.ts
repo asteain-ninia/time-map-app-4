@@ -104,6 +104,7 @@ describe('load-time auto-repair flow — FR-37 直轄領 materialisation', () =>
     expect(row).toBeDefined();
     expect(row!.options.map((o) => o.id)).toEqual([
       REPAIR_OPTION.MaterializeDirectDomain,
+      REPAIR_OPTION.KeepLeafWithChildren,
       REPAIR_OPTION.DropShapeRoleFeature,
     ]);
 
