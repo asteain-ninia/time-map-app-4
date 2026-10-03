@@ -5,7 +5,7 @@
 
 import { test, expect, type Locator, type Page } from '@playwright/test';
 
-import { commitOneFace, launchApp, openPropertySection } from './helpers';
+import { commitOneFace, jumpToYear, launchApp, openPropertySection, requestYear } from './helpers';
 
 /** その地物が地図で実際に塗られている色（描画と同じ解決を通る観測口）。 */
 async function drawnFill(page: Page, featureId: string): Promise<string | undefined> {
@@ -97,6 +97,48 @@ test.describe('増分 8E — G-15: 自動配色を OFF にしても、いまの�
       await app.close();
     }
   });
+});
+
+// 増分 8E の再手直し（再検証 3-1）: 「見た目」の欄が外れて付き直っても（選択を外す・居ない年へ
+// 動く →［残す］で戻る）、往復で打った色が消えない。覚えを欄の部品に持っていた版では、戻った
+// あとの ON → OFF で、打った #123456・0.3 が地図に塗られている色へ置き換わっていた。
+test.describe('増分 8E — G-15: 欄が外れて付き直ったあとの往復', () => {
+  for (const way of ['居ない年へ動く', '地図の空いた所を押して選択を外す'] as const) {
+    test(`${way} →［残す］で戻ったあと、ON → OFF と往復しても打った色と透過が残る`, async () => {
+      const { app, page } = await launchApp();
+      try {
+        await jumpToYear(page, 1200);
+        const { cx, cy } = await commitOneFace(page);
+        await page.getByTestId('tool-edit.select').click();
+        await openPropertySection(page, 'style-section');
+        const section = page.getByTestId('style-section');
+        const auto = section.getByLabel('自動配色を許可');
+        const fillPicker = section.getByLabel('通常表示色', { exact: true });
+        const fillOpacity = section.getByLabel('通常表示色透過', { exact: true });
+        await auto.uncheck();
+        await fillPicker.fill('#123456');
+        await setRange(fillOpacity, '0.3');
+
+        if (way === '居ない年へ動く') {
+          await requestYear(page, 1000);
+        } else {
+          await page.mouse.click(cx + 220, cy + 160);
+        }
+        await expect(page.getByTestId('draft-discard-confirm')).toBeVisible();
+        await page.getByTestId('draft-discard-keep').click();
+        await expect(page.getByTestId('draft-discard-confirm')).toHaveCount(0);
+        await openPropertySection(page, 'style-section');
+        await expect(fillPicker).toHaveValue('#123456');
+
+        await auto.check();
+        await auto.uncheck();
+        await expect(fillPicker).toHaveValue('#123456');
+        await expect(fillOpacity).toHaveValue('0.3');
+      } finally {
+        await app.close();
+      }
+    });
+  }
 });
 
 /** 範囲の欄（`type="range"`）に値を入れる（Playwright の fill は range を受けない）。 */
