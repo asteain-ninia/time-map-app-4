@@ -644,13 +644,18 @@ function materializeDirectDomain(
       let promotedChildIds: readonly FeatureId[] = childIds;
       if (built.kind === 'domain') {
         // Re-mint the 直轄領 under the ONE stable ddId (multi-anchor identity), keeping its
-        // attributes / color / shape and parenting it to the promoted leaf.
+        // attributes / color / shape and parenting it to the promoted leaf. 分け残しの印は
+        // 作り直しても運ぶ（所属変更・細分と **同じ印**を読み込みの修復も立てる。裁定
+        // 2026-09-07）。印の有無は生成元（buildDirectDomainForLeaf）にそのまま従う。
         directDomain = createLeafFeature(
           ddId,
           built.directDomain.attributes,
           built.directDomain.color,
           built.directDomain.shape,
-          { parentId: targetId },
+          {
+            parentId: targetId,
+            ...(built.directDomain.directDomain === true ? { directDomain: true as const } : {}),
+          },
         );
         newVertices = built.newVertices;
         promotedChildIds = [...childIds, ddId];

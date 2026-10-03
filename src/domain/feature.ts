@@ -58,6 +58,20 @@ export interface FeatureCommon {
    * color (ユーザー確定済みの per-anchor 方針).
    */
   readonly detailDocument?: string;
+  /**
+   * **分け残し（直轄領）の印**（FR-37 / 所有者の裁定 2026-09-07「名前で判定してはいけない。
+   * データの印で見分ける」）。形を持つ末端が子を得たとき、その「元の形 − 子の和」として
+   * 生まれた末端にだけ立つ。立てる所は `promotion/promote.ts` の `buildDirectDomainForLeaf`
+   * の 1 か所で、所属変更（U28）・細分（U29）・読み込みの修復（U14）は全部そこを通る。
+   *
+   * **名前とは無関係**: 利用者が名前を変えても印は残り、利用者が「○○ 直轄領」と名付けた
+   * 普通の地物には立たない。kindLabel（自由文・まとめて付け替えられる）とは別の欄にして
+   * あるのは、利用者の書き換えで印が付いたり外れたりしないためである。
+   *
+   * 読む所は {@link isDirectDomainLeaf} の 1 か所（親の候補から外す判定）。値は `true` だけで、
+   * 「印なし」は鍵ごと無い形に一本化する（detailDocument の空文字と同じ規律）。
+   */
+  readonly directDomain?: true;
 }
 
 /** FR-18: a single vertex. */
@@ -133,6 +147,8 @@ export interface OptionalCommonFields {
   readonly kindLabel?: string;
   readonly parentId?: FeatureId;
   readonly detailDocument?: string;
+  /** 分け残し（直轄領）の印（{@link FeatureCommon.directDomain}）。 */
+  readonly directDomain?: true;
 }
 
 /**
@@ -199,11 +215,13 @@ function buildCommon(
     kindLabel?: string;
     parentId?: FeatureId;
     detailDocument?: string;
+    directDomain?: true;
   } = { id, attributes, color };
   if (optional.kindLabel !== undefined) common.kindLabel = optional.kindLabel;
   if (optional.parentId !== undefined) common.parentId = optional.parentId;
   const detailDocument = normalizeDetailDocument(optional.detailDocument);
   if (detailDocument !== undefined) common.detailDocument = detailDocument;
+  if (optional.directDomain === true) common.directDomain = true;
   return common;
 }
 
@@ -219,11 +237,29 @@ function buildCommon(
  * starts with absent optionals.
  */
 export function commonOptionalOf(feature: Feature): OptionalCommonFields {
-  const out: { kindLabel?: string; parentId?: FeatureId; detailDocument?: string } = {};
+  const out: {
+    kindLabel?: string;
+    parentId?: FeatureId;
+    detailDocument?: string;
+    directDomain?: true;
+  } = {};
   if (feature.kindLabel !== undefined) out.kindLabel = feature.kindLabel;
   if (feature.parentId !== undefined) out.parentId = feature.parentId;
   if (feature.detailDocument !== undefined) out.detailDocument = feature.detailDocument;
+  if (feature.directDomain === true) out.directDomain = true;
   return out;
+}
+
+/**
+ * この地物は **分け残し（直轄領）** か（FR-37 / 所有者の裁定 2026-09-07）。
+ * 印（{@link FeatureCommon.directDomain}）を持つ **末端**だけが真になる。名前は見ない。
+ *
+ * 末端に限るのは、分け残しが「形を持つ末端」として生まれるからである。別の経路で
+ * 集約へ変わった地物に印が残っていても（{@link toShapelessAggregate} は任意欄をすべて
+ * 運ぶ）、それはもう分け残しではないので偽を返す。単一の判定（教訓 5.26 / 5.30）。
+ */
+export function isDirectDomainLeaf(feature: Feature): boolean {
+  return feature.kind === FEATURE_KIND.Leaf && feature.directDomain === true;
 }
 
 // --- Constructors -----------------------------------------------------------
@@ -265,9 +301,22 @@ export function createAggregateFeature(
   childIds: readonly FeatureId[],
   optional: OptionalCommonFields = {},
 ): AggregateFeature {
+  // 分け残しの印は末端にしか立たない（集約へ変わったらもう分け残しではない）。
+  // 末端→集約の作り直し（toShapelessAggregate / promoteFeature）は任意欄を全部運ぶ
+  // ので、ここで落として「集約に印が残る」形を作れなくする。
+  const aggregateOptional: OptionalCommonFields =
+    optional.directDomain === undefined
+      ? optional
+      : {
+          ...(optional.kindLabel !== undefined ? { kindLabel: optional.kindLabel } : {}),
+          ...(optional.parentId !== undefined ? { parentId: optional.parentId } : {}),
+          ...(optional.detailDocument !== undefined
+            ? { detailDocument: optional.detailDocument }
+            : {}),
+        };
   return {
     kind: FEATURE_KIND.Aggregate,
-    ...buildCommon(id, attributes, color, optional),
+    ...buildCommon(id, attributes, color, aggregateOptional),
     childIds,
   };
 }

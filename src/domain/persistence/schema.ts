@@ -236,6 +236,11 @@ const featureCommon = {
   // なし). The serializer never writes the key for an absent document, and the
   // deserialize boundary collapses a legacy '' to absent (canonical empty form).
   detailDocument: z.string().max(MAX_DETAIL_DOCUMENT_LENGTH).optional(),
+  // 分け残し（直轄領）の印（FR-37 / 所有者の裁定 2026-09-07「名前で判定しない」）。
+  // 値は true だけ（印なしは鍵ごと書かない）。リリース前なので版は上げない
+  // （所有者の裁定 2026-09-03「保存形式の後方互換は不要」。印の無い古いファイルも
+  // そのまま読める ―― 印が無い＝分け残しとして扱わない、になるだけ）。
+  directDomain: z.literal(true).optional(),
 };
 
 export const pointFeatureSchema = z

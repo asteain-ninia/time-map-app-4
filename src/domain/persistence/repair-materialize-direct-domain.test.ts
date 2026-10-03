@@ -228,6 +228,10 @@ describe('FR-37 直轄領 materialisation repair — single anchor', () => {
     const dd = after.features.find((f) => f.id === ddId);
     expect(dd?.kind).toBe('leaf');
     expect(dd?.parentId).toBe(lId);
+    // 所属変更・細分と **同じ印**を読み込みの修復も立てる（所有者の裁定 2026-09-07）。
+    expect(dd?.directDomain).toBe(true);
+    // 修復で集約へ変わった親には印が無い（分け残しは末端だけ）。
+    expect(after.features.find((f) => f.id === lId)?.directDomain).toBeUndefined();
 
     // 面積保存: the parent's derived area is unchanged (元形状 ∪ 子 before == 直轄領 ∪ 子 after).
     const areaAfter = resolveFeatureArea(forest, after.store, lId);

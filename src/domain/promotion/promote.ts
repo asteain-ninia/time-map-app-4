@@ -294,8 +294,12 @@ export function buildDirectDomainForLeaf(
   const ddName = directDomainName(leaf.attributes.name, nameOverride);
   const ddAttrs: BasicAttributes = withName(leaf.attributes, ddName);
   // 直轄領は新集約地物 (= leaf.id) の下位領域。元末端地物の色を引き継ぐ。
+  // **分け残しの印をここで立てる**（所有者の裁定 2026-09-07: 名前でなくデータの印で
+  // 見分ける）。直轄領を生む経路（所属変更・細分・読み込みの修復）はすべてこの関数を
+  // 通るので、印を立てる所はここ 1 か所である。名前は上書きされても印は残る。
   const directDomain = createLeafFeature(ports.nextFeatureId(), ddAttrs, leaf.color, built.shape, {
     parentId: leaf.id,
+    directDomain: true,
   });
   return { kind: 'domain', directDomain, newVertices: built.vertices, originalShape };
 }
