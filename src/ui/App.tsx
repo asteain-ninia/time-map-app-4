@@ -2045,6 +2045,10 @@ export function App(): JSX.Element {
         return;
       }
       recordCommand(built.command, undefined, at);
+      // **確定したら印を捨てる**（設計書 §D.5「捨てる契機: 確定」/ 設計適合 指摘 4）。
+      // 残すと、続けて所属の道具を構えた瞬間に同じ地物がまた対象になる（所属変更・結合と
+      // 同じ寿命にそろえる）。
+      store.getState().clearFeatureMarks();
       statusMessageStore.success(
         PROPERTY_STRINGS.bulkKindDone(built.changedIds.length, kindLabel),
       );
@@ -2642,7 +2646,7 @@ export function App(): JSX.Element {
       // **確定したら印を捨てる**（Fable #5 / 設計書 §D.5「捨てる契機: 確定」）。
       // 残しておくと、道具を構え直した瞬間に同じ 3 件がまた対象になり、
       // 「もう 1 度動かすつもりは無かったのに動かせてしまう」状態になる。
-      // まとめて種別を付ける側は既に捨てているので、不揃いも直る。
+      // 結合・まとめて種別を付ける も確定で捨てる（操作によって印の寿命を変えない）。
       store.getState().clearFeatureMarks();
     },
     [recordCommit, store],
