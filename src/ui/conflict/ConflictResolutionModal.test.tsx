@@ -550,6 +550,43 @@ describe('色見本と冒頭の言い換え（増分 8E / N-17・V13）', () => 
     expect(screen.queryAllByTestId('conflict-participant-swatch')).toHaveLength(0);
   });
 
+  // 増分 8E の手直し（設計適合 S2-4・GPT 重 2）: 色見本で見分けられないときは番号札。
+  it('2 つの色見本が同じなら、行・ラジオ・地図の下見に番号札（①②）が付く', () => {
+    renderWithColors({ a: '#4e79a7', b: '#4e79a7' });
+    const row = screen.getByTestId('conflict-row-c1');
+    const features = within(row).getByTestId('conflict-row-features');
+    expect(
+      within(features).getAllByTestId('conflict-participant-tag').map((t) => t.textContent),
+    ).toEqual(['①', '②']);
+    const options = within(row).getAllByTestId('policy-choice-option');
+    expect(within(options[0]!).getByTestId('conflict-participant-tag')).toHaveTextContent('①');
+    expect(within(options[1]!).getByTestId('conflict-participant-tag')).toHaveTextContent('②');
+    expect(screen.getByTestId('conflict-preview-c1')).toHaveAttribute('data-tags', '①②');
+  });
+
+  it('近い色（明るさが 1 段ちがう程度）でも番号札が付く', () => {
+    renderWithColors({ a: '#2e7d32', b: '#388e3c' });
+    expect(screen.getAllByTestId('conflict-participant-tag').length).toBeGreaterThan(0);
+  });
+
+  it('見分けられる色なら番号札を出さない', () => {
+    renderWithColors({ a: '#4e79a7', b: '#f28e2b' });
+    expect(screen.queryAllByTestId('conflict-participant-tag')).toHaveLength(0);
+    expect(screen.getByTestId('conflict-preview-c1')).toHaveAttribute('data-tags', '');
+  });
+
+  it('色見本を出さない宿主（colorFor なし）では番号札も出さない', () => {
+    render(
+      <ConflictResolutionModal<unknown>
+        pending={pendingOf([conflict('c1', FA, FB)])}
+        applyResolutions={vi.fn()}
+        shapesFor={shapesFor}
+        showGuide={false}
+      />,
+    );
+    expect(screen.queryAllByTestId('conflict-participant-tag')).toHaveLength(0);
+  });
+
   it('凡例の各行にミニマップと同じ色の色見本があり、選ぶ前だけ灰色の行が出る', () => {
     renderWithColors({});
     expect(screen.getByTestId('conflict-legend-swatch-neutral')).toHaveAttribute('data-color', '#9e9e9e');
