@@ -18,6 +18,8 @@
 // 写像表は「ここが唯一の出口」であることに意味がある。新しいコマンドが増えて表に
 // 載っていなければ「編集しました」と出るだけで、内部の識別子が画面に漏れることはない。
 
+import { COMMAND_LABEL_TEXT, RESULT_STRINGS } from './command-result-strings';
+
 /**
  * UI 側が `Command.label` に入れる内部の識別子の **全件**。ここが唯一の定義箇所で、
  * 確定経路（`consistency-binding.ts` の 6 つの束ね・パレット・共有解除・削除・存続期間）が
@@ -90,37 +92,37 @@ export type UiCommandLabel = (typeof UI_COMMAND_LABEL)[keyof typeof UI_COMMAND_L
  */
 const COMMAND_LABEL_JA: Readonly<Record<string, string>> = {
   // --- UI 側（内部の英語。UI_COMMAND_LABEL の全件がここに載る） ---
-  [UI_COMMAND_LABEL.Edit]: '素性の変更',
-  [UI_COMMAND_LABEL.Add]: '地物の追加',
-  [UI_COMMAND_LABEL.Split]: '分割',
-  [UI_COMMAND_LABEL.Drill]: '穴あけ',
-  [UI_COMMAND_LABEL.Merge]: '結合',
-  [UI_COMMAND_LABEL.Affiliation]: '所属変更',
-  [UI_COMMAND_LABEL.Delete]: '地物の削除',
-  [UI_COMMAND_LABEL.Interval]: '存続期間の変更',
-  [UI_COMMAND_LABEL.Palette]: '配色の変更',
-  [UI_COMMAND_LABEL.Unshare]: '頂点の共有解除',
+  [UI_COMMAND_LABEL.Edit]: COMMAND_LABEL_TEXT.edit,
+  [UI_COMMAND_LABEL.Add]: COMMAND_LABEL_TEXT.add,
+  [UI_COMMAND_LABEL.Split]: COMMAND_LABEL_TEXT.split,
+  [UI_COMMAND_LABEL.Drill]: COMMAND_LABEL_TEXT.drill,
+  [UI_COMMAND_LABEL.Merge]: COMMAND_LABEL_TEXT.merge,
+  [UI_COMMAND_LABEL.Affiliation]: COMMAND_LABEL_TEXT.affiliation,
+  [UI_COMMAND_LABEL.Delete]: COMMAND_LABEL_TEXT.delete,
+  [UI_COMMAND_LABEL.Interval]: COMMAND_LABEL_TEXT.interval,
+  [UI_COMMAND_LABEL.Palette]: COMMAND_LABEL_TEXT.palette,
+  [UI_COMMAND_LABEL.Unshare]: COMMAND_LABEL_TEXT.unshare,
   // 「◯◯を行いました」に繋いだときに日本語として読める名詞句にする
   // （2026-09-05、増分 4 の手直し F3。旧: 「その年への錨の新設を行いました」
   // 「この年の錨づくりを行いました」＝ §H.5 の「過去形で言い切る」から外れていた）。
-  [UI_COMMAND_LABEL.EditOverwrite]: 'その年の錨の書き換え',
-  [UI_COMMAND_LABEL.EditNewAnchor]: 'その年に錨を作る記録',
-  [UI_COMMAND_LABEL.CreateAnchor]: 'この年に錨を作る記録',
+  [UI_COMMAND_LABEL.EditOverwrite]: COMMAND_LABEL_TEXT.editOverwrite,
+  [UI_COMMAND_LABEL.EditNewAnchor]: COMMAND_LABEL_TEXT.editNewAnchor,
+  [UI_COMMAND_LABEL.CreateAnchor]: COMMAND_LABEL_TEXT.createAnchor,
   // 輪郭の道具（増分 5 の手直し E3）。**「リング」は内部語**なので、§H.1 の第一表記
   // 「穴・飛び地」で言う。追加と削除を分けるのは、状態行が「何をしたか」を言う場所で
   // あって「どの道具を使ったか」を言う場所ではないからである。
-  [UI_COMMAND_LABEL.RingAdd]: '穴・飛び地の追加',
-  [UI_COMMAND_LABEL.RingDelete]: '穴・飛び地の削除',
-  [UI_COMMAND_LABEL.BulkKindLabel]: 'まとめての種別付け',
+  [UI_COMMAND_LABEL.RingAdd]: COMMAND_LABEL_TEXT.ringAdd,
+  [UI_COMMAND_LABEL.RingDelete]: COMMAND_LABEL_TEXT.ringDelete,
+  [UI_COMMAND_LABEL.BulkKindLabel]: COMMAND_LABEL_TEXT.bulkKindLabel,
   // --- ドメイン側が日本語を入れている 4 か所（そのまま通すが、表に載せて所在を示す） ---
-  所属変更: '所属変更',
-  地物の削除: '地物の削除',
-  自動配色: '自動配色',
-  結合: '結合',
+  所属変更: COMMAND_LABEL_TEXT.domainAffiliation,
+  地物の削除: COMMAND_LABEL_TEXT.domainDeleteFeature,
+  自動配色: COMMAND_LABEL_TEXT.domainRecolor,
+  結合: COMMAND_LABEL_TEXT.domainMerge,
 };
 
 /** 表に無い label のときに出す、粗いが日本語の言い方。 */
-const FALLBACK_LABEL_JA = '編集';
+const FALLBACK_LABEL_JA = COMMAND_LABEL_TEXT.fallback;
 
 /**
  * `Command.label` を画面に出せる日本語にする。**内部の英語は絶対に外へ出さない**
@@ -131,22 +133,5 @@ export function commandLabelJa(label: string | null | undefined): string {
   return COMMAND_LABEL_JA[label] ?? FALLBACK_LABEL_JA;
 }
 
-/** 状態行に出す結果の定型文（「何をしたか」を過去形で言い切る）。 */
-export const RESULT_STRINGS = {
-  /**
-   * 編集が通った。対象の名前が分かるときは添える。**「◯◯を行いました」の形にする**のは、
-   * 操作名が名詞（「素性の変更」「地物の削除」）だからで、「◯◯しました」と繋ぐと
-   * 「素性の変更しました」のような日本語にならない文になる。
-   */
-  done: (labelJa: string, targetName?: string | null): string =>
-    targetName === null || targetName === undefined || targetName === ''
-      ? `${labelJa}を行いました`
-      : `${targetName}: ${labelJa}を行いました`,
-  /** 取り消した。 */
-  undone: (labelJa: string): string => `元に戻しました: ${labelJa}`,
-  /** やり直した。 */
-  redone: (labelJa: string): string => `やり直しました: ${labelJa}`,
-  /** 削除（対象の名前つき）。削除だけは「何を消したか」を必ず名指しする。 */
-  deleted: (targetName: string | null): string =>
-    targetName === null || targetName === '' ? '削除しました' : `${targetName}を削除しました`,
-} as const;
+/** 状態行に出す結果の定型文（「何をしたか」を過去形で言い切る）。表は `command-result-strings.ts`。 */
+export { RESULT_STRINGS };
