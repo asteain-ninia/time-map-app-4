@@ -94,11 +94,52 @@ test.describe('増分 8E — G-14: 穴の頂点の編集は確定前の検査を
       // 左の穴の右上の頂点 (-40,-20) を、右の穴の内側 (50, 0) へ。
       await drag(page, cx - 40, cy - 20, cx + 50, cy);
 
+      // 壊れ方と、どの面のどの年の形かを言う（増分 8E の手直し。反証 2-2）。
       await expect(page.getByTestId('statusbar-result')).toContainText(
-        '穴・飛び地が外周や別の穴・飛び地と交わる形になるため',
+        '動かした形を確定しませんでした。穴と穴が交わる形になるためです（「穴のある面」の',
       );
       // 形は元のまま（記録されていない）。
       await expect.poll(async () => handlePositions(page)).toEqual(before);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // 増分 8E の手直し（設計適合 S2-1・反証 2-1）: 頂点の削除が関門で断られたら、理由を出す。
+  // 以前は確認で［消す］を押しても何も起きず、状態行にも何も出なかった。
+  test('穴の凹んだ頂点を消すと隣の穴を覆う形では、消えずに「この頂点を消すと穴と穴が交わるので消せません」と出る', async () => {
+    const { app, page } = await launchApp();
+    try {
+      // 矢じり形の穴（(0,-10) が凹んだ頂点）と、その凹みに収まる小さな三角の穴。
+      // 凹んだ頂点を消すと、矢じりは三角になって小さな穴を覆う（穴と穴が交わる）。
+      const { cx, cy } = await faceWithHoles(page, [
+        [
+          [-90, -90],
+          [0, -10],
+          [90, -90],
+          [0, 80],
+        ],
+        [
+          [-15, -80],
+          [15, -80],
+          [0, -55],
+        ],
+      ]);
+      await expect.poll(async () => (await handlePositions(page)).length).toBe(11);
+      const before = await handlePositions(page);
+
+      await page.mouse.click(cx, cy - 10, { button: 'right' });
+      await page.locator('[data-item-kind="deleteVertex"]').click();
+      await expect(page.getByTestId('vertex-delete-impact')).toBeVisible();
+      await page.getByTestId('vertex-delete-impact-confirm').click();
+      await expect(page.getByTestId('vertex-delete-impact')).toHaveCount(0);
+
+      await expect(page.getByTestId('statusbar-result')).toContainText(
+        'この頂点を消すと穴と穴が交わるので消せません（「穴のある面」の',
+      );
+      // 形は元のまま（消えていない）。
+      await page.waitForTimeout(300);
+      expect(await handlePositions(page)).toEqual(before);
     } finally {
       await app.close();
     }
