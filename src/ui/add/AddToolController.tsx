@@ -289,10 +289,18 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   // 打ちかけの量（頂点の数）を写しで持つ。捨てる瞬間に「何を捨てたか」を言うために要る
   // ―― 捨てたあとでは数えられない（教訓 5.18: 0 も真の値なので長さで見る）。
   const draftSizeRef = useRef(0);
+  // **重なりで止まっている間（ConflictPaused）は 0 と数える**（増分 8E / V13 ⑦）。この頂点は
+  // もう「描きかけ」ではない ―― 保存を押して確定の手続きに渡したものである。重なり解決で
+  // 適用されれば記録に入り、やめれば板の側が「やめた」ことを言う。どちらの場合も宿主が道具を
+  // 構え直す（App の `reArmActiveTool`）ので、ここで数えていると **適用した直後に
+  // 「描きかけの頂点 4 個を捨てました」と嘘をつき**、状態行の「重なりを解消しました」を
+  // 上書きしていた（実機の E2E で確認）。
   draftSizeRef.current =
-    add.phase === ADD_PHASE.PropertyForm
-      ? (add.draft?.vertices.length ?? 0)
-      : (add.session?.vertices.length ?? 0);
+    add.phase === ADD_PHASE.ConflictPaused
+      ? 0
+      : add.phase === ADD_PHASE.PropertyForm
+        ? (add.draft?.vertices.length ?? 0)
+        : (add.session?.vertices.length ?? 0);
 
   // 道具を持ち替える前の道具（「このままにする」で戻す先）。`activeKind` は面／線／点の
   // 3 値しか持たないので、戻すには `ToolId` そのものが要る。
@@ -398,8 +406,14 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
 
   const cancelAction = add.cancel;
   const canCompleteNow = add.canComplete;
+  // **重なりで止まっている間は「打ちかけ」と数えない**（増分 8E。上の draftSizeRef と同じ理由）。
+  // 重なり解決で適用すると、宿主は追加した面へ選択を移す（教訓 5.11）。そのときここが
+  // 打ちかけありと読むと、**適用した直後に「描きかけを捨てますか」の板が出て**、地図も道具も
+  // 押せなくなっていた（実機の E2E で確認）。止まっている頂点の行き先を決めるのは重なり解決の
+  // 板であって、この見張りではない。
   const hasDraftNow =
-    (add.session?.vertices.length ?? 0) > 0 || add.phase === ADD_PHASE.PropertyForm;
+    add.phase !== ADD_PHASE.ConflictPaused &&
+    ((add.session?.vertices.length ?? 0) > 0 || add.phase === ADD_PHASE.PropertyForm);
 
   useEffect(() => {
     const prev = prevTimeRef.current;
