@@ -1646,6 +1646,7 @@ export function applyAffiliationProposal(
  *   2. 子の並び（`childIds`）を、その年からの実際の所属に揃える。追加は新しい系列を
  *      足すだけで親の子の並びを書き換えないので、揃えないと次に開いたときに
  *      「子の並びの食い違い」で修復を聞かれる。揃える向きは常に `parentId` から（U08）。
+ *      親が別のまとめ役の錨に居候しているときは、先に自分の系列へ起こす。
  *
  * 純粋。何も変わらなければ `root` をそのまま返す。
  */
@@ -1670,6 +1671,12 @@ export function applyAddUnderAggregate(
             calendar,
           );
   }
+  // まとめ役が自分の系列を持たず別のまとめ役の錨に居候している（実データの州の形）なら、
+  // 揃える前に自分の系列へ起こす（司令塔の決定 (1) の「記録の置き場」。所属変更の手順 0 と
+  // 同じ 1 本）。子の並びを年ごとに揃える `syncAggregateChildIds` は自分の系列を持つ
+  // まとめ役しか見ないので、起こさないと居候の親の子の並びが古いまま残り、開き直しで
+  // 「子の並びの食い違い」を聞かれる。既に自分の系列を持っていれば何もしない。
+  histories = materializeOwnSeries(histories, [parentId], calendar).histories;
   histories = syncAggregateChildIdsInHistories(histories, [parentId], calendar);
   return histories === root.histories ? root : withHistories(root, histories);
 }
