@@ -14,6 +14,8 @@ import {
 import { BROWSER_CLOCK, throttleTrailing } from '../../shell/map-resize';
 import { POINTER_BUTTON, pointerButtonFromCode } from '../dispatch';
 import { PointerDispatcher } from '../PointerDispatcher';
+import type { ZoomDirection } from '../keyboard-zoom';
+import type { ZoomRange } from '../../../render/camera';
 import {
   NOOP_ADD_PORT,
   type CameraPort,
@@ -62,6 +64,13 @@ export interface MountInputOptions {
     readonly probe: (point: { readonly x: number; readonly y: number }) => readonly NearVertexCandidate[];
     readonly nameOf: (featureId: FeatureId) => string;
   };
+  /**
+   * ホイールの 1 ノッチごとに、倍率を書く前に呼ぶ口の置き場（増分 8E の手直し / G-21）。
+   * 宿主が上下限での断りを出すのに使う。渡さなければ何もしない。
+   */
+  readonly wheelZoomNoticeRef?: MutableRefObject<
+    ((direction: ZoomDirection, zoomBefore: number, range: ZoomRange) => void) | null
+  >;
 }
 
 /** {@link createMountInput} の産物。 */
@@ -128,6 +137,9 @@ export function createMountInput(options: MountInputOptions): MountInput {
     // keeps the FR-11 fit-all initial camera in range (単一真実源 — the renderer's
     // own clamp, not a second copy here).
     getZoomRange: () => ports.effectiveZoomRange(),
+    // 増分 8E の手直し（G-21）: ホイールでも上下限で理由を出す（宿主の口へ渡すだけ）。
+    onWheelZoom: (direction, zoomBefore, range) =>
+      options.wheelZoomNoticeRef?.current?.(direction, zoomBefore, range),
   });
 
   // Convert a DOM event's client coords to surface-relative CSS px (the dispatcher

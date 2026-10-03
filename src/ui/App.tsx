@@ -144,6 +144,7 @@ import type { RejectedResult } from '../domain/consistency/index';
 // 増分 8E（G-21）: ズームの上下限を理由つきで断る。
 import { ZoomLimitNoteStore, zoomLimitRefusal } from './map/zoom-limit-notice';
 import { ZoomLimitNoteView } from './map/ZoomLimitNote';
+import { createWheelZoomNotice } from './map/wheel-zoom-notice';
 import './map/zoom-limit-note.css';
 import './knife/knife.css';
 import type {
@@ -662,6 +663,10 @@ export function App(): JSX.Element {
   const zoomLimitNoteStoreRef = useRef<ZoomLimitNoteStore | null>(null);
   zoomLimitNoteStoreRef.current ??= new ZoomLimitNoteStore();
   const zoomLimitNoteStore = zoomLimitNoteStoreRef.current;
+  // 増分 8E の手直し（G-21）: ホイールの 1 ノッチごとの知らせ口（上下限で理由を出す）。
+  const wheelZoomNoticeRef = useRef<
+    ((direction: ZoomDirection, zoomBefore: number, range: ZoomRange) => void) | null
+  >(null);
 
   // The cursor's live world position behind the status-bar readout (FR-111). Held OUTSIDE
   // React (technical policy 2.3): the map pointermove path pushes into it at input rate
@@ -981,6 +986,7 @@ export function App(): JSX.Element {
       transients,
       cursorPositionStore,
       cameraInputRef,
+      wheelZoomNoticeRef,
       hitTester: hitTest.hitTester,
       selectionPort: hitTest.selectionPort,
       editSession: hitTest.editSession,
@@ -1456,6 +1462,14 @@ export function App(): JSX.Element {
     zoomLimitNoteStore.show(refusal.side, zoomBefore);
     statusMessageStore.failure(refusal.status);
   };
+
+  // 増分 8E の手直し（G-21）: ホイールでも上下限で理由を出す。脇の文は断るたび、状態行は
+  // 1 回の回転につき 1 度（数え役を持つので 1 度だけ作る）。
+  wheelZoomNoticeRef.current ??= createWheelZoomNotice({
+    settings: () => store.getState().projectSettings,
+    noteStore: zoomLimitNoteStore,
+    announce: (status) => statusMessageStoreRef.current?.failure(status),
+  });
 
   announceEditRejectionRef.current = (rejected: RejectedResult): void => {
     statusMessageStore.failure(editRejectionMessage(rejected));

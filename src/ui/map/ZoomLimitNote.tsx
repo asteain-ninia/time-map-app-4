@@ -6,7 +6,7 @@
 // （縮小した・ホイールで動かした）消える。状態行の文（消えない）とは役割が違い、
 // こちらは **押した場所のすぐ脇で** 理由を見せる。
 
-import { useSyncExternalStore } from 'react';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -24,7 +24,29 @@ export function ZoomLimitNoteView<S>(props: ZoomLimitNoteProps<S>): JSX.Element 
   const note = useSyncExternalStore(noteStore.subscribe, noteStore.get, noteStore.get);
   // 倍率はこの葉ノードだけが購読する（技術方針 2.3。MapViewControls と同じ）。
   const zoom = useStore(store, (s) => s.camera.zoom);
-  if (note === null || !zoomLimitNoteVisible(note, zoom)) return null;
+  const visible = note !== null && zoomLimitNoteVisible(note, zoom);
+
+  // **倍率が動いたら文そのものを消す**（増分 8E の手直し。GPT 重 2）。最初の版は表示の条件で
+  // 隠すだけだったので、上限で断ったあとホイールで縮小し、元の倍率へ戻すと、新たに断って
+  // いないのに古い文がまた出ていた。
+  useEffect(() => {
+    if (note !== null && !visible) noteStore.clear();
+  }, [note, visible, noteStore]);
+
+  // 開き直し・新規（`projectLoadNonce`）と、上下限の設定の変更でも消す（古い倍率の文を残さない）。
+  const loadNonce = useStore(store, (s) => s.projectLoadNonce);
+  const zoomMin = useStore(store, (s) => s.projectSettings.zoomMin);
+  const zoomMax = useStore(store, (s) => s.projectSettings.zoomMax);
+  const firstRun = useRef(true);
+  useEffect(() => {
+    if (firstRun.current) {
+      firstRun.current = false;
+      return;
+    }
+    noteStore.clear();
+  }, [loadNonce, zoomMin, zoomMax, noteStore]);
+
+  if (note === null || !visible) return null;
   return (
     <p className="map-zoom-limit-note" data-testid="map-zoom-limit-note" role="status">
       {note.text}

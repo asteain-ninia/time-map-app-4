@@ -132,6 +132,12 @@ export interface PointerDispatcherOptions {
   readonly getZoomRange?: () => ZoomRange | undefined;
   /** Multiplicative zoom factor per wheel notch. Default 1.1 (zoom in on up). */
   readonly wheelZoomFactor?: number;
+  /**
+   * ホイールの 1 ノッチが届いたことを、**倍率を書く前に** 知らせる口（増分 8E の手直し /
+   * G-21）。上下限に着いているのにさらに回したことを、宿主が理由つきで知らせるのに使う。
+   * ズームの計算とクランプには関わらない（読むだけ）。
+   */
+  readonly onWheelZoom?: (direction: 'in' | 'out', zoomBefore: number, range: ZoomRange) => void;
 }
 
 /** What kind of sequence a live pointer is driving (single行き先, 受け入れ基準 5). */
@@ -498,6 +504,7 @@ export class PointerDispatcher {
     // floor) so a settings change / fit floor reaches the wheel; fall back to the
     // static option, then U17's FR-10 default (受け入れ基準 2, 単一の真実源).
     const range = this.opts.getZoomRange?.() ?? this.opts.zoomRange;
+    if (range !== undefined) this.opts.onWheelZoom?.(factor > 1 ? 'in' : 'out', camera.zoom, range);
     const next = zoomStepAtCursor(camera, viewport, cursor, factor, range);
     this.opts.camera.write(next);
   }
