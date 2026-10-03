@@ -64,4 +64,17 @@ describe('AppIdentity（設計書 §H.6）', () => {
     expect(screen.queryByTestId('app-identity-world')).not.toBeInTheDocument();
     expect(screen.getByTestId('app-identity-file')).toHaveTextContent('a.gimoza');
   });
+
+  it('世代から開いて保存先が未確定のときは、元の名前と「世代から復旧・保存先は未確定」を出す（増分 8D）', () => {
+    const restoredFrom = {
+      sourceName: 'w.gimoza',
+      savedAtMs: new Date(2026, 9, 3, 14, 3).getTime(),
+    };
+    render(
+      <AppIdentity worldName="デーレ界" fileName={null} dirty={false} restoredFrom={restoredFrom} />,
+    );
+    const file = screen.getByTestId('app-identity-file');
+    expect(file).toHaveTextContent('w.gimoza（2026-10-03 14:03 の世代から復旧・保存先は未確定）');
+    expect(file).toHaveAttribute('data-restored', 'true');
+  });
 });

@@ -25,7 +25,14 @@ import type { ConsistencyReport, DomainProject } from '../../domain/persistence/
 import type { FeatureId } from '../../domain/ids';
 import { serialize } from '../../domain/persistence/index';
 import { checkBeforeSave, preSaveBlockMessage } from '../../domain/persistence/pre-save';
-import type { LoadResponse, NamedAsset, SaveRequest, TimeMapApi } from '../../shell/ipc/contract';
+import type {
+  BackupListing,
+  LoadResponse,
+  NamedAsset,
+  RestoredFrom,
+  SaveRequest,
+  TimeMapApi,
+} from '../../shell/ipc/contract';
 import type { ZoomRange } from '../../render/camera';
 
 import type { SessionStore } from '../state/store';
@@ -42,6 +49,7 @@ import {
   toPersistedUiSettings,
 } from './ui-settings-bridge';
 import {
+  openBackupCommand,
   openCommand,
   newProjectCommand,
   saveCommand,
@@ -49,6 +57,7 @@ import {
   quitGuard,
   SAVE_OUTCOME,
   type FileCommandPorts,
+  type ReflectInfo,
   type SaveOutcome,
 } from './file-commands';
 import {
@@ -56,6 +65,7 @@ import {
   buildNewProjectContext,
   contextAfterSave,
   contextForLoadedFile,
+  contextForRestoredBackup,
   contextWithoutSaveTarget,
   decideSaveAfterConfirm,
   needsSaveAs,
@@ -68,8 +78,10 @@ import { runBasemapReplace } from './basemap-replace';
 import { UnsavedWarningDialog } from './UnsavedWarningDialog';
 import { OverwriteConfirmDialog } from './OverwriteConfirmDialog';
 import { RepairDialog } from './RepairDialog';
+import { BackupListDialog } from './BackupListDialog';
 import { OVERWRITE_STRINGS } from './strings';
 import type { RepairChoices } from './repair-flow';
+import { buildRepairNamer, type RepairNamer } from './repair-names';
 import type { UnsavedChoice } from './unsaved-guard';
 
 /** Supply the camera clamp range to U17 (the renderer host). */
@@ -149,6 +161,12 @@ export interface FileOpsControllerProps {
    */
   readonly onModalOpenChange?: (open: boolean) => void;
   /**
+   * 「以前の保存から開く」の世代の一覧が出ている間、鍵盤の持ち主を名乗る口（増分 8D）。
+   * 板の部品が自分で `useModalRegistration` に渡す（司令塔の決定 (13)）。App は
+   * `toolModalChange('backup-list')` を配線する。
+   */
+  readonly onBackupListModalChange?: (open: boolean) => void;
+  /**
    * S7 出界図 結線 — forward the DISPLAYED project's base-map image bytes to the renderer
    * host (App caches them and hands them to the map renderer's `baseMap` getter). Called
    * on every COMMITTED 破壊的置換: a load that actually reached the domain pushes the
@@ -195,9 +213,17 @@ interface PendingOverwrite {
   readonly resolve: (confirmed: boolean) => void;
 }
 
+/** 世代の一覧の板（並べる一覧 + 選んだ id か null を返す口）。増分 8D。 */
+interface PendingBackupList {
+  readonly listing: BackupListing;
+  readonly resolve: (id: string | null) => void;
+}
+
 /** The pending repair modal (the report to present + a resolver for the choices). */
 interface PendingRepair {
   readonly report: ConsistencyReport;
+  /** 対象を名前で呼ぶための引き先（増分 8D の手直し。読み込んだプロジェクトから作る）。 */
+  readonly namer: RepairNamer;
   readonly resolve: (choices: RepairChoices | null) => void;
 }
 
@@ -271,6 +297,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       savedAtMs: savedAtMsRef.current,
       autoSaveArmed: autoSaveArmed(),
       destinationRetracted: contextRef.current.destinationRetracted,
+      restoredFrom: contextRef.current.restoredFrom,
     });
   }, [autoSaveArmed]);
 
@@ -364,6 +391,11 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // staged (a no-op to promote / discard), mirroring `pendingAssetsRef`.
   const pendingLoadTokenRef = useRef<string | null>(null);
 
+  // 増分 8D — 「世代から開いた」印の預かり。トークンと同じ捕捉点で預かり、同じ捨て場所で
+  // 捨てる。reflectProject はこれを見て **保存先を確定させない**保存文脈を作る。捨て損ねると、
+  // 世代を開いて修復で中止したあとに普通のファイルを開いたとき「世代から復旧」と出てしまう。
+  const pendingRestoredRef = useRef<RestoredFrom | null>(null);
+
   // S7 出界図 結線 — the latest onBaseMapImageChange callback, held in a ref so the
   // asset-capture wrapper (inside the `host` memo) and the new-project init (inside an
   // effect) always call the CURRENT one without rebuilding those memos / re-running
@@ -383,6 +415,8 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     // UC1 round-2: the staged save-destination token is discarded together with the
     // assets, so a non-reflecting load never commits its path either (同・全経路で破棄).
     pendingLoadTokenRef.current = null;
+    // 増分 8D: 「世代から開いた」印も同じ場所で捨てる。
+    pendingRestoredRef.current = null;
   }, []);
 
   /**
@@ -514,6 +548,14 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
 
   const [pendingUnsaved, setPendingUnsaved] = useState<PendingUnsaved | null>(null);
   const [pendingRepair, setPendingRepair] = useState<PendingRepair | null>(null);
+  const [pendingBackupList, setPendingBackupList] = useState<PendingBackupList | null>(null);
+  // 増分 8D の手直し: 一覧の地物数は板を出したあとで 1 行ずつ埋める（id → 数。読めなければ null）。
+  // `backupListGenRef` は板の世代番号で、閉じた・元のファイルを選び直した板へ古い数を書かない。
+  const [backupFeatureCounts, setBackupFeatureCounts] = useState<ReadonlyMap<string, number | null>>(
+    () => new Map(),
+  );
+  const [pickingBackupSource, setPickingBackupSource] = useState(false);
+  const backupListGenRef = useRef(0);
   const [pendingOverwrite, setPendingOverwrite] = useState<PendingOverwrite | null>(null);
   const [repairUnresolved, setRepairUnresolved] = useState(false);
 
@@ -553,6 +595,8 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         // destination moves iff the load reaches the domain. A response without a token
         // (defensive / non-production) stages null → the commit is a safe no-op.
         pendingLoadTokenRef.current = response.commitToken ?? null;
+        // 増分 8D: 世代から開いた読み込みだけが持つ印。普通の読み込みでは null に戻す。
+        pendingRestoredRef.current = response.restoredFrom ?? null;
       } else {
         // A transport failure ends this load here: nothing to promote (the runner's
         // finally is the belt-and-braces discard for every other exit).
@@ -564,6 +608,8 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       ...api,
       load: async () => captureAssets(await api.load()),
       loadDropped: async (droppedPath: string) => captureAssets(await api.loadDropped(droppedPath)),
+      // 増分 8D: 世代から開くのも同じ捕捉点を通す（資産・トークン・「世代から」の印を預ける）。
+      openBackup: async (id: string) => captureAssets(await api.openBackup(id)),
     };
     const buildSaveRequest = (): SaveRequest => {
       // Capture the EXACT snapshot the lost-edit guard compares against: the LIVE
@@ -684,7 +730,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
             },
           });
         }),
-      promptRepair: (report: ConsistencyReport, isRetry: boolean) =>
+      promptRepair: (report: ConsistencyReport, isRetry: boolean, project: DomainProject) =>
         new Promise<RepairChoices | null>((resolve) => {
           // BUG #2: a retry-open (the first chosen repairs left the project
           // inconsistent, REPAIR_OUTCOME.Unresolved) shows the『前回の修復では解消
@@ -694,6 +740,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
           setRepairUnresolved(isRetry);
           setPendingRepair({
             report,
+            namer: buildRepairNamer(project),
             resolve: (choices) => {
               setPendingRepair(null);
               setRepairUnresolved(false);
@@ -701,7 +748,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
             },
           });
         }),
-      reflectProject: (project: DomainProject, path: string) => {
+      reflectProject: (project: DomainProject, path: string, info?: ReflectInfo) => {
         // 確定後のみ反映 (教訓 5.22): swap the domain, DISCARD the old project's
         // selection / tool / mode / focus, and clear dirty — all in ONE store
         // transition via resetToDomain (受け入れ基準 4 同時初期化, 教訓 5.2 全経路で破棄).
@@ -729,6 +776,9 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         // （増分 4 の手直し D / 決定 (1)）。節が無い（古いファイル・新規）なら束は無い。
         const savedBundle = project.bundles?.[0];
         const ledgerBundle = savedBundle === undefined ? null : fromSavedBundle(savedBundle);
+        // 増分 8D の手直し: 世代から開いて **修復した** 中身は、元のファイルにも世代にも無い。
+        // clean にすると、閉じたときに何も聞かれずに修復が失われるので、未保存で始める。
+        const notOnDisk = pendingRestoredRef.current !== null && info?.repaired === true;
         store.getState().reflectLoadedProject(project, {
           ...(project.uiSettings === undefined
             ? {
@@ -737,18 +787,27 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
               }
             : fromPersistedUiSettings(project.uiSettings)),
           ledgerBundle,
+          ...(notOnDisk ? { notOnDisk: true } : {}),
         });
         // 開き直したら「このセッションではまだ保存していない」へ戻す（状態行は「未保存」）。
         savedAtMsRef.current = null;
         // 直前の結果もここで消える（設計書 §H.5 の消える条件③「プロジェクトを開き直したとき」）。
         // 時間の経過や無関係な操作では消さない（教訓 5.12 / K-7）。
         statusMessagesRef.current?.clear();
+        // 増分 8D: 世代から開いたなら **保存先を確定させない**（設計書 §E.1 の V14 の規則 ①②・
+        // §J.4 の #9 の ④）。`path` は世代そのもののパスなので、保存先にすると次の Ctrl+S が
+        // 世代を上書きする。主プロセスの側も同じ規則で保存先を未確定へ戻す。
+        const restoredFrom = pendingRestoredRef.current;
+        pendingRestoredRef.current = null;
+        const metadata = { name: project.baseMap.source, description: '' };
         applyContext(
-          contextForLoadedFile({
-            path,
-            metadata: { name: project.baseMap.source, description: '' },
-            baseMapId: project.baseMap.source,
-          }),
+          restoredFrom === null
+            ? contextForLoadedFile({ path, metadata, baseMapId: project.baseMap.source })
+            : contextForRestoredBackup({
+                restoredFrom,
+                metadata,
+                baseMapId: project.baseMap.source,
+              }),
         );
         // UC1: the domain is COMMITTED (reflectLoadedProject is atomic and would have
         // thrown/rolled back otherwise), so — and only so — this file's asset bytes
@@ -853,6 +912,73 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     }
   }, []);
 
+  /**
+   * 一覧の地物数を 1 行ずつ数えて埋める（増分 8D の手直し）。一覧そのものは中身を読まずに
+   * 先に出ているので、ここで新しい順に 1 つずつ主プロセスへ頼む。板が閉じた・一覧が差し替わった
+   * （世代番号が進んだ）ら止める。
+   */
+  const fillBackupFeatureCounts = useCallback(
+    async (listing: BackupListing, gen: number): Promise<void> => {
+      if (api === null || listing.basis !== 'file') return;
+      for (const entry of listing.entries) {
+        if (entry.featureCount !== undefined) continue;
+        let count: number | null;
+        try {
+          count = await api.countBackupFeatures(entry.id);
+        } catch {
+          count = null;
+        }
+        if (backupListGenRef.current !== gen) return;
+        setBackupFeatureCounts((prev) => new Map(prev).set(entry.id, count));
+      }
+    },
+    [api],
+  );
+
+  /** 世代の一覧の板を出し、選ばれた id（やめたら null）を待つ（増分 8D）。 */
+  const promptBackupList = useCallback(
+    (listing: BackupListing) =>
+      new Promise<string | null>((resolve) => {
+        backupListGenRef.current += 1;
+        const gen = backupListGenRef.current;
+        setBackupFeatureCounts(new Map());
+        setPickingBackupSource(false);
+        setPendingBackupList({
+          listing,
+          resolve: (id) => {
+            backupListGenRef.current += 1;
+            setPendingBackupList(null);
+            resolve(id);
+          },
+        });
+        void fillBackupFeatureCounts(listing, gen);
+      }),
+    [fillBackupFeatureCounts],
+  );
+
+  /**
+   * 基準が無いときの［元のファイルを選ぶ…］（増分 8D の手直し）。主プロセスの「開く」ダイアログで
+   * 元のファイルを選ばせ、その隣の世代で板を差し替える（保存先は変えない）。やめたらそのまま。
+   */
+  const pickBackupSource = useCallback(async (): Promise<void> => {
+    if (api === null) return;
+    const genAtStart = backupListGenRef.current;
+    setPickingBackupSource(true);
+    let listing: BackupListing;
+    try {
+      listing = await api.listBackups({ pickSource: true });
+    } catch {
+      listing = { basis: 'none' };
+    }
+    if (backupListGenRef.current !== genAtStart) return; // 選んでいる間に板が閉じた
+    backupListGenRef.current += 1;
+    const gen = backupListGenRef.current;
+    setPickingBackupSource(false);
+    setBackupFeatureCounts(new Map());
+    setPendingBackupList((prev) => (prev === null ? prev : { ...prev, listing }));
+    void fillBackupFeatureCounts(listing, gen);
+  }, [api, fillBackupFeatureCounts]);
+
   const promptOverwrite = useCallback(
     (savePath: string) =>
       new Promise<boolean>((resolve) => {
@@ -952,6 +1078,11 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       savedAtMsRef.current = null;
       statusMessagesRef.current?.clear();
       applyContext(buildNewProjectContext());
+      // 増分 8D の手直し: 主プロセスにも「新規にした」と伝える（保存先・世代から戻した元の
+      // ファイル・一覧の基準を捨てる）。これが無いと、新規の名前を付けて保存の既定に前の
+      // ファイルの名前が出て、一覧と世代の数も前のファイルのものになっていた。待たない ――
+      // 次の保存はこのあとに送られるので、主プロセスは先にこれを受け取る（commitLoadedPath と同じ）。
+      if (api !== null) void api.forgetSaveTarget().catch(() => undefined);
       // BUG #6 fix: a new project has NO loaded assets — drop any retained base-map /
       // attachment bytes from a previously-loaded project so 新規 after a load does not
       // write the old project's map image into the new file (教訓 5.2 全経路で破棄).
@@ -970,6 +1101,11 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     registry.register(COMMAND_ID.FileOpen, {
       run: () => void runExclusive(() => openCommand(ports)),
     });
+    // 増分 8D: 以前の保存から開く。一覧 → 行を選ぶ → 未保存の確認 → 開く を **1 つの
+    // ラッチの中で**走らせる（開く・新規・D&D・自動保存のティックと交わらない）。
+    registry.register(COMMAND_ID.FileOpenBackup, {
+      run: () => void runExclusive(() => openBackupCommand(ports, promptBackupList)),
+    });
     // A1: 保存は **確認の間だけ** ラッチを取る。確認が要らない（既に確認済みの先／
     // 新規で名前を付けて保存へ落ちる）保存は、これまでどおりラッチを取らずに走る
     // ——保存どうしの直列化は bridge の saveChain が担当する（lost-edit ガード）。
@@ -982,6 +1118,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     return () => {
       registry.unregister(COMMAND_ID.FileNew);
       registry.unregister(COMMAND_ID.FileOpen);
+      registry.unregister(COMMAND_ID.FileOpenBackup);
       registry.unregister(COMMAND_ID.FileSave);
       registry.unregister(COMMAND_ID.FileSaveAs);
     };
@@ -994,6 +1131,8 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     runExclusive,
     runGuardedSave,
     reportSaveOutcome,
+    promptBackupList,
+    api,
   ]);
 
   // dirty tracking lives in ONE place now (spec §B 単一基準): the U16 store's
@@ -1182,7 +1321,10 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // Cleared on unmount so a torn-down controller never leaves the dispatcher suspended.
   const onModalOpenChange = props.onModalOpenChange;
   const modalOpen =
-    pendingUnsaved !== null || pendingRepair !== null || pendingOverwrite !== null;
+    pendingUnsaved !== null ||
+    pendingRepair !== null ||
+    pendingOverwrite !== null ||
+    pendingBackupList !== null;
   useEffect(() => {
     if (onModalOpenChange === undefined) return undefined;
     onModalOpenChange(modalOpen);
@@ -1222,9 +1364,20 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
           onDecide={pendingOverwrite.resolve}
         />
       )}
+      {pendingBackupList !== null && (
+        <BackupListDialog
+          listing={pendingBackupList.listing}
+          featureCounts={backupFeatureCounts}
+          onChoose={pendingBackupList.resolve}
+          onPickSource={() => void pickBackupSource()}
+          picking={pickingBackupSource}
+          onModalChange={props.onBackupListModalChange}
+        />
+      )}
       {pendingRepair !== null && (
         <RepairDialog
           report={pendingRepair.report}
+          namer={pendingRepair.namer}
           onResolve={pendingRepair.resolve}
           unresolved={repairUnresolved}
         />

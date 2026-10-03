@@ -18,7 +18,14 @@ import type { StoreApi } from 'zustand/vanilla';
 import { getCalendar } from '../../domain/time/calendar';
 import { serialize, type Manifest } from '../../domain/persistence/index';
 import type { DomainProject } from '../../domain/persistence/index';
-import type { LoadResponse, SaveResponse, TimeMapApi } from '../../shell/ipc/contract';
+import {
+  DEFAULT_APP_PREFS,
+  type BackupCount,
+  type BackupListing,
+  type LoadResponse,
+  type SaveResponse,
+  type TimeMapApi,
+} from '../../shell/ipc/contract';
 
 import { createSessionStore, type SessionStore } from '../state/store';
 import { CommandRegistry, COMMAND_ID } from '../shell/commands';
@@ -43,8 +50,15 @@ function makeApi(overrides: Partial<TimeMapApi> = {}): TimeMapApi {
     configureAutoSave: vi.fn(async () => ({ ok: true as const })),
     onAutoSaveTick: vi.fn(() => () => {}),
     // 決定 (2): アプリ側の設定（初回ガイドの覚え書き）。ここでは使わないスタブ。
-    readAppPrefs: vi.fn(async () => ({ showFirstRunGuide: true })),
-    writeAppPrefs: vi.fn(async () => ({ showFirstRunGuide: true })),
+    readAppPrefs: vi.fn(async () => DEFAULT_APP_PREFS),
+    writeAppPrefs: vi.fn(async () => ({ ok: true as const, prefs: DEFAULT_APP_PREFS })),
+    // 増分 8D: 世代の一覧と、一覧の id で開く口（既定は基準なし）。
+    listBackups: vi.fn(async (): Promise<BackupListing> => ({ basis: 'none' })),
+    openBackup: vi.fn(async (): Promise<LoadResponse> => ({ ok: false, reason: 'cancelled' })),
+    countBackupFeatures: vi.fn(async (): Promise<number | null> => null),
+    endBackupChoice: vi.fn(async () => {}),
+    countBackups: vi.fn(async (): Promise<BackupCount> => ({ basis: 'none' })),
+    forgetSaveTarget: vi.fn(async () => {}),
     onCloseRequest: vi.fn(() => () => {}),
     appendLog: vi.fn(async () => {}),
     openImage: vi.fn(async (): Promise<Uint8Array | null> => null),
@@ -294,6 +308,7 @@ describe('保存の素性と結果をホストへ上げる（V12 の ①②③�
       savedAtMs: null,
       autoSaveArmed: false,
       destinationRetracted: false,
+      restoredFrom: null,
     });
     // 読み込み後は保存先が確定し、まだこのセッションでは保存していない。
     const afterLoad = seen[seen.length - 1]!;

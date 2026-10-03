@@ -764,6 +764,7 @@ export function App(): JSX.Element {
     savedAtMs: null,
     autoSaveArmed: false,
     destinationRetracted: false,
+    restoredFrom: null,
   });
 
   // ウィンドウタイトルとアプリバーの素性表示が読む 2 つ（設計書 §H.6）。どちらも稀にしか
@@ -803,8 +804,15 @@ export function App(): JSX.Element {
       fileName: openFileName,
       dirty: projectDirty,
       destinationRetracted: saveStatus.destinationRetracted,
+      restoredFrom: saveStatus.restoredFrom,
     });
-  }, [worldName, openFileName, projectDirty, saveStatus.destinationRetracted]);
+  }, [
+    worldName,
+    openFileName,
+    projectDirty,
+    saveStatus.destinationRetracted,
+    saveStatus.restoredFrom,
+  ]);
 
   // The latest U12 commit handler, held behind a ref so the imperatively-created
   // edit-session port (built in `onMapMount`, which runs once per map mount) always
@@ -3729,6 +3737,7 @@ export function App(): JSX.Element {
             fileName={openFileName}
             dirty={projectDirty}
             destinationRetracted={saveStatus.destinationRetracted}
+            restoredFrom={saveStatus.restoredFrom}
           />
         }
         status={
@@ -4246,6 +4255,7 @@ export function App(): JSX.Element {
               onBaseMapImageChange={handleBaseMapImageChange}
               registerBasemapReplace={registerBasemapReplace}
               onModalOpenChange={setFileModalOpen}
+              onBackupListModalChange={toolModalChange('backup-list')}
               onSaveStatusChange={setSaveStatus}
               statusMessages={statusMessageStore}
             />
@@ -4333,6 +4343,8 @@ const SAVE_WHILE_TOOL_OWNS_KEYBOARD: ReadonlySet<CommandId> = new Set<CommandId>
   // ファイル側が別に持っている。
   COMMAND_ID.FileNew,
   COMMAND_ID.FileOpen,
+  // 増分 8D: 「以前の保存から開く」も「開く」と同じ外側の操作（未保存の確認はファイル側）。
+  COMMAND_ID.FileOpenBackup,
 ]);
 
 /**

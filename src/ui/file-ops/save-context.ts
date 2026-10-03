@@ -16,6 +16,7 @@
 import { PRESET_BASEMAP_ID, FULL_WORLD_META } from '../../domain/basemap/preset';
 import { createGeoParams } from '../../domain/geo/geo-params';
 import type { DomainProject, ProjectSettings } from '../../domain/persistence/index';
+import type { RestoredFrom } from '../../shell/ipc/contract';
 import { DEFAULT_APP_SETTINGS, DEFAULT_PROJECT_SETTINGS } from '../state/settings';
 import { toPersistedUiSettings } from './ui-settings-bridge';
 
@@ -67,6 +68,12 @@ export interface SaveContext {
    * されたように見える。「保存先: 未確定」と出し分けるための印である。
    */
   readonly destinationRetracted: boolean;
+  /**
+   * **世代から開いた**ときだけ付く「何の、いつの世代か」（増分 8D / 設計書 §E.1 の V14）。
+   * このとき `savePath` は null（＝次の保存は「名前を付けて保存」）で、アプリバーは
+   * 「〈元の名前〉（…の世代から復旧・保存先は未確定）」と出す。保存できたら消える。
+   */
+  readonly restoredFrom: RestoredFrom | null;
 }
 
 /**
@@ -105,6 +112,8 @@ export interface SaveStatus {
    * 画面は「（未保存の新規）」ではなく「保存先: 未確定」と出す。
    */
   readonly destinationRetracted: boolean;
+  /** 世代から開いて、まだどこにも保存していないとき（増分 8D）。null = そうではない。 */
+  readonly restoredFrom: RestoredFrom | null;
 }
 
 /**
@@ -160,6 +169,7 @@ export function buildNewProjectContext(): SaveContext {
     exitGuardEnabled: true,
     // 保存先が無いのは「まだ決めていない」からで、取り下げたからではない。
     destinationRetracted: false,
+    restoredFrom: null,
   };
 }
 
@@ -182,6 +192,33 @@ export function contextForLoadedFile(args: {
     dirty: false,
     exitGuardEnabled: true,
     destinationRetracted: false,
+    restoredFrom: null,
+  };
+}
+
+/**
+ * **世代から開いた**ときの保存文脈（増分 8D / 設計書 §E.1 の V14・§J.4 の #9 の ④）。
+ *
+ * 読み込みと同じく新しい基準点（clean）にするが、**保存先は確定させない**: `savePath` と
+ * `backupTarget` は null で、次の保存は必ず「名前を付けて保存」へ落ちる（{@link needsSaveAs}）。
+ * 世代そのもののパスを保存先にすると、次の Ctrl+S が世代を上書きする（設計書 §O の GPT V14）。
+ * 主プロセスの側も同じ規則で保存先を未確定へ戻すので、両側のどちらか一方が壊れても
+ * 世代は上書きされない。
+ */
+export function contextForRestoredBackup(args: {
+  readonly restoredFrom: RestoredFrom;
+  readonly metadata: ProjectMetadata;
+  readonly baseMapId: string;
+}): SaveContext {
+  return {
+    savePath: null,
+    metadata: args.metadata,
+    baseMapId: args.baseMapId,
+    backupTarget: null,
+    dirty: false,
+    exitGuardEnabled: true,
+    destinationRetracted: false,
+    restoredFrom: args.restoredFrom,
   };
 }
 
@@ -198,6 +235,8 @@ export function contextAfterSave(context: SaveContext, savedPath: string): SaveC
     dirty: false,
     // 書けたのだから宛先は確定している。
     destinationRetracted: false,
+    // 世代から開いたあとでも、書けた先が新しい保存先になる（増分 8D）。
+    restoredFrom: null,
   };
 }
 

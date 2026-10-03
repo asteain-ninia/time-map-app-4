@@ -12,25 +12,36 @@
 //
 // The dialog owns NO repair logic — detection / options / apply + re-validation
 // all live in U14; this is presentation over the pure flow model (受け入れ基準 7).
+//
+// 増分 8D（N-22 / 設計書 §E.1 の V14 の手順 (b)）で次のように整理した:
+//   - 各行に冒頭の長い説明文を繰り返さない（以前は行ごとの fieldset の見出しに冒頭の
+//     説明文をそのまま入れていた）。
+//   - **直し方が 1 つしか無い行はラジオを出さず「こう直します: …」と書くだけ**。何種類が
+//     1 つきりかは決め打ちせず、U14 が返した方法の数で決める（U14 の側で増減しても崩れない）。
+//   - どの行も最初（おすすめ）の方法を選んだ状態から始める ―― 読んで［修復して読み込む］を
+//     押すだけで済む（手順 (b) の 6.6 秒）。
+//   - 内部の ID（`f-5-4`）・項目名（`childIds` / `parentId`）・機械向けの符号は画面に出さない。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { DraggablePanel } from '../shell/DraggablePanel';
 import { useModalKeydown } from '../a11y/index';
-import { idToString } from '../../domain/ids';
 import type {
   ConsistencyReport,
   Inconsistency,
   RepairOptionId,
 } from '../../domain/persistence/index';
 import {
-  EMPTY_REPAIR_CHOICES,
   allChoicesMade,
   buildRepairRows,
+  defaultRepairChoices,
   describeInconsistency,
+  describeInconsistencyDetail,
+  repairOptionText,
   setRepairChoice,
   type RepairChoices,
 } from './repair-flow';
+import type { RepairNamer } from './repair-names';
 import { REPAIR_STRINGS } from './strings';
 
 export interface RepairDialogProps {
@@ -48,6 +59,11 @@ export interface RepairDialogProps {
   readonly unresolved?: boolean;
   /** Front-most z-index from U20's z-order model (FR-112 前面化). */
   readonly zIndex?: number;
+  /**
+   * 対象の地物を名前で呼ぶための引き先（増分 8D の手直し / 設計書 §H.1）。読み込んだ
+   * プロジェクトから作る（{@link buildRepairNamer}）。無ければ報告の名前の欄だけで呼ぶ。
+   */
+  readonly namer?: RepairNamer | undefined;
 }
 
 const INITIAL_POSITION = { x: 280, y: 120 } as const;
@@ -64,19 +80,15 @@ function timeScopeOf(inc: Inconsistency): string | null {
   return null;
 }
 
-/** Feature ids line (always shown so every row is traceable even without names). */
-function idsOf(inc: Inconsistency): string {
-  return inc.featureIds.map(idToString).join('、');
-}
-
 export function RepairDialog(props: RepairDialogProps): JSX.Element {
-  const { report, onResolve, unresolved, zIndex } = props;
+  const { report, onResolve, unresolved, zIndex, namer } = props;
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   // The rows are derived ONCE from the report (the option lists come from U14 per
   // inconsistency, 動的・種別ごと, 過剰共有しない).
   const rows = useMemo(() => buildRepairRows(report), [report]);
-  const [choices, setChoices] = useState<RepairChoices>(EMPTY_REPAIR_CHOICES);
+  // どの行も最初（おすすめ）の方法を選んだ状態から始める（増分 8D）。
+  const [choices, setChoices] = useState<RepairChoices>(() => defaultRepairChoices(rows));
 
   const complete = allChoicesMade(rows, choices);
 
@@ -123,39 +135,50 @@ export function RepairDialog(props: RepairDialogProps): JSX.Element {
           <ul className="repair-dialog__list" data-testid="repair-list">
             {rows.map((row) => {
               const scope = timeScopeOf(row.inconsistency);
+              const detail = describeInconsistencyDetail(row.inconsistency);
+              const single = row.options.length === 1 ? row.options[0] : undefined;
               return (
                 <li
                   key={row.index}
                   className="repair-row"
                   data-testid={`repair-row-${String(row.index)}`}
                 >
-                  <p className="repair-row__summary">{describeInconsistency(row.inconsistency)}</p>
-                  <p className="repair-row__ids">ID: {idsOf(row.inconsistency)}</p>
+                  <p className="repair-row__summary">
+                    {describeInconsistency(row.inconsistency, namer)}
+                  </p>
                   {scope !== null && <p className="repair-row__time">{scope}</p>}
-                  {row.inconsistency.detail !== undefined && (
-                    <p className="repair-row__detail">{row.inconsistency.detail}</p>
-                  )}
+                  {detail !== null && <p className="repair-row__detail">{detail}</p>}
 
                   {/* The per-kind options come from U14 for THIS inconsistency
-                      (動的・種別ごと, 過剰共有しない). */}
-                  <fieldset className="repair-row__options">
-                    <legend className="repair-row__options-legend">
-                      {REPAIR_STRINGS.intro}
-                    </legend>
-                    {row.options.map((option) => (
-                      <label key={option.id} className="repair-row__option">
-                        <input
-                          type="radio"
-                          name={`repair-${String(row.index)}`}
-                          data-testid={`repair-option-${String(row.index)}-${option.id}`}
-                          aria-label={option.label}
-                          checked={choices.get(row.index) === option.id}
-                          onChange={() => choose(row.index, option.id)}
-                        />
-                        {option.label}
-                      </label>
-                    ))}
-                  </fieldset>
+                      (動的・種別ごと, 過剰共有しない). 1 つしか無ければ選ばせない（N-22）。 */}
+                  {single !== undefined ? (
+                    <p
+                      className="repair-row__fix"
+                      data-testid={`repair-fix-${String(row.index)}`}
+                    >
+                      {REPAIR_STRINGS.fixLabel}
+                      {repairOptionText(single)}
+                    </p>
+                  ) : (
+                    <fieldset className="repair-row__options">
+                      <legend className="repair-row__options-legend">
+                        {REPAIR_STRINGS.chooseLegend}
+                      </legend>
+                      {row.options.map((option) => (
+                        <label key={option.id} className="repair-row__option">
+                          <input
+                            type="radio"
+                            name={`repair-${String(row.index)}`}
+                            data-testid={`repair-option-${String(row.index)}-${option.id}`}
+                            aria-label={repairOptionText(option)}
+                            checked={choices.get(row.index) === option.id}
+                            onChange={() => choose(row.index, option.id)}
+                          />
+                          {repairOptionText(option)}
+                        </label>
+                      ))}
+                    </fieldset>
+                  )}
                 </li>
               );
             })}

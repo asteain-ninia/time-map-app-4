@@ -14,6 +14,11 @@
 export const COMMAND_ID = {
   FileNew: 'file.new',
   FileOpen: 'file.open',
+  /**
+   * 以前の保存から開く（増分 8D / 設計書 §E.1 の V14 の手順 (a)）。保存のたびに残る世代を
+   * 一覧し、選んだ世代を **保存先を確定させずに** 開く。未保存の確認は「開く」と同じ器。
+   */
+  FileOpenBackup: 'file.openBackup',
   FileSave: 'file.save',
   FileSaveAs: 'file.saveAs',
   EditUndo: 'edit.undo',

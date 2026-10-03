@@ -54,10 +54,16 @@ describe('preload exposes the typed TimeMapApi (受け入れ基準4)', () => {
       'appendLog',
       'commitLoadedPath',
       'configureAutoSave',
+      'countBackupFeatures',
+      'countBackups',
+      'endBackupChoice',
+      'forgetSaveTarget',
+      'listBackups',
       'load',
       'loadDropped',
       'onAutoSaveTick',
       'onCloseRequest',
+      'openBackup',
       'openImage',
       'readAppPrefs',
       'save',
@@ -134,6 +140,50 @@ describe('each API method invokes the correct shared channel (受け入れ基準
     const api = buildApi();
     await api.commitLoadedPath('tok-42');
     expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.CommitLoadedPath, 'tok-42');
+  });
+
+  // 増分 8D（設計書 §E.1 の V14）: 世代の一覧と、一覧の id で開く口の契約テスト 2 件。
+  it('listBackups → IPC_CHANNEL.ListBackups（引数なし。パスを渡す口が無い）', async () => {
+    const api = buildApi();
+    await api.listBackups();
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.ListBackups);
+    // 描画プロセスから渡せるのは何も無い（どのファイルの世代かは主プロセスが決める）。
+    expect(invoke.mock.calls[0]).toHaveLength(1);
+  });
+
+  it('openBackup → IPC_CHANNEL.OpenBackup に id だけを渡す', async () => {
+    const api = buildApi();
+    await api.openBackup('backup-id-7');
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.OpenBackup, 'backup-id-7');
+    expect(invoke.mock.calls[0]).toHaveLength(2);
+  });
+
+  // 増分 8D の手直し: 元のファイルを選ばせる頼み方・地物数・1 回の終わり・数だけ・新規。
+  it('listBackups({ pickSource: true }) は真偽だけを組み立て直して渡す（パスや余計な鍵は運ばない）', async () => {
+    const api = buildApi();
+    await api.listBackups({ pickSource: true, path: '/etc/passwd' } as never);
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.ListBackups, { pickSource: true });
+    invoke.mockClear();
+    await api.listBackups({ pickSource: false });
+    expect(invoke.mock.calls[0]).toEqual([IPC_CHANNEL.ListBackups]);
+  });
+
+  it('countBackupFeatures → IPC_CHANNEL.CountBackupFeatures に id だけを渡す', async () => {
+    const api = buildApi();
+    await api.countBackupFeatures('backup-id-3');
+    expect(invoke.mock.calls[0]).toEqual([IPC_CHANNEL.CountBackupFeatures, 'backup-id-3']);
+  });
+
+  it('endBackupChoice / countBackups / forgetSaveTarget は引数なし', async () => {
+    const api = buildApi();
+    await api.endBackupChoice();
+    await api.countBackups();
+    await api.forgetSaveTarget();
+    expect(invoke.mock.calls).toEqual([
+      [IPC_CHANNEL.EndBackupChoice],
+      [IPC_CHANNEL.CountBackups],
+      [IPC_CHANNEL.ForgetSaveTarget],
+    ]);
   });
 });
 

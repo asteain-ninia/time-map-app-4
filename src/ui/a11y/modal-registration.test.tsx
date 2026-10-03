@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
 
 import { BulkKindLabelDialog } from '../property/BulkKindLabelDialog';
+import { BackupListDialog } from '../file-ops/BackupListDialog';
 import { ImpactConfirmDialog } from '../shell/ImpactConfirmDialog';
 
 /** 名乗る口を持つ「本物の板」の部品名。足したらここへ書く（走査の母集合）。 */
@@ -24,6 +25,8 @@ const MODAL_COMPONENTS = [
   'DeleteConfirmDialog',
   // 項目 6: 時刻レールの右クリック（開いているあいだ鍵盤の持ち主は `modal`）。
   'RailContextMenu',
+  // 増分 8D: 以前の保存から開く（世代の一覧）。
+  'BackupListDialog',
 ] as const;
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
@@ -111,6 +114,20 @@ describe('板の登録 — 部品は出ている間だけ名乗る', () => {
         count={3}
         onConfirm={() => undefined}
         onCancel={() => undefined}
+        onModalChange={onModalChange}
+      />,
+    );
+    expect(onModalChange).toHaveBeenCalledWith(true);
+    view.unmount();
+    expect(onModalChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('BackupListDialog は出たら名乗り、外れたら取り消す（増分 8D）', () => {
+    const onModalChange = vi.fn();
+    const view = render(
+      <BackupListDialog
+        listing={{ basis: 'none' }}
+        onChoose={() => undefined}
         onModalChange={onModalChange}
       />,
     );

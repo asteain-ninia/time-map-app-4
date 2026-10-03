@@ -23,7 +23,13 @@ import type { LoadResponse, SaveRequest, SaveResponse, TimeMapApi } from '../../
 
 import { loadTransportFrom } from './load-adapter';
 import type { LoadStep, LoadTransport } from './load-flow';
-import { SAVE_OUTCOME, saveSucceeded, type FileCommandPorts, type SaveOutcome } from './file-commands';
+import {
+  SAVE_OUTCOME,
+  saveSucceeded,
+  type FileCommandPorts,
+  type ReflectInfo,
+  type SaveOutcome,
+} from './file-commands';
 import type { RepairChoices } from './repair-flow';
 import type { UnsavedChoice } from './unsaved-guard';
 import { zoomRangeOf, type ZoomRangeValue } from './zoom-limit';
@@ -78,9 +84,13 @@ export interface FileOpsHost {
   readonly promptRepair: (
     report: ConsistencyReport,
     isRetry: boolean,
+    project: DomainProject,
   ) => Promise<RepairChoices | null>;
-  /** Reflect a validated project into the store + adopt its save context (教訓 5.22). */
-  readonly reflectProject: (project: DomainProject, path: string) => void;
+  /**
+   * Reflect a validated project into the store + adopt its save context (教訓 5.22).
+   * `info.repaired` は修復ダイアログで直してから反映したか（増分 8D の手直し）。
+   */
+  readonly reflectProject: (project: DomainProject, path: string, info?: ReflectInfo) => void;
   /** Show a Japanese rejection / failure notice (FR-115). */
   readonly notify: (message: string) => void;
   /**
@@ -200,6 +210,15 @@ export function buildFileCommandPorts(host: FileOpsHost): FileCommandPorts {
     autoSave: () => runSave('save', 'auto'),
     load: () => loadVia(() => host.api.load()),
     loadDropped: (droppedPath: string) => loadVia(() => host.api.loadDropped(droppedPath)),
+    // 増分 8D: 世代の一覧と、一覧の id で開く口。開いた結果は普通の読み込みと同じ
+    // 変換（loadTransportFrom）を通り、同じ completeLoad へ合流する（教訓 5.6）。
+    listBackups: () => host.api.listBackups(),
+    openBackup: (id: string) => loadVia(() => host.api.openBackup(id)),
+    // 増分 8D の手直し: 1 回の終わりを主プロセスへ（一覧の世代を間引きの対象に戻す）。
+    // 待たない ―― 次の保存はこのあとに送られるので、主プロセスは先にこれを受け取る。
+    endBackupChoice: () => {
+      void host.api.endBackupChoice().catch(() => undefined);
+    },
     toProject,
     checkConsistency: (project: DomainProject, calendar: Calendar): ConsistencyReport =>
       checkConsistency(project, calendar),

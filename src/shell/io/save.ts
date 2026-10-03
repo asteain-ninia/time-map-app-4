@@ -49,6 +49,11 @@ export async function saveTmap(
   targetPath: string,
   contents: TmapContents,
   maxGenerations: number,
+  /**
+   * 間引いてはいけない世代の **絶対パス**（増分 8D の手直し）。「以前の保存から開く」の
+   * 一覧に出している世代を、その確認の「保存」が消さないようにする。
+   */
+  protectedPaths: ReadonlySet<string> = new Set(),
 ): Promise<SaveTmapResult> {
   // buildTmap (fflate `zipSync`) is still synchronous: it is CPU-bound, not I/O,
   // so it cannot block on a slow/network disk and is fast for typical project
@@ -68,6 +73,11 @@ export async function saveTmap(
   }
 
   const { dir, name } = env.splitPath(targetPath);
+  // 守る世代は **名前だけ** で照合する（再検証 1-1）。フォルダの文字列で比べると、区切りの書き方
+  // （`E:/d` と `E:\d`）が違うだけで外れていた。間引くのはもともと `name` の世代だけなので、
+  // 同じ名前の別フォルダの世代を守りすぎても、上限を一時的に 1 つ超えるだけで済む。
+  const keep = new Set<string>();
+  for (const path of protectedPaths) keep.add(env.splitPath(path).name);
   const backup = await runBackup(
     env.backupFs,
     env.joinPath,
@@ -75,6 +85,7 @@ export async function saveTmap(
     name,
     env.now(),
     maxGenerations,
+    keep,
   );
   return { ok: true, path: targetPath, backup };
 }

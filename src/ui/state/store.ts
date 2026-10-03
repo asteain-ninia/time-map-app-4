@@ -616,6 +616,12 @@ export interface SessionStoreActions<S> {
        * 捨てたあとに戻す。渡さない（＝新規・古いファイル）なら束は無い。
        */
       readonly ledgerBundle?: Bundle | null;
+      /**
+       * 反映する中身が **どのファイルにも無い**（増分 8D の手直し: 世代から開いて修復した）。
+       * 真なら clean の基準点を作らず、未保存（dirty）で始める ―― 閉じるときに確認が出る。
+       * 取り消し・やり直しで元の形へ戻しても clean にはならない（基準点が無いので）。
+       */
+      readonly notOnDisk?: boolean;
     },
   ): void;
   /** Clear the project-dirty flag (called after a save by the persistence unit). */
@@ -2258,7 +2264,10 @@ export function createSessionStore<S>(
       const effectiveProject =
         settings.projectSettings ?? get().projectSettings;
       const effectiveApp = settings.appSettings ?? get().appSettings;
-      savedDomain = nextDomain;
+      // 増分 8D の手直し: 中身がどのファイルにも無い（世代から開いて修復した）なら、clean の
+      // 基準点を作らない（savedDomain = null は「一度も保存していない」＝決して clean にならない）。
+      const notOnDisk = settings.notOnDisk === true;
+      savedDomain = notOnDisk ? null : nextDomain;
       savedProjectSettings = effectiveProject;
       savedAppSettings = effectiveApp;
       // Clean baseline: a LOAD / NEW installs a fresh base-map bytes baseline — clear the
@@ -2309,7 +2318,7 @@ export function createSessionStore<S>(
           ? { appSettings: settings.appSettings }
           : {}),
         // -- clean baseline + derived range/time (both halves cleared dirty) --
-        projectDirty: false,
+        projectDirty: notOnDisk,
         ...timelinePatch,
       });
     },

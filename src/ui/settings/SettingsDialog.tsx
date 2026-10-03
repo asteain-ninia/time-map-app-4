@@ -24,13 +24,23 @@ import { DEFAULT_PALETTE_THEME } from '../../domain/coloring/palette';
 import { GRID_SPACINGS_DEG, coerceGridSpacing } from '../../domain/basemap/grid';
 import { useModalKeydown, nextTabForArrow } from '../a11y/index';
 import type { ProjectSettingKey } from '../state/settings';
+import {
+  AUTO_SAVE_INTERVAL_MINUTES_RANGE,
+  BACKUP_GENERATIONS_RANGE,
+} from '../../shell/ipc/contract';
 
 import {
   type SettingsStorePort,
   useSettingsDialog,
 } from './useSettingsDialog';
 import {
+  type BackupSettingsPort,
+  type UseBackupSettings,
+  useBackupSettings,
+} from './useBackupSettings';
+import {
   APP_FIELD_STRINGS,
+  BACKUP_SETTINGS_STRINGS,
   BASEMAP_STRINGS,
   PALETTE_STRINGS,
   PROJECT_FIELD_STRINGS,
@@ -40,12 +50,18 @@ import {
 const SETTINGS_TAB = {
   Project: 'project',
   App: 'app',
+  /** 増分 8D: 保存とバックアップ（G-5。自動保存の間隔・世代数）。 */
+  Backup: 'backup',
 } as const;
 
 type SettingsTab = (typeof SETTINGS_TAB)[keyof typeof SETTINGS_TAB];
 
 /** The scope tabs in traversal order (for the WAI-ARIA arrow-key navigation). */
-const SETTINGS_TAB_ORDER: readonly SettingsTab[] = [SETTINGS_TAB.Project, SETTINGS_TAB.App];
+const SETTINGS_TAB_ORDER: readonly SettingsTab[] = [
+  SETTINGS_TAB.Project,
+  SETTINGS_TAB.App,
+  SETTINGS_TAB.Backup,
+];
 
 /** Palette themes offered for the default-theme select (single source, 教訓 5.19). */
 const PALETTE_THEME_OPTIONS = [DEFAULT_PALETTE_THEME] as const;
@@ -69,11 +85,17 @@ export interface SettingsDialogProps {
    * absent the control is disabled. This dialog never performs the replacement.
    */
   readonly onRequestBasemapReplace?: (() => void) | undefined;
+  /**
+   * 「保存とバックアップ」の節が使う口（増分 8D）。`window.timeMapApi` の
+   * `readAppPrefs` / `writeAppPrefs` / `listBackups`。無ければ節は読み取り不能の案内を出す。
+   */
+  readonly backupPort?: BackupSettingsPort | undefined;
 }
 
 export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
-  const { store, onClose, canEdit, onRequestBasemapReplace } = props;
+  const { store, onClose, canEdit, onRequestBasemapReplace, backupPort } = props;
   const dialog = useSettingsDialog(store, canEdit);
+  const backup = useBackupSettings(backupPort);
   const [tab, setTab] = useState<SettingsTab>(SETTINGS_TAB.Project);
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
@@ -83,11 +105,50 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
     onClose();
   }, [dialog, onClose]);
 
-  const saveAndClose = useCallback(() => {
+  // 増分 8D の手直し: ［保存］で「保存とバックアップ」を書くとき、世代が消える確認が出たら、
+  // 確認で「この数にする」を押して書けた時点でダイアログを閉じる。
+  const [closeAfterShrink, setCloseAfterShrink] = useState(false);
+
+  const saveAndClose = useCallback(async () => {
+    // 増分 8D: 「保存とバックアップ」の下書きが打ちかけで変わっていれば、［保存］でも
+    // 一緒に書く（［適用］を押し忘れた変更を黙って捨てない）。値が範囲外ならその節を開いて
+    // 理由を出し、何も書かずに留まる。
+    if (backup.dirty && backup.validate().length > 0) {
+      setTab(SETTINGS_TAB.Backup);
+      void backup.apply();
+      return;
+    }
     const result = dialog.confirm();
     // Stay open on rejection so the user can fix the value (errors persist, 教訓 5.12).
-    if (result.status !== 'rejected') onClose();
-  }, [dialog, onClose]);
+    if (result.status === 'rejected') return;
+    if (backup.dirty) {
+      // 増分 8D の手直し: 書き込みの成否を **待ってから** 閉じる。世代が消えるなら確認を出して
+      // 留まり、書けなければ理由を出して留まる（入力は残す）。
+      const outcome = await backup.apply();
+      if (outcome === 'needs-confirm') {
+        setTab(SETTINGS_TAB.Backup);
+        setCloseAfterShrink(true);
+        return;
+      }
+      if (outcome !== 'applied' && outcome !== 'unchanged') {
+        setTab(SETTINGS_TAB.Backup);
+        return;
+      }
+    }
+    onClose();
+  }, [dialog, backup, onClose]);
+
+  /** 「世代が消える」確認で「この数にする」。［保存］から来たなら、書けたら閉じる。 */
+  const confirmShrink = useCallback(async () => {
+    const outcome = await backup.apply({ confirmShrink: true });
+    if (outcome === 'applied' && closeAfterShrink) onClose();
+  }, [backup, closeAfterShrink, onClose]);
+
+  /** 「世代が消える」確認でやめる（世代数は保存してある値へ戻る）。 */
+  const cancelShrink = useCallback(() => {
+    setCloseAfterShrink(false);
+    backup.cancelShrink();
+  }, [backup]);
 
   // Focus trap + Esc (受け入れ基準 3 / 6: モーダル離脱の全経路でドラフト破棄). The
   // trap logic is the shared a11y helper (教訓 5.13 単一の真実源).
@@ -161,6 +222,18 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
           >
             {SETTINGS_STRINGS.tabApp}
           </button>
+          <button
+            type="button"
+            role="tab"
+            id="settings-tab-backup"
+            aria-controls="settings-panel-backup"
+            aria-selected={tab === SETTINGS_TAB.Backup}
+            data-testid="settings-tab-backup"
+            onClick={() => setTab(SETTINGS_TAB.Backup)}
+            onKeyDown={onTabKeyDown}
+          >
+            {SETTINGS_STRINGS.tabBackup}
+          </button>
         </div>
 
         {/* Rejection banner (FR-115). Persists until re-confirm / cancel (教訓 5.12). */}
@@ -186,6 +259,16 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
             hidden={tab !== SETTINGS_TAB.Project}
           />
           <AppTab dialog={dialog} hidden={tab !== SETTINGS_TAB.App} />
+          <BackupTab
+            backup={backup}
+            hidden={tab !== SETTINGS_TAB.Backup}
+            onApply={() => {
+              setCloseAfterShrink(false);
+              void backup.apply();
+            }}
+            onConfirmShrink={() => void confirmShrink()}
+            onCancelShrink={cancelShrink}
+          />
         </div>
 
         <footer className="settings-dialog__footer">
@@ -201,7 +284,8 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
             type="button"
             className="settings-dialog__save"
             data-testid="settings-save"
-            onClick={saveAndClose}
+            disabled={backup.writing}
+            onClick={() => void saveAndClose()}
           >
             {SETTINGS_STRINGS.save}
           </button>
@@ -614,6 +698,187 @@ function AppTab(props: {
         />
         {APP_FIELD_STRINGS.showFirstRunGuide}
       </label>
+    </section>
+  );
+}
+
+// --- 保存とバックアップ（増分 8D / 設計書 G-5・FR-108、V12 の合格条件④）---------------
+
+function generationText(backup: UseBackupSettings): string {
+  const g = backup.generations;
+  switch (g.kind) {
+    case 'loading':
+      return BACKUP_SETTINGS_STRINGS.generationLoading;
+    case 'unavailable':
+      return BACKUP_SETTINGS_STRINGS.generationUnavailable;
+    case 'no-basis':
+      return BACKUP_SETTINGS_STRINGS.generationNoBasis;
+    case 'ready':
+      return g.count === 0
+        ? BACKUP_SETTINGS_STRINGS.generationNone
+        : BACKUP_SETTINGS_STRINGS.generationCount(g.sourceName, g.count);
+    default: {
+      const never: never = g;
+      return never;
+    }
+  }
+}
+
+/**
+ * 自動保存の間隔と残す世代の数。**アプリ全体の設定**なので「読むだけ」でも変えられる
+ * （アプリ全体設定タブと同じ扱い。K-6 はプロジェクト設定だけを止める）。
+ * ［適用］はこの節だけをその場で書き、ダイアログは閉じない。
+ */
+function BackupTab(props: {
+  readonly backup: UseBackupSettings;
+  readonly hidden: boolean;
+  readonly onApply: () => void;
+  readonly onConfirmShrink: () => void;
+  readonly onCancelShrink: () => void;
+}): JSX.Element {
+  const { backup, hidden, onApply, onConfirmShrink, onCancelShrink } = props;
+  // 読み終わるまでと、書き込み中は欄とボタンを止める（増分 8D の手直し: 応答が、待っている
+  // 間に打った値を消さないように）。
+  const loading = backup.saved === null;
+  const locked = loading || backup.writing;
+  // 世代数を下げたのに、いま開いているファイルで消える数を出せない（どのファイルか分からない・
+  // このファイルでは消えない）。数は出せないが、ほかのファイルで消えることは先に言う。
+  const draftGenerations = Number.parseInt(backup.generationsDraft.trim(), 10);
+  const loweredWithoutCount =
+    backup.saved !== null &&
+    backup.shrinkPreview === null &&
+    backup.pendingShrink === null &&
+    Number.isInteger(draftGenerations) &&
+    draftGenerations < backup.saved.backupGenerations;
+  const errorFor = (field: 'autoSaveIntervalMinutes' | 'backupGenerations'): string | undefined =>
+    backup.errors.find((e) => e.field === field)?.message;
+  const intervalError = errorFor('autoSaveIntervalMinutes');
+  const generationsError = errorFor('backupGenerations');
+  return (
+    <section
+      className="settings-section settings-section--backup"
+      data-testid="settings-backup"
+      role="tabpanel"
+      id="settings-panel-backup"
+      aria-labelledby="settings-tab-backup"
+      hidden={hidden}
+    >
+      <p className="settings-section__hint">{BACKUP_SETTINGS_STRINGS.hint}</p>
+
+      <label>
+        {BACKUP_SETTINGS_STRINGS.interval}
+        <input
+          type="number"
+          min={AUTO_SAVE_INTERVAL_MINUTES_RANGE.min}
+          max={AUTO_SAVE_INTERVAL_MINUTES_RANGE.max}
+          step={1}
+          data-testid="settings-backup-interval"
+          aria-label={BACKUP_SETTINGS_STRINGS.interval}
+          aria-invalid={intervalError !== undefined}
+          value={backup.intervalDraft}
+          disabled={locked}
+          onChange={(e) => backup.setIntervalDraft(e.target.value)}
+        />
+      </label>
+      {intervalError !== undefined && (
+        <p className="settings-field__error" role="alert" data-testid="settings-backup-interval-error">
+          {intervalError}
+        </p>
+      )}
+
+      <label>
+        {BACKUP_SETTINGS_STRINGS.generations}
+        <input
+          type="number"
+          min={BACKUP_GENERATIONS_RANGE.min}
+          max={BACKUP_GENERATIONS_RANGE.max}
+          step={1}
+          data-testid="settings-backup-generations"
+          aria-label={BACKUP_SETTINGS_STRINGS.generations}
+          aria-invalid={generationsError !== undefined}
+          value={backup.generationsDraft}
+          disabled={locked}
+          onChange={(e) => backup.setGenerationsDraft(e.target.value)}
+        />
+      </label>
+      {generationsError !== undefined && (
+        <p
+          className="settings-field__error"
+          role="alert"
+          data-testid="settings-backup-generations-error"
+        >
+          {generationsError}
+        </p>
+      )}
+      {/* 増分 8D の手直し: 世代数を下げると次の保存で消える数を、［適用］の前から出す。 */}
+      {backup.shrinkPreview !== null && backup.pendingShrink === null && (
+        <p className="settings-section__hint" data-testid="settings-backup-shrink-preview">
+          {BACKUP_SETTINGS_STRINGS.shrinkPreview(
+            backup.shrinkPreview.sourceName,
+            backup.shrinkPreview.deleteCount,
+            backup.shrinkPreview.keep,
+          )}
+        </p>
+      )}
+      {loweredWithoutCount && (
+        <p className="settings-section__hint" data-testid="settings-backup-shrink-generic">
+          {BACKUP_SETTINGS_STRINGS.shrinkGeneric}
+        </p>
+      )}
+      {backup.pendingShrink !== null && (
+        <div className="settings-backup__confirm" role="alert" data-testid="settings-backup-shrink-confirm">
+          <p>
+            {backup.pendingShrink.known === null
+              ? BACKUP_SETTINGS_STRINGS.shrinkConfirmGeneric(backup.pendingShrink.keep)
+              : BACKUP_SETTINGS_STRINGS.shrinkConfirm(
+                  backup.pendingShrink.known.sourceName,
+                  backup.pendingShrink.known.deleteCount,
+                )}
+          </p>
+          <button
+            type="button"
+            data-testid="settings-backup-shrink-yes"
+            disabled={backup.writing}
+            onClick={onConfirmShrink}
+          >
+            {BACKUP_SETTINGS_STRINGS.shrinkConfirmYes}
+          </button>
+          <button
+            type="button"
+            data-testid="settings-backup-shrink-no"
+            disabled={backup.writing}
+            onClick={onCancelShrink}
+          >
+            {BACKUP_SETTINGS_STRINGS.shrinkConfirmNo}
+          </button>
+        </div>
+      )}
+
+      <div className="settings-backup__actions">
+        <button
+          type="button"
+          data-testid="settings-backup-apply"
+          disabled={locked || backup.pendingShrink !== null}
+          onClick={onApply}
+        >
+          {BACKUP_SETTINGS_STRINGS.apply}
+        </button>
+        {backup.appliedOnce && !backup.dirty && (
+          <span className="settings-backup__applied" data-testid="settings-backup-applied">
+            {BACKUP_SETTINGS_STRINGS.applied}
+          </span>
+        )}
+      </div>
+      {backup.writeError !== null && (
+        <p className="settings-field__error" role="alert" data-testid="settings-backup-write-error">
+          {backup.writeError}
+        </p>
+      )}
+
+      <p className="settings-section__hint" data-testid="settings-backup-generation-count">
+        {generationText(backup)}
+      </p>
+      <p className="settings-section__hint">{BACKUP_SETTINGS_STRINGS.autoSaveNote}</p>
     </section>
   );
 }

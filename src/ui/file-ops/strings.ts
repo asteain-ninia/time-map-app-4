@@ -71,8 +71,18 @@ export const OVERWRITE_STRINGS = {
 /** The load-time consistency auto-repair UI (FR-106). */
 export const REPAIR_STRINGS = {
   title: '読み込みデータの不整合',
-  /** Intro shown above the per-inconsistency list. */
-  intro: '読み込んだデータに次の不整合が見つかりました。各項目の修復方法を選んでください。',
+  /**
+   * Intro shown above the per-inconsistency list.
+   *
+   * 増分 8D: 直し方が 1 つしか無い行はラジオを出さなくなったので、「各項目の修復方法を
+   * 選んでください」は事実と合わなくなった（選ぶ行は一部だけ）。挙動に合わせて直した
+   * （言い回しの総点検は増分 8E）。
+   */
+  intro: '読み込んだデータに次の不整合が見つかりました。それぞれの直し方を確かめてください。',
+  /** 直し方が 1 つしか無い行の頭（増分 8D / N-22）。 */
+  fixLabel: 'こう直します: ',
+  /** 直し方が 2 つ以上ある行の見出し（増分 8D。行ごとに冒頭の説明文を繰り返さない）。 */
+  chooseLegend: '直し方を選んでください',
   /** Apply the chosen repairs and continue loading. */
   apply: '修復して読み込む',
   /** Abort: do not load (修復せず読み込まない). */
@@ -89,6 +99,42 @@ export const REPAIR_STRINGS = {
   /** Field labels for one inconsistency row. */
   fieldTime: '作中時刻',
   fieldRange: '時間範囲',
+} as const;
+
+/**
+ * 「以前の保存から開く」の世代の一覧（増分 8D / 設計書 §E.1 の V14 の手順 (a)）。
+ * 保存のたびに保存ファイルの隣へ残る世代を、日時・大きさ・地物数で並べて選ばせる。
+ */
+export const BACKUP_LIST_STRINGS = {
+  title: '以前の保存から開く',
+  /** 一覧の上の 1 文。どのファイルの世代かを必ず出す（同名の取り違えを防ぐ）。 */
+  intro: (sourceName: string): string =>
+    `${sourceName} を保存したときの世代です。選ぶと、その時点の内容を開きます。`,
+  /** 開いたあとどうなるかを先に言う（保存先にはならない）。 */
+  note: '開いた内容は元のファイルを上書きしません。最初の保存は「名前を付けて保存」になります。',
+  /** 世代が 1 つも無いとき。 */
+  empty: '戻せる世代はまだありません。保存するたびに 1 世代ずつ残ります。',
+  /**
+   * どのファイルの世代を見ればよいか分からないとき（増分 8D の手直し）。新規のとき・元の
+   * ファイルが壊れて開けなかったとき。「無い」とは言わない（隣に世代が残っていることがある）。
+   */
+  noBasis: '開いているファイルがありません。元のファイルを選ぶと、その世代を一覧します。',
+  /** 元のファイルを主プロセスのダイアログで選ばせるボタン。 */
+  pickSource: '元のファイルを選ぶ…',
+  /** 一覧が出ているときに、別のファイルの世代へ選び直す（増分 8D の再手直し）。 */
+  pickOther: '別のファイルを選ぶ…',
+  columnSavedAt: '保存した日時',
+  columnSize: '大きさ',
+  columnFeatures: '地物数',
+  /** 地物数が読めなかった世代。 */
+  unknownFeatures: '—',
+  /** 地物数をまだ数えている世代（増分 8D の手直し。一覧を先に出し、後から埋める）。 */
+  countingFeatures: '…',
+  /** 地物数の表示。 */
+  features: (count: number): string => `${String(count)} 件`,
+  /** 行のボタンの読み上げ名（押すと開く）。 */
+  openRow: (savedAt: string): string => `${savedAt} の世代を開く`,
+  cancel: 'やめる',
 } as const;
 
 /** File-operation rejection / failure notices (FR-115; 通知文言). */

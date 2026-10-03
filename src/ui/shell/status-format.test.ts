@@ -9,6 +9,9 @@ import {
   UNKNOWN_TIME,
   UNSAVED_NEW_PROJECT,
   buildWindowTitle,
+  fileSlotText,
+  formatDateMinute,
+  restoredFileLabel,
   fileNameOf,
   formatClock,
   formatScale,
@@ -135,5 +138,29 @@ describe('formatTimestamp — 診断情報の記録時刻', () => {
 
   it('読めない日時では「—」を返す', () => {
     expect(formatTimestamp(Number.NaN)).toBe(UNKNOWN_TIME);
+  });
+});
+
+describe('世代から復旧したときのファイル名の段（増分 8D / 設計書 §E.1 の V14 の規則 ①）', () => {
+  const at = new Date(2026, 9, 3, 14, 3, 7).getTime();
+  const restoredFrom = { sourceName: 'derle-world.gimoza', savedAtMs: at };
+
+  it('「〈元の名前〉（日時 の世代から復旧・保存先は未確定）」。日時は秒を落とした実時間', () => {
+    expect(formatDateMinute(at)).toBe('2026-10-03 14:03');
+    expect(restoredFileLabel(restoredFrom)).toBe(
+      'derle-world.gimoza（2026-10-03 14:03 の世代から復旧・保存先は未確定）',
+    );
+  });
+
+  it('保存先が決まればそちらが勝つ。世代の印が無ければこれまでどおり', () => {
+    expect(fileSlotText({ fileName: 'x.gimoza', restoredFrom })).toBe('x.gimoza');
+    expect(fileSlotText({ fileName: null, restoredFrom })).toBe(restoredFileLabel(restoredFrom));
+    expect(fileSlotText({ fileName: null, restoredFrom: null })).toBe(UNSAVED_NEW_PROJECT);
+  });
+
+  it('ウィンドウタイトルにも同じ文字が出る', () => {
+    expect(
+      buildWindowTitle({ worldName: 'デーレ界', fileName: null, dirty: false, restoredFrom }),
+    ).toBe(`${APP_NAME} — デーレ界 — ${restoredFileLabel(restoredFrom)}`);
   });
 });

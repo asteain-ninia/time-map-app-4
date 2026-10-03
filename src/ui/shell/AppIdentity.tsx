@@ -13,7 +13,7 @@
 // 行とウィンドウタイトルは要件の文言に触れずに済む（AUDIT-DROPPED-REQUIREMENTS 自身が
 // 推奨している置き場所）。
 
-import { DIRTY_MARK } from './status-format';
+import { DIRTY_MARK, restoredFileLabel, type RestoredFromLabel } from './status-format';
 import { APP_IDENTITY_STRINGS } from './strings';
 
 export interface AppIdentityProps {
@@ -28,10 +28,16 @@ export interface AppIdentityProps {
    * ことにされたように見えるので、「保存先: 未確定」と出す。
    */
   readonly destinationRetracted?: boolean;
+  /**
+   * 世代から開いて、まだどこにも保存していないとき（増分 8D / 設計書 §E.1 の V14 の規則 ①）。
+   * ファイル名の代わりに「〈元の名前〉（…の世代から復旧・保存先は未確定）」と出す。
+   */
+  readonly restoredFrom?: RestoredFromLabel | null;
 }
 
 export function AppIdentity(props: AppIdentityProps): JSX.Element {
   const world = props.worldName.trim();
+  const restored = props.restoredFrom ?? null;
   return (
     <div
       className="app-identity"
@@ -43,11 +49,17 @@ export function AppIdentity(props: AppIdentityProps): JSX.Element {
           {world}
         </span>
       )}
-      <span className="app-identity__file" data-testid="app-identity-file">
+      <span
+        className="app-identity__file"
+        data-testid="app-identity-file"
+        data-restored={props.fileName === null && restored !== null ? 'true' : undefined}
+      >
         {props.fileName ??
-          (props.destinationRetracted === true
-            ? APP_IDENTITY_STRINGS.destinationUndetermined
-            : APP_IDENTITY_STRINGS.unsavedNew)}
+          (restored !== null
+            ? restoredFileLabel(restored)
+            : props.destinationRetracted === true
+              ? APP_IDENTITY_STRINGS.destinationUndetermined
+              : APP_IDENTITY_STRINGS.unsavedNew)}
       </span>
       {/* 未保存の印。**枠は常に確保し、印だけを出し入れする**（B1）。以前は要素ごと
           出し入れしていたので、印が付いた瞬間に素性表示の占有幅が広がり、上部バーの

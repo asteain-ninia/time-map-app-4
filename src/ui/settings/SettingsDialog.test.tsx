@@ -6,7 +6,7 @@
 // 受け入れ基準 7); base-map replace起動点 (受け入れ基準 1).
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import type { StoreApi } from 'zustand/vanilla';
 
 import { timePointYear } from '../../domain/time/time-point';
@@ -15,6 +15,19 @@ import { TIME_CHANGE_SOURCE } from '../state/store';
 import { DEFAULT_PROJECT_SETTINGS } from '../state/settings';
 
 import { SettingsDialog } from './SettingsDialog';
+import {
+  DEFAULT_APP_PREFS,
+  type AppPrefs,
+  type AppPrefsWriteResult,
+  type BackupCount,
+} from '../../shell/ipc/contract';
+import {
+  type BackupSettingsPort,
+  generationsToDelete,
+  useBackupSettings,
+  validateBackupDraft,
+} from './useBackupSettings';
+import { BACKUP_SETTINGS_STRINGS } from './strings';
 import { type SettingsStorePort, useSettingsDialog, CONFIRM_STATUS } from './useSettingsDialog';
 import { REJECTION } from './validation';
 
@@ -124,6 +137,8 @@ describe('scope-tab keyboard a11y (WAI-ARIA tablist)', () => {
     render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     const projectTab = screen.getByTestId('settings-tab-project');
     const appTab = screen.getByTestId('settings-tab-app');
+    // 増分 8D: 3 つ目のタブ「保存とバックアップ」。
+    const backupTab = screen.getByTestId('settings-tab-backup');
 
     projectTab.focus();
     // project → app on ArrowRight.
@@ -131,15 +146,17 @@ describe('scope-tab keyboard a11y (WAI-ARIA tablist)', () => {
     expect(appTab).toHaveAttribute('aria-selected', 'true');
     expect(document.activeElement).toBe(appTab);
 
-    // app → project on ArrowRight (wrap).
+    // app → backup → project on ArrowRight (wrap).
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' });
+    expect(backupTab).toHaveAttribute('aria-selected', 'true');
     fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' });
     expect(projectTab).toHaveAttribute('aria-selected', 'true');
     expect(document.activeElement).toBe(projectTab);
 
-    // project → app on ArrowLeft (wrap the other way).
+    // project → backup on ArrowLeft (wrap the other way).
     fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' });
-    expect(appTab).toHaveAttribute('aria-selected', 'true');
-    expect(document.activeElement).toBe(appTab);
+    expect(backupTab).toHaveAttribute('aria-selected', 'true');
+    expect(document.activeElement).toBe(backupTab);
   });
 });
 
@@ -650,5 +667,346 @@ describe('K-6「読むだけ」ではプロジェクト設定に触れない（�
     expect(screen.getByTestId('settings-palette-add')).toBeEnabled();
     expect(screen.getByTestId('settings-palette-remove-0')).toBeEnabled();
     expect(screen.queryByTestId('settings-project-readonly')).toBeNull();
+  });
+});
+
+// --- 増分 8D: 保存とバックアップ（G-5 / FR-108、V12 の合格条件④）---------------------
+
+describe('保存とバックアップ（増分 8D）', () => {
+  function fakePort(
+    over: Partial<BackupSettingsPort> = {},
+    count: BackupCount = { basis: 'file', sourceName: 'w.gimoza', count: 2 },
+  ): BackupSettingsPort & { readonly writes: Partial<AppPrefs>[] } {
+    const writes: Partial<AppPrefs>[] = [];
+    let current: AppPrefs = DEFAULT_APP_PREFS;
+    return {
+      writes,
+      readAppPrefs: vi.fn(async () => current),
+      writeAppPrefs: vi.fn(async (patch: Partial<AppPrefs>): Promise<AppPrefsWriteResult> => {
+        writes.push(patch);
+        current = { ...current, ...patch };
+        return { ok: true, prefs: current };
+      }),
+      countBackups: vi.fn(async () => count),
+      ...over,
+    };
+  }
+
+  async function openBackupTab(port: BackupSettingsPort, onClose = (): void => {}): Promise<void> {
+    const store = makeStore();
+    render(
+      <SettingsDialog store={portFrom(store)} canEdit onClose={onClose} backupPort={port} />,
+    );
+    fireEvent.click(screen.getByTestId('settings-tab-backup'));
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-backup-interval')).toHaveValue(5),
+    );
+  }
+
+  it('保存してある間隔・世代数を出し、いま溜まっている世代の数も出す', async () => {
+    const port = fakePort();
+    await openBackupTab(port);
+    expect(screen.getByTestId('settings-backup-generations')).toHaveValue(10);
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-backup-generation-count')).toHaveTextContent(
+        'w.gimoza の世代はいま 2 個あります',
+      ),
+    );
+  });
+
+  it('［適用］で間隔と世代数をその場で書き、ダイアログは閉じない（V12 の手順 (b)）', async () => {
+    const port = fakePort();
+    const onClose = vi.fn();
+    await openBackupTab(port, onClose);
+    fireEvent.change(screen.getByTestId('settings-backup-interval'), { target: { value: '10' } });
+    fireEvent.change(screen.getByTestId('settings-backup-generations'), { target: { value: '20' } });
+    fireEvent.click(screen.getByTestId('settings-backup-apply'));
+    await waitFor(() => expect(screen.getByTestId('settings-backup-applied')).toBeInTheDocument());
+    expect(port.writes).toEqual([{ autoSaveIntervalMinutes: 10, backupGenerations: 20 }]);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('範囲外は理由を出して書かない（0 分・101 世代・小数・世代 1）', async () => {
+    const port = fakePort();
+    await openBackupTab(port);
+    fireEvent.change(screen.getByTestId('settings-backup-interval'), { target: { value: '0' } });
+    fireEvent.change(screen.getByTestId('settings-backup-generations'), { target: { value: '101' } });
+    fireEvent.click(screen.getByTestId('settings-backup-apply'));
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-backup-interval-error')).toHaveTextContent(
+        BACKUP_SETTINGS_STRINGS.intervalInvalid,
+      ),
+    );
+    expect(screen.getByTestId('settings-backup-generations-error')).toHaveTextContent(
+      BACKUP_SETTINGS_STRINGS.generationsInvalid,
+    );
+    // 手直し: 下限は 2（1 では戻せない）。欄の min も同じ定数から引く。
+    fireEvent.change(screen.getByTestId('settings-backup-interval'), { target: { value: '5' } });
+    fireEvent.change(screen.getByTestId('settings-backup-generations'), { target: { value: '1' } });
+    fireEvent.click(screen.getByTestId('settings-backup-apply'));
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-backup-generations-error')).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('settings-backup-generations')).toHaveAttribute('min', '2');
+    expect(port.writes).toEqual([]);
+  });
+
+  it('［適用］を押さずにダイアログの［保存］を押しても、打った値は書く（黙って捨てない）', async () => {
+    const port = fakePort();
+    const onClose = vi.fn();
+    await openBackupTab(port, onClose);
+    fireEvent.change(screen.getByTestId('settings-backup-interval'), { target: { value: '15' } });
+    fireEvent.click(screen.getByTestId('settings-save'));
+    await waitFor(() =>
+      expect(port.writes).toEqual([{ autoSaveIntervalMinutes: 15, backupGenerations: 10 }]),
+    );
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it('［保存］でも範囲外なら閉じずにこの節を開いて理由を出す', async () => {
+    const port = fakePort();
+    const onClose = vi.fn();
+    await openBackupTab(port, onClose);
+    fireEvent.change(screen.getByTestId('settings-backup-interval'), { target: { value: 'abc' } });
+    fireEvent.click(screen.getByTestId('settings-tab-project'));
+    fireEvent.click(screen.getByTestId('settings-save'));
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-tab-backup')).toHaveAttribute('aria-selected', 'true'),
+    );
+    expect(await screen.findByTestId('settings-backup-interval-error')).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(port.writes).toEqual([]);
+  });
+
+  it('世代が 0 個なら、まだ無いと言う', async () => {
+    const port = fakePort({}, { basis: 'file', sourceName: 'w.gimoza', count: 0 });
+    await openBackupTab(port);
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-backup-generation-count')).toHaveTextContent(
+        BACKUP_SETTINGS_STRINGS.generationNone,
+      ),
+    );
+  });
+
+  it('どのファイルの世代か分からない（新規など）ときは「無い」と言わない（手直し）', async () => {
+    const port = fakePort({}, { basis: 'none' });
+    await openBackupTab(port);
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-backup-generation-count')).toHaveTextContent(
+        BACKUP_SETTINGS_STRINGS.generationNoBasis,
+      ),
+    );
+    expect(screen.getByTestId('settings-backup-generation-count')).not.toHaveTextContent(
+      BACKUP_SETTINGS_STRINGS.generationNone,
+    );
+    // 下げても数は出せないが、消えることは先に言う。再手直し（司令塔の決定 2-3）: 数が
+    // 分からなくても **必ず確認を挟む**（ほかのファイルの世代は次に保存したときに消える）。
+    fireEvent.change(screen.getByTestId('settings-backup-generations'), { target: { value: '3' } });
+    expect(screen.getByTestId('settings-backup-shrink-generic')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('settings-backup-apply'));
+    expect(await screen.findByTestId('settings-backup-shrink-confirm')).toHaveTextContent(
+      BACKUP_SETTINGS_STRINGS.shrinkConfirmGeneric(3),
+    );
+    expect(port.writes).toEqual([]);
+    fireEvent.click(screen.getByTestId('settings-backup-shrink-yes'));
+    await waitFor(() => expect(port.writes).toEqual([{ autoSaveIntervalMinutes: 5, backupGenerations: 3 }]));
+  });
+
+  // --- 手直し: 世代数を下げると、次の保存で古い世代がまとめて黙って消える -----------------
+
+  it('世代数を下げて世代が消えるなら、先に数を出し、［適用］では確認を挟む。やめれば値は戻る', async () => {
+    const port = fakePort({}, { basis: 'file', sourceName: 'w.gimoza', count: 10 });
+    await openBackupTab(port);
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-backup-generation-count')).toHaveTextContent('10 個'),
+    );
+    fireEvent.change(screen.getByTestId('settings-backup-generations'), { target: { value: '2' } });
+    // 10 個ある → 次の保存で 1 個足して 2 個に減らす → 9 個消える。
+    expect(screen.getByTestId('settings-backup-shrink-preview')).toHaveTextContent(
+      BACKUP_SETTINGS_STRINGS.shrinkPreview('w.gimoza', 9, 2),
+    );
+    fireEvent.click(screen.getByTestId('settings-backup-apply'));
+    const confirm = await screen.findByTestId('settings-backup-shrink-confirm');
+    expect(confirm).toHaveTextContent(BACKUP_SETTINGS_STRINGS.shrinkConfirm('w.gimoza', 9));
+    expect(port.writes).toEqual([]);
+
+    fireEvent.click(screen.getByTestId('settings-backup-shrink-no'));
+    expect(screen.queryByTestId('settings-backup-shrink-confirm')).toBeNull();
+    expect(screen.getByTestId('settings-backup-generations')).toHaveValue(10);
+    expect(port.writes).toEqual([]);
+
+    fireEvent.change(screen.getByTestId('settings-backup-generations'), { target: { value: '2' } });
+    fireEvent.click(screen.getByTestId('settings-backup-apply'));
+    fireEvent.click(await screen.findByTestId('settings-backup-shrink-yes'));
+    await waitFor(() => expect(port.writes).toEqual([{ autoSaveIntervalMinutes: 5, backupGenerations: 2 }]));
+    expect(await screen.findByTestId('settings-backup-applied')).toBeInTheDocument();
+  });
+
+  it('［保存］でも世代が消えるなら確認を挟んで留まり、「この数にする」で書けたら閉じる', async () => {
+    const port = fakePort({}, { basis: 'file', sourceName: 'w.gimoza', count: 10 });
+    const onClose = vi.fn();
+    await openBackupTab(port, onClose);
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-backup-generation-count')).toHaveTextContent('10 個'),
+    );
+    fireEvent.change(screen.getByTestId('settings-backup-generations'), { target: { value: '5' } });
+    fireEvent.click(screen.getByTestId('settings-tab-project'));
+    fireEvent.click(screen.getByTestId('settings-save'));
+    expect(await screen.findByTestId('settings-backup-shrink-confirm')).toBeInTheDocument();
+    expect(screen.getByTestId('settings-tab-backup')).toHaveAttribute('aria-selected', 'true');
+    expect(onClose).not.toHaveBeenCalled();
+    expect(port.writes).toEqual([]);
+    fireEvent.click(screen.getByTestId('settings-backup-shrink-yes'));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(port.writes).toEqual([{ autoSaveIntervalMinutes: 5, backupGenerations: 5 }]);
+  });
+
+  it('このファイルでは消える世代が無くても、下げたら確認を挟む（ほかのファイルの分。司令塔の決定 2-3）', async () => {
+    const port = fakePort({}, { basis: 'file', sourceName: 'w.gimoza', count: 2 });
+    await openBackupTab(port);
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-backup-generation-count')).toHaveTextContent('2 個'),
+    );
+    fireEvent.change(screen.getByTestId('settings-backup-generations'), { target: { value: '5' } });
+    expect(screen.queryByTestId('settings-backup-shrink-preview')).toBeNull();
+    expect(screen.getByTestId('settings-backup-shrink-generic')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('settings-backup-apply'));
+    expect(await screen.findByTestId('settings-backup-shrink-confirm')).toHaveTextContent(
+      BACKUP_SETTINGS_STRINGS.shrinkConfirmGeneric(5),
+    );
+    expect(port.writes).toEqual([]);
+    fireEvent.click(screen.getByTestId('settings-backup-shrink-yes'));
+    await waitFor(() => expect(port.writes).toEqual([{ autoSaveIntervalMinutes: 5, backupGenerations: 5 }]));
+  });
+
+  it('上げたときは確認を挟まない', async () => {
+    const port = fakePort({}, { basis: 'none' });
+    await openBackupTab(port);
+    fireEvent.change(screen.getByTestId('settings-backup-generations'), { target: { value: '30' } });
+    expect(screen.queryByTestId('settings-backup-shrink-generic')).toBeNull();
+    fireEvent.click(screen.getByTestId('settings-backup-apply'));
+    await waitFor(() => expect(port.writes).toEqual([{ autoSaveIntervalMinutes: 5, backupGenerations: 30 }]));
+    expect(screen.queryByTestId('settings-backup-shrink-confirm')).toBeNull();
+  });
+
+  // --- 手直し: 書き込みの失敗と、応答の競合 ------------------------------------------------
+
+  it('書けなかったら理由を出し、入力は残す。［保存］なら閉じない', async () => {
+    const message = '設定をファイルに書き込めませんでした（EACCES）。値は変えていません。';
+    const port = fakePort({
+      writeAppPrefs: vi.fn(async () => ({ ok: false as const, prefs: DEFAULT_APP_PREFS, message })),
+    });
+    const onClose = vi.fn();
+    await openBackupTab(port, onClose);
+    fireEvent.change(screen.getByTestId('settings-backup-generations'), { target: { value: '20' } });
+    fireEvent.click(screen.getByTestId('settings-backup-apply'));
+    expect(await screen.findByTestId('settings-backup-write-error')).toHaveTextContent(message);
+    expect(screen.queryByTestId('settings-backup-applied')).toBeNull();
+    expect(screen.getByTestId('settings-backup-generations')).toHaveValue(20);
+
+    fireEvent.click(screen.getByTestId('settings-save'));
+    await waitFor(() => expect(port.writeAppPrefs).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-tab-backup')).toHaveAttribute('aria-selected', 'true'),
+    );
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByTestId('settings-backup-generations')).toHaveValue(20);
+  });
+
+  it('書き込みの口が例外でも、理由を出して入力を残す', async () => {
+    const port = fakePort({
+      writeAppPrefs: vi.fn(async () => {
+        throw new Error('IPC');
+      }),
+    });
+    await openBackupTab(port);
+    fireEvent.change(screen.getByTestId('settings-backup-interval'), { target: { value: '30' } });
+    fireEvent.click(screen.getByTestId('settings-backup-apply'));
+    expect(await screen.findByTestId('settings-backup-write-error')).toHaveTextContent('IPC');
+    expect(screen.getByTestId('settings-backup-interval')).toHaveValue(30);
+  });
+
+  it('書き込み中は欄とボタンを止め、［保存］は書けるまで閉じない', async () => {
+    let finish: ((r: AppPrefsWriteResult) => void) | null = null;
+    const port = fakePort({
+      writeAppPrefs: vi.fn(
+        () =>
+          new Promise<AppPrefsWriteResult>((resolve) => {
+            finish = resolve;
+          }),
+      ),
+    });
+    const onClose = vi.fn();
+    await openBackupTab(port, onClose);
+    fireEvent.change(screen.getByTestId('settings-backup-interval'), { target: { value: '10' } });
+    fireEvent.click(screen.getByTestId('settings-save'));
+    await waitFor(() => expect(screen.getByTestId('settings-backup-interval')).toBeDisabled());
+    expect(screen.getByTestId('settings-backup-generations')).toBeDisabled();
+    expect(screen.getByTestId('settings-backup-apply')).toBeDisabled();
+    expect(screen.getByTestId('settings-save')).toBeDisabled();
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => {
+      finish?.({ ok: true, prefs: { ...DEFAULT_APP_PREFS, autoSaveIntervalMinutes: 10 } });
+    });
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it('下書きの検証は範囲内の整数だけを通す（世代の下限は 2）', () => {
+    expect(validateBackupDraft('10', '20')).toEqual({
+      ok: true,
+      value: { autoSaveIntervalMinutes: 10, backupGenerations: 20 },
+    });
+    expect(validateBackupDraft('10', '2').ok).toBe(true);
+    expect(validateBackupDraft('10', '1').ok).toBe(false);
+    expect(validateBackupDraft('121', '2').ok).toBe(false);
+    expect(validateBackupDraft('1.5', '2').ok).toBe(false);
+    expect(validateBackupDraft('', '2').ok).toBe(false);
+  });
+
+  it('下げたときに次の保存で消える数（上げた・同じなら 0）', () => {
+    expect(generationsToDelete(10, 10, 2)).toBe(9);
+    expect(generationsToDelete(10, 10, 9)).toBe(2);
+    expect(generationsToDelete(2, 10, 5)).toBe(0);
+    expect(generationsToDelete(10, 10, 10)).toBe(0);
+    expect(generationsToDelete(10, 5, 20)).toBe(0);
+  });
+});
+
+describe('useBackupSettings — 応答が、待っている間に打った値を消さない（増分 8D の手直し）', () => {
+  it('頼んだあとで打ち直した下書きは、応答で上書きしない', async () => {
+    let finish: ((r: AppPrefsWriteResult) => void) | null = null;
+    const port: BackupSettingsPort = {
+      readAppPrefs: vi.fn(async () => DEFAULT_APP_PREFS),
+      writeAppPrefs: vi.fn(
+        () =>
+          new Promise<AppPrefsWriteResult>((resolve) => {
+            finish = resolve;
+          }),
+      ),
+      countBackups: vi.fn(async (): Promise<BackupCount> => ({ basis: 'none' })),
+    };
+    const { result } = renderHook(() => useBackupSettings(port));
+    await waitFor(() => expect(result.current.intervalDraft).toBe('5'));
+    act(() => {
+      result.current.setIntervalDraft('10');
+    });
+    let applying: Promise<unknown> = Promise.resolve();
+    act(() => {
+      applying = result.current.apply();
+    });
+    await waitFor(() => expect(result.current.writing).toBe(true));
+    // 書き込み中の 2 度目の［適用］は落とす。
+    await expect(result.current.apply()).resolves.toBe('busy');
+    act(() => {
+      result.current.setIntervalDraft('15');
+    });
+    await act(async () => {
+      finish?.({ ok: true, prefs: { ...DEFAULT_APP_PREFS, autoSaveIntervalMinutes: 10 } });
+      await applying;
+    });
+    expect(result.current.saved?.autoSaveIntervalMinutes).toBe(10);
+    // 15 は残る（まだ書いていない変更として dirty）。
+    expect(result.current.intervalDraft).toBe('15');
+    expect(result.current.dirty).toBe(true);
   });
 });

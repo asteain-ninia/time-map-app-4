@@ -14,6 +14,8 @@ export {
 export {
   buildTmap,
   readTmap,
+  countFeaturesInTmap,
+  countManifestFeatures,
   type TmapContents,
   type ExtractedTmap,
   type ReadTmapResult,
@@ -35,8 +37,18 @@ export {
   selectBackupsToDelete,
   nextSequence,
   runBackup,
+  listBackupGenerations,
+  describeBackups,
+  countBackups,
+  countBackupFeatures,
+  memoizedFeatureCount,
+  parseBackupFileName,
+  type BackupFileStat,
   type BackupFsOps,
   type BackupResult,
+  type BackupGeneration,
+  type BackupInspectPorts,
+  type DescribedBackup,
 } from './backup';
 
 export {

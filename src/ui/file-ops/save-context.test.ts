@@ -7,6 +7,7 @@ import {
   buildNewProjectContext,
   contextAfterSave,
   contextForLoadedFile,
+  contextForRestoredBackup,
   contextWithoutSaveTarget,
   decideSaveAfterConfirm,
   markDirty,
@@ -129,5 +130,42 @@ describe('decideSaveAfterConfirm（上書き確認から戻ったときの行き
 
   it('世代だけ進んで行き先が同じなら保存してよい（保存の完了で世代が進む経路）', () => {
     expect(decideSaveAfterConfirm({ ...base, generationNow: 9 })).toBe(SAVE_AFTER_CONFIRM.Save);
+  });
+});
+
+describe('世代から開いたときの保存文脈（増分 8D / 設計書 §E.1 の V14・§J.4 の #9 の ④）', () => {
+  const restoredFrom = { sourceName: 'w.gimoza', savedAtMs: 1000 };
+  const restored = contextForRestoredBackup({
+    restoredFrom,
+    metadata: { name: 'w', description: '' },
+    baseMapId: PRESET_BASEMAP_ID,
+  });
+
+  it('保存先を確定させない（次の保存は名前を付けて保存）。clean で、世代の印を持つ', () => {
+    expect(restored.savePath).toBeNull();
+    expect(restored.backupTarget).toBeNull();
+    expect(needsSaveAs(restored)).toBe(true);
+    expect(restored.dirty).toBe(false);
+    expect(restored.restoredFrom).toEqual(restoredFrom);
+    // 「保存先の取り下げ」（読み込みの確定に失敗した）とは別の状態。
+    expect(restored.destinationRetracted).toBe(false);
+  });
+
+  it('保存できたら世代の印は消え、書いた先が保存先になる（spread で印を持ち越さない）', () => {
+    const saved = contextAfterSave(restored, '/d/again.gimoza');
+    expect(saved.savePath).toBe('/d/again.gimoza');
+    expect(saved.restoredFrom).toBeNull();
+    expect(needsSaveAs(saved)).toBe(false);
+  });
+
+  it('新規・普通の読み込みは印を持たない', () => {
+    expect(buildNewProjectContext().restoredFrom).toBeNull();
+    expect(
+      contextForLoadedFile({
+        path: '/d/w.gimoza',
+        metadata: { name: 'w', description: '' },
+        baseMapId: PRESET_BASEMAP_ID,
+      }).restoredFrom,
+    ).toBeNull();
   });
 });
