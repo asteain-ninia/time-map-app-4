@@ -169,6 +169,8 @@ export const STANDARD_MENUS: readonly MenuDef[] = [
       // メニューと keymap の両方へ届くよう、ここ 1 か所で宣言する（結合点 #10:
       // 「メニューには載っているのに実体が登録されていない」を作らない）。
       item(COMMAND_ID.ToolsAddFace, { key: 'f', shift: true }),
+      // 増分 8C: 「測る」を `U` で持つ／終える（設計書 §I.2。V15 の 1 手目）。
+      item(COMMAND_ID.ToolsSurvey, { key: 'u' }),
       item(COMMAND_ID.ToolsSettings),
       // U41 (FR-113): feature search, registered through the same基盤 (教訓 5.30).
       item(COMMAND_ID.ToolsSearch, { key: 'f', ctrlOrMeta: true }),

@@ -3575,6 +3575,20 @@ export function App(): JSX.Element {
     return () => registry.unregister(COMMAND_ID.ToolsAddFace);
   }, [registry, store]);
 
+  // 増分 8C: `U` で「測る」を持つ／終える（設計書 §I.2 / §E.1 V15 の 1 手目）。左の
+  // レールの「📏 測る」と同じ切り替え（`SurveyControls` の onClick と同じ 2 つの操作）を
+  // 通す。メニューにも載せてある（結合点 #10）。読むだけでも効く（編集の関門に載せない）。
+  useEffect(() => {
+    registry.register(COMMAND_ID.ToolsSurvey, {
+      run: () => {
+        const s = store.getState();
+        if (s.survey.active) s.surveyDisable();
+        else s.surveyEnable();
+      },
+    });
+    return () => registry.unregister(COMMAND_ID.ToolsSurvey);
+  }, [registry, store]);
+
   return (
     // U41 INTEGRATION (FR-117, 受け入れ基準3): wrap the whole shell in the React
     // error boundary bound to the SAME shared logger the global handlers use, so a

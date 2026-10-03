@@ -76,6 +76,14 @@ export const COMMAND_ID = {
    * （`EDITING_COMMANDS` に載せる ―― K-6）。
    */
   ToolsAddFace: 'tools.addFace',
+  /**
+   * 「測る」を持つ／終える（増分 8C / 設計書 §I.2 の `U` ・§E.1 V15 の 1 手目）。
+   *
+   * 左のレールの「📏 測る」（`survey-toggle`）と **同じ 1 本**を通す（押していなければ
+   * 持ち、持っていれば終える）。測るのは編集ではないので **読むだけでも効く**
+   * （`EDITING_COMMANDS` に載せない ―― 設計書 §C.3「読むだけでも使える」）。
+   */
+  ToolsSurvey: 'tools.survey',
   ToolsSettings: 'tools.settings',
   /**
    * 地物を探す（U41 / FR-113）。**増分 4 で行き先が変わった。**
