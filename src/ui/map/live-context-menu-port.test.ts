@@ -428,6 +428,28 @@ describe('createLiveContextMenuPort — 測量の線（増分 8C）', () => {
     expect(h.opened[0]?.hit).toBe(hit);
   });
 
+  // 増分 8C の手直し（反証 #1）: 把手は測量の線より上に描かれているので、把手の当たりが勝つ。
+  // 旧版は頂点の当たりでも線を見て昇格を止め、メニューの「頂点を削除」が **選択中の別の地物の
+  // 頂点** に向いた。
+  it('頂点の把手に当たったら線を調べず、従来どおりその頂点を昇格する（把手は線より上）', () => {
+    const h = surveyHarness(() => [2]);
+    const hit = vertexHit(asFeatureId('A'), asVertexId('va'));
+    h.port.request({ x: 30, y: 40 }, hit);
+    expect(h.probed).toEqual([]);
+    expect(h.promoted).toEqual([hit]);
+    expect(h.opened).toEqual([{ clientX: 130, clientY: 240, hit }]);
+  });
+
+  it('辺の把手に当たったときも線を調べない（要求に surveyLineIds は付かない）', () => {
+    const h = surveyHarness(() => [2]);
+    const hit = edgeHit(asFeatureId('A'), asVertexId('v1'), asVertexId('v2'));
+    h.port.request({ x: 30, y: 40 }, hit);
+    expect(h.probed).toEqual([]);
+    // 辺の当たりは昇格の対象ではないが、昇格の口には従来どおり渡る（promoteHitToSelection が何もしない）。
+    expect(h.promoted).toEqual([hit]);
+    expect(h.opened).toEqual([{ clientX: 130, clientY: 240, hit }]);
+  });
+
   it('線に当たらなければ従来どおり（地物は昇格し、要求に surveyLineIds は付かない）', () => {
     const h = surveyHarness(() => []);
     const hit = featureBodyHit(asFeatureId('f-1'));

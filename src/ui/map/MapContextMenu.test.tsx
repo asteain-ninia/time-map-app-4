@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EDIT_MODE } from '../state/session';
 import { createSessionStore } from '../state/store';
 import { COMMAND_ID, CommandRegistry } from '../shell/commands';
-import { EMPTY_HIT } from '../../domain/selection/index';
+import { EMPTY_HIT, featureBodyHit } from '../../domain/selection/index';
 import { asFeatureId } from '../../domain/ids';
 import {
   DISABLE_REASON,
@@ -220,6 +220,29 @@ describe('MapContextMenu — 測量の線の項目（増分 8C）', () => {
     expect(surveyButtons.map((b) => b.textContent)).toEqual(ITEMS.map((i) => i.label));
     // 先頭（地物の項目より前）。
     expect(menu.querySelectorAll('[data-testid="context-menu-item"]')[0]).toBe(surveyButtons[0]);
+  });
+
+  // 増分 8C の手直し（反証 #1）: 線に当たった右クリックは地物を昇格しないので、地物の項目を
+  // 組むと **押していない、いま選んでいる別の地物** が相手になる。線の項目と見る側の項目だけにする。
+  it('線に当たった要求では地物の項目を組まない（composeFor を呼ばず、見る側の項目は残る）', () => {
+    const composeFor = vi.fn(() => leafModel);
+    renderAndOpen(
+      { composeFor, onSelectItem: vi.fn(), surveyItemsFor: () => ITEMS },
+      { ...REQUEST, hit: featureBodyHit(asFeatureId('under')), surveyLineIds: [4, 2] },
+    );
+    expect(composeFor).not.toHaveBeenCalled();
+    const menu = screen.getByTestId('context-menu');
+    expect(menu.querySelector('[data-item-kind]')).toBeNull();
+    expect(menu.querySelectorAll('[data-survey-line-id]')).toHaveLength(2);
+    expect(menu.querySelector(`[data-command="${COMMAND_ID.ViewFitAll}"]`)).not.toBeNull();
+    expect(menu.querySelector(`[data-command="${COMMAND_ID.ViewToggleViewMode}"]`)).not.toBeNull();
+  });
+
+  it('線に当たっていなければ、従来どおり地物の項目を組む', () => {
+    const composeFor = vi.fn(() => leafModel);
+    renderAndOpen({ composeFor, onSelectItem: vi.fn(), surveyItemsFor: () => ITEMS });
+    expect(composeFor).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('context-menu').querySelector('[data-item-kind]')).not.toBeNull();
   });
 
   it('押すと、その線の id で onRemoveSurveyLine を呼んで閉じる', () => {
