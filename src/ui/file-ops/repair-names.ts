@@ -12,9 +12,20 @@
 // 地物の名前で「どの歴史か」を言えるようにする。
 //
 // 純粋（React なし）。プロジェクトを 1 回なめて表を作るだけで、元の値は変えない。
+//
+// **呼び名の規則（名前の取り出し・種類の語・「名前のない面（…年に作成）」の文）は
+// `src/ui/conflict/participant-name.ts` の 1 か所から引く**（`docs/現状.md` B75。増分 8E の重なり解決と
+// 同じ呼び方を 2 か所で書かない）。ここに残るのは、プロジェクトから表を作る部分だけである。
 
-import { idToString, type FeatureId } from '../../domain/ids';
+import type { FeatureId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
+import { formatYear } from '../timeline/time-display';
+import {
+  UNKNOWN_KIND_WORD,
+  UNNAMED_KIND_WORD,
+  featureCallName,
+  visibleFeatureName,
+} from '../conflict/participant-name';
 
 /** 1 つの地物について、呼び名を作るのに要るもの。 */
 export interface RepairTargetInfo {
@@ -37,17 +48,6 @@ export interface RepairNamer {
   readonly historyMembers: (ownerId: FeatureId) => readonly FeatureId[] | null;
 }
 
-/** 地物の種類 → 画面の呼び名。まとめ役も面として呼ぶ（地図の上では面に見える）。 */
-const KIND_LABEL: Readonly<Record<string, string>> = {
-  point: '点',
-  line: '線',
-  leaf: '面',
-  aggregate: '面',
-};
-
-/** 地物の種類が分からないときの呼び名。 */
-const UNKNOWN_KIND_LABEL = '地物';
-
 interface Gathered {
   name: string | null;
   nameYear: number;
@@ -66,9 +66,8 @@ export function buildRepairNamer(project: DomainProject): RepairNamer {
     for (const entry of history.series.entries) {
       const year = entry.start.year;
       for (const feature of entry.anchor.snapshot.features) {
-        const raw = feature.attributes.name.trim();
-        const name = raw.length === 0 || raw === idToString(feature.id) ? null : raw;
-        const kindLabel = KIND_LABEL[feature.kind] ?? UNKNOWN_KIND_LABEL;
+        const name = visibleFeatureName(feature);
+        const kindLabel = UNNAMED_KIND_WORD[feature.kind] ?? UNKNOWN_KIND_WORD;
         const seen = byId.get(feature.id);
         if (seen === undefined) {
           byId.set(feature.id, { name, nameYear: year, kindLabel, createdYear: year });
@@ -91,7 +90,7 @@ export function buildRepairNamer(project: DomainProject): RepairNamer {
     featureInfo: (id) => {
       const found = byId.get(id);
       if (found === undefined) {
-        return { name: null, kindLabel: UNKNOWN_KIND_LABEL, createdYear: null };
+        return { name: null, kindLabel: UNKNOWN_KIND_WORD, createdYear: null };
       }
       return { name: found.name, kindLabel: found.kindLabel, createdYear: found.createdYear };
     },
@@ -104,7 +103,10 @@ export function buildRepairNamer(project: DomainProject): RepairNamer {
  * `withYear` なら名前があっても年を添える（同じ名前の地物を見分けるため）。
  */
 export function repairTargetLabel(info: RepairTargetInfo, withYear = false): string {
-  const year = info.createdYear === null ? '' : `（${String(info.createdYear)}年に作成）`;
-  if (info.name === null) return `名前のない${info.kindLabel}${year}`;
-  return withYear ? `${info.name}${year}` : info.name;
+  return featureCallName(
+    info.name,
+    info.kindLabel,
+    info.createdYear === null ? undefined : formatYear(info.createdYear),
+    withYear,
+  );
 }

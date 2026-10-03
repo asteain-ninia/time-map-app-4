@@ -123,3 +123,23 @@ describe('buildRepairNamer', () => {
     );
   });
 });
+
+// 取り込み（増分 8A〜8E）で、呼び名の規則を `conflict/participant-name.ts` の 1 か所にまとめた（B75）。
+// 修復ダイアログの側で変わったのは、見えない文字だけの名前を名前と見なさないことと、紀元前の年の書き方。
+describe('修復ダイアログの呼び名は重なり解決と同じ規則を通る', () => {
+  const PROJECT = project([
+    history('z-1', [[-300, [feature('z-1', 'leaf', '​ ')]]]),
+    history('z-2', [[-300, [feature('z-2', 'leaf', '州')]]]),
+    history('z-3', [[1200, [feature('z-3', 'leaf', '州')]]]),
+  ]);
+  const namer = buildRepairNamer(PROJECT);
+
+  it('見えない文字だけの名前は名前と見なさず、紀元前の年は「紀元前300年」と書く', () => {
+    expect(repairTargetLabel(namer.featureInfo(id('z-1')))).toBe('名前のない面（紀元前300年に作成）');
+  });
+
+  it('同じ名前を年で見分けるときも、年の書き方は同じ', () => {
+    expect(repairTargetLabel(namer.featureInfo(id('z-2')), true)).toBe('州（紀元前300年に作成）');
+    expect(repairTargetLabel(namer.featureInfo(id('z-3')), true)).toBe('州（1200年に作成）');
+  });
+});

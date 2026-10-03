@@ -102,8 +102,13 @@ describe('participantDisplayName — 内部 ID を出さない（N-18）', () =>
       color,
       [],
     );
-    expect(participantDisplayName(agg, timePointYear(10))).toBe(
-      '名前のないまとめ役の地物（10年に作成）',
+    // まとめ役も「面」と呼ぶ（取り込みで 8D の修復ダイアログの呼び方とそろえた。B75）。
+    expect(participantDisplayName(agg, timePointYear(10))).toBe('名前のない面（10年に作成）');
+  });
+
+  it('名前の欄が内部 ID と同じなら名前と見なさない（取り込みで 8D の規則とそろえた）', () => {
+    expect(participantDisplayName(leaf('f-7', 'f-7'), timePointYear(1500))).toBe(
+      '名前のない面（1500年に作成）',
     );
   });
 });
