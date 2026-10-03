@@ -30,6 +30,8 @@ import { resolveAt } from '../anchor-series';
 import type { Calendar } from '../time/calendar';
 import type { TimePoint } from '../time/time-point';
 
+import { emptyAggregateIntervals } from '../affiliation/interval-edit';
+
 import { INCONSISTENCY, checkHierarchyOverTime } from './consistency';
 import type { DomainProject } from './serialize';
 
@@ -61,6 +63,11 @@ export interface PreSaveProblem {
   readonly atTime?: TimePoint;
   /** 子の並びの食い違いのときだけ、食い違っている子。 */
   readonly relatedIds?: readonly FeatureId[];
+  /**
+   * 子の居ないまとめ役のときだけ: 次に開いたとき、既定の修復（子の居ない区間だけ無くす）が
+   * 効くか（4 回目 #1 (ii)。一度も子を持たない・自分の系列を持たないまとめ役には効かない）。
+   */
+  readonly intervalRepairable?: boolean;
 }
 
 /** 保存を止める種類か（止めない種類は利用者に聞く）。 */
@@ -163,6 +170,9 @@ export function checkBeforeSave(
       featureId: head,
       relatedIds: inc.featureIds.slice(1),
       ...(inc.atTime === undefined ? {} : { atTime: inc.atTime }),
+      ...(kind === PRE_SAVE_PROBLEM.EmptyAggregate
+        ? { intervalRepairable: emptyAggregateIntervals(project.histories, head, calendar).length > 0 }
+        : {}),
     });
   }
 
@@ -227,9 +237,13 @@ export function preSaveConfirmLines(
           ` → 次に開くと、一覧を各年の実際の所属に合わせます`,
       );
     } else if (p.kind === PRE_SAVE_PROBLEM.EmptyAggregate) {
+      // 既定の修復が効く形のときだけ「無くします」と言う。効かない形（どの年にも下位領域が無い・
+      // 自分の年表を持たない）は、開くと聞かれることを正直に言う（4 回目 #1 (ii)）。
       lines.push(
         `まとめ役「${name(p.featureId)}」には、${year}に下位領域が 1 件もありません` +
-          ` → 次に開くと、下位領域の居ない年の間だけ「${name(p.featureId)}」を無くします（ほかの年の記録は残ります）`,
+          (p.intervalRepairable === true
+            ? ` → 次に開くと、下位領域の居ない年の間だけ「${name(p.featureId)}」を無くします（ほかの年の記録は残ります）`
+            : ` → 次に開くと、どうするかを聞かれます（このまとめ役には下位領域の居る年が無いため、読み込みから外すことになります）`),
       );
     } else {
       lines.push(

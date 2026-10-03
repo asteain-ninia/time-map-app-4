@@ -39,7 +39,7 @@ import {
   withAggregateChildIds,
   withParentId,
 } from '../feature';
-import { materializeOwnSeries } from '../affiliation/materialize';
+import { materializeOwnSeries, residentFeatureIds } from '../affiliation/materialize';
 import {
   absentParentIntervals,
   clearParentWithin,
@@ -429,6 +429,11 @@ function removeEmptyAggregateIntervals(
 ): DomainProject {
   let histories: readonly FeatureHistory[] = project.histories;
   for (const id of ids) {
+    if (emptyAggregateIntervals(histories, id, calendar).length === 0) continue;
+    // **切る前に、まとめ役の錨に居候している地物を自分の系列へ起こす**（増分 7 の手直し 4 回目 #3。
+    // 存続期間の編集と同じ順）。起こさずに切ると、子でない居候の記録まで道連れに消えていた。
+    const residents = residentFeatureIds(histories, id);
+    if (residents.length > 0) histories = materializeOwnSeries(histories, residents, calendar).histories;
     const intervals = emptyAggregateIntervals(histories, id, calendar);
     if (intervals.length === 0) continue;
     const index = histories.findIndex((h) => h.featureId === id);
