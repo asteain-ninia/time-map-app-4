@@ -11,7 +11,7 @@
 
 import { MAX_BASE_MAP_IMAGE_BYTES } from '../../domain/basemap/index';
 import { isParsed, parseManifest } from '../../domain/persistence/boundary';
-import { DEFAULT_MAX_GENERATIONS } from '../io/backup';
+import { DEFAULT_MAX_GENERATIONS, describeBackups } from '../io/backup';
 import { loadTmapBytes } from '../io/load';
 import { saveTmap, type SaveEnv } from '../io/save';
 import { ATTACHMENTS_DIR } from '../io/entry-paths';
@@ -33,6 +33,7 @@ import {
   IPC_CHANNEL,
   type AppPrefs,
   type AutoSaveConfig,
+  type BackupEntry,
   type CloseResponseAck,
   type ConfigureAutoSaveResponse,
   type DiagnosticLogRecord,
@@ -61,8 +62,13 @@ interface IpcSenderEvent {
 
 /** Dialog port: returns a chosen path or `undefined` when the user cancels. */
 export interface DialogPort {
-  /** Open a save dialog (Save As); `undefined` = cancelled. */
-  showSaveDialog: () => Promise<string | undefined>;
+  /**
+   * Open a save dialog (Save As); `undefined` = cancelled.
+   *
+   * `defaultPath` は **世代から開いたあとの保存**だけが渡す（増分 8D）: 既定のファイル名を
+   * 元の保存ファイルの名前にする（設計書 §E.1 の V14 の規則 ②）。
+   */
+  showSaveDialog: (defaultPath?: string) => Promise<string | undefined>;
   /** Open an open dialog (Load); `undefined` = cancelled. */
   showOpenDialog: () => Promise<string | undefined>;
   /** Open an IMAGE open-dialog (FR-04 base-map差し替え); `undefined` = cancelled. */
@@ -105,6 +111,13 @@ export interface PendingLoadEntry {
    * commit falls back to token-only verification.
    */
   readonly senderId?: number | undefined;
+  /**
+   * **世代から開いた読み込みだけ**が持つ、元の保存ファイルの絶対パス（増分 8D）。
+   * これがある読み込みを確定しても `currentPath` は **世代のパスにならず未確定へ戻る**
+   * （次の保存は「名前を付けて保存」）。一覧の対象と、名前を付けて保存の既定の名前は
+   * この元のファイルになる。
+   */
+  readonly restoredFrom?: string | undefined;
 }
 
 /** A single-slot holder for the STAGED (not yet committed) load destination. */
@@ -127,6 +140,38 @@ export interface LoadCommitCounterRef {
   get: () => number;
   /** Bump — called on each load commit that moves the save target (a破壊的置換). */
   bump: () => void;
+}
+
+/**
+ * 世代の一覧で **描画プロセスへ渡した id** と、その実体（増分 8D）。`ListBackups` の
+ * たびに丸ごと差し替える ―― 前の一覧の id は次の一覧を作った時点で使えなくなる。
+ * `OpenBackup` はこの表に載っている id しか受け取らない（任意のパスを受け取らない）。
+ */
+export interface IssuedBackup {
+  /** 世代の絶対パス。 */
+  readonly path: string;
+  /** 元の保存ファイルの絶対パス。 */
+  readonly sourcePath: string;
+  /** 元の保存ファイルの名前（拡張子込み）。 */
+  readonly sourceName: string;
+  /** その世代を保存した時刻（epoch ms）。 */
+  readonly savedAtMs: number;
+}
+
+/** {@link IssuedBackup} の表の置き場（1 枚）。 */
+export interface BackupListingRef {
+  get: () => ReadonlyMap<string, IssuedBackup>;
+  set: (listing: ReadonlyMap<string, IssuedBackup>) => void;
+}
+
+/**
+ * 「世代から戻した元のファイル」（増分 8D）。世代を開いて確定すると `currentPath` は
+ * 未確定へ戻るので、**どのファイルの世代を一覧するか**と**名前を付けて保存の既定の名前**
+ * を覚えておく場所が別に要る。次に保存できたとき・別のファイルを開いたときに消える。
+ */
+export interface RestoredSourceRef {
+  get: () => string | undefined;
+  set: (path: string | undefined) => void;
 }
 
 /** Everything the receiver needs, injected so it runs without Electron. */
@@ -155,6 +200,10 @@ export interface IpcDeps {
    * during the async write — so a stale save never rolls the destination back.
    */
   readonly loadCommitCounter: LoadCommitCounterRef;
+  /** 世代の一覧で渡した id の表（増分 8D）。 */
+  readonly backupListing: BackupListingRef;
+  /** 世代から戻した元のファイル（増分 8D）。 */
+  readonly restoredSource: RestoredSourceRef;
   /** Apply auto-save config (interval/generations) — wired to the scheduler. */
   readonly applyAutoSaveConfig: (config: AutoSaveConfig) => void;
   /** Generation cap to use for backups; settings-driven (既定 10). */
@@ -198,6 +247,12 @@ export interface IpcDeps {
 }
 
 const READ_FAILED_MSG = 'ファイルの読み込みに失敗しました。';
+/**
+ * 一覧に載っていない id で世代を開こうとした（増分 8D）。主プロセスは任意のパスを
+ * 受け取らないので、ここへ来るのは古い一覧の id か、壊れた呼び出しだけである。
+ */
+export const UNKNOWN_BACKUP_MSG =
+  'その世代は一覧に見つかりませんでした。もう一度「以前の保存から開く」から選んでください。';
 const FILE_TOO_LARGE_MSG = `ファイルが大きすぎます（上限 ${Math.floor(MAX_TMAP_BYTES / (1024 * 1024))} MB）。`;
 
 /**
@@ -286,16 +341,28 @@ export function validateSaveRequest(req: SaveRequest, caps: ReadTmapCaps = {}): 
 /** Save to the current path, or open Save-As if there is none yet (FR-105). */
 export async function handleSave(deps: IpcDeps, req: SaveRequest): Promise<SaveResponse> {
   const existing = deps.currentPath.get();
-  const target = existing ?? (await deps.dialog.showSaveDialog());
+  const target = existing ?? (await askSaveTarget(deps));
   if (target === undefined) return { ok: false, reason: 'cancelled' };
   return runSave(deps, target, req);
 }
 
 /** Save As: always open a dialog to pick a fresh path (FR-105). */
 export async function handleSaveAs(deps: IpcDeps, req: SaveRequest): Promise<SaveResponse> {
-  const target = await deps.dialog.showSaveDialog();
+  const target = await askSaveTarget(deps);
   if (target === undefined) return { ok: false, reason: 'cancelled' };
   return runSave(deps, target, req);
+}
+
+/**
+ * 保存のダイアログを開く。**世代から戻したあと**だけ、元の保存ファイルを既定にする
+ * （増分 8D / 設計書 §E.1 の V14 の規則 ②「既定のファイル名は元の名前」）。それ以外は
+ * これまでどおり何も渡さない。
+ */
+function askSaveTarget(deps: IpcDeps): Promise<string | undefined> {
+  const restored = deps.restoredSource.get();
+  return restored === undefined
+    ? deps.dialog.showSaveDialog()
+    : deps.dialog.showSaveDialog(restored);
 }
 
 async function runSave(deps: IpcDeps, target: string, req: SaveRequest): Promise<SaveResponse> {
@@ -339,6 +406,9 @@ async function runSave(deps: IpcDeps, target: string, req: SaveRequest): Promise
   }
   if (result.ok && deps.loadCommitCounter.get() === commitGenAtStart) {
     deps.currentPath.set(target);
+    // 書けた先が保存先になったので、「世代から戻した元のファイル」の覚え書きは役目を終える
+    // （以後の一覧は新しい保存先の世代、名前を付けて保存の既定も付けない）。
+    deps.restoredSource.set(undefined);
   }
   // Strip the internal `backup` field before returning over IPC (contract shape).
   return result.ok
@@ -366,6 +436,7 @@ async function readAndParse(
   deps: IpcDeps,
   path: string,
   senderId?: number,
+  restore?: IssuedBackup,
 ): Promise<LoadResponse> {
   let bytes: Uint8Array;
   try {
@@ -395,8 +466,77 @@ async function readAndParse(
   // from reflectProject — the SAME commit point that promotes the loaded asset bytes — so
   // the save destination moves iff the load actually became the live project.
   const token = deps.newLoadToken();
-  deps.pendingLoadPath.set({ token, path, senderId });
-  return { ...response, commitToken: token };
+  if (restore === undefined) {
+    deps.pendingLoadPath.set({ token, path, senderId });
+    return { ...response, commitToken: token };
+  }
+  // 増分 8D: 世代から開いた読み込みは、確定しても保存先を **世代のパスにしない**。
+  // 元のファイルを覚えておき、画面へは「何の、いつの世代か」を返す。
+  deps.pendingLoadPath.set({ token, path, senderId, restoredFrom: restore.sourcePath });
+  return {
+    ...response,
+    commitToken: token,
+    restoredFrom: { sourceName: restore.sourceName, savedAtMs: restore.savedAtMs },
+  };
+}
+
+/**
+ * いまの保存先の世代を新しい順に返す（増分 8D / 設計書 §E.1 の V14）。
+ *
+ * 対象は **いまの保存先**、それが未確定なら **世代から戻した元のファイル**。どちらも無い
+ * （一度も保存していない新規）なら空。返す行ごとにその場限りの id を振り、id → 実体の表を
+ * **丸ごと差し替える**（前の一覧の id はここで無効になる）。パスは描画プロセスへ渡さない。
+ */
+export async function handleListBackups(deps: IpcDeps): Promise<BackupEntry[]> {
+  const source = deps.currentPath.get() ?? deps.restoredSource.get();
+  if (source === undefined) {
+    deps.backupListing.set(new Map());
+    return [];
+  }
+  const { dir, name } = deps.saveEnv.splitPath(source);
+  const rows = await describeBackups(
+    {
+      listDir: deps.saveEnv.backupFs.listDir,
+      statSize: deps.readFile.statSize,
+      readFile: deps.readFile.readFile,
+    },
+    deps.saveEnv.joinPath,
+    dir,
+    name,
+  ).catch(() => []);
+  const listing = new Map<string, IssuedBackup>();
+  const entries: BackupEntry[] = [];
+  for (const row of rows) {
+    const id = deps.newLoadToken();
+    listing.set(id, { path: row.path, sourcePath: source, sourceName: name, savedAtMs: row.savedAtMs });
+    entries.push({
+      id,
+      savedAtMs: row.savedAtMs,
+      byteSize: row.byteSize,
+      featureCount: row.featureCount,
+      sourceName: name,
+    });
+  }
+  deps.backupListing.set(listing);
+  return entries;
+}
+
+/**
+ * 一覧で選んだ世代を開く（増分 8D）。**id は直前の {@link handleListBackups} が振った
+ * ものとしか照合しない**。表に無い id・文字列でない値は断る（パスとして解釈する経路を
+ * 持たない）。読めたら普通の読み込みと同じ検証を通し、確定の印は「世代から開いた」
+ * 印つきで預ける（{@link handleCommitLoadedPath} が保存先を未確定へ戻す）。
+ */
+export async function handleOpenBackup(
+  deps: IpcDeps,
+  id: unknown,
+  senderId?: number,
+): Promise<LoadResponse> {
+  const issued = typeof id === 'string' ? deps.backupListing.get().get(id) : undefined;
+  if (issued === undefined) {
+    return { ok: false, reason: 'read-failed', message: UNKNOWN_BACKUP_MSG };
+  }
+  return readAndParse(deps, issued.path, senderId, issued);
 }
 
 /**
@@ -420,7 +560,16 @@ export function handleCommitLoadedPath(
     pending.token === token &&
     (pending.senderId === undefined || pending.senderId === senderId)
   ) {
-    deps.currentPath.set(pending.path);
+    if (pending.restoredFrom === undefined) {
+      deps.currentPath.set(pending.path);
+      // 別のファイルを開いた。世代から戻した元のファイルの覚え書きは捨てる。
+      deps.restoredSource.set(undefined);
+    } else {
+      // 増分 8D: 世代から開いた読み込み。**保存先は世代のパスにせず未確定へ戻す** ――
+      // 普通の読み込みと同じに昇格すると、次の Ctrl+S が世代そのものを上書きする。
+      deps.currentPath.set(undefined);
+      deps.restoredSource.set(pending.restoredFrom);
+    }
     deps.pendingLoadPath.set(undefined);
     // MED: a load commit moved the save target — advance the generation so any save that
     // was in flight when this happened does NOT roll `currentPath` back on completion.
@@ -467,6 +616,23 @@ export async function handleOpenImage(deps: IpcDeps): Promise<Uint8Array | null>
   }
 }
 
+/** アプリ側の設定から自動保存の設定を作る（増分 8D）。分 → ミリ秒にするだけの純関数。 */
+export function autoSaveConfigOf(prefs: AppPrefs): AutoSaveConfig {
+  return {
+    intervalMs: prefs.autoSaveIntervalMinutes * 60 * 1000,
+    maxGenerations: prefs.backupGenerations,
+  };
+}
+
+/**
+ * 起動時に、保存してあったアプリ側の設定を自動保存へ効かせる（増分 8D）。これが無いと、
+ * 設定画面で変えた間隔・世代数が **再起動のたびに既定へ戻る**。読めなくても既定で動く。
+ */
+export async function restoreAutoSaveConfig(deps: IpcDeps): Promise<void> {
+  const prefs = await handleReadAppPrefs(deps);
+  deps.applyAutoSaveConfig(autoSaveConfigOf(prefs));
+}
+
 /** Push auto-save config (interval/generations) into the scheduler (FR-108). */
 export function handleConfigureAutoSave(
   deps: IpcDeps,
@@ -511,11 +677,17 @@ export async function handleWriteAppPrefs(
   deps: IpcDeps,
   patch: Partial<AppPrefs>,
 ): Promise<AppPrefs> {
+  let next: AppPrefs;
   try {
-    return await deps.writeAppPrefs(patch);
+    next = await deps.writeAppPrefs(patch);
   } catch {
-    return handleReadAppPrefs(deps);
+    next = await handleReadAppPrefs(deps);
   }
+  // 増分 8D: 自動保存の間隔・世代数は **書いたその場で効かせる**（設定の［適用］）。
+  // 口はこの 1 本だけ ―― 描画プロセスが別に `configureAutoSave` を呼ぶ形にすると、
+  // 保存した値と効いている値が 2 経路に割れる。
+  deps.applyAutoSaveConfig(autoSaveConfigOf(next));
+  return next;
 }
 
 // --- registration: one handler per shared channel ---------------------------
@@ -565,6 +737,14 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   ) => unknown);
   deps.registrar(IPC_CHANNEL.WriteAppPrefs, ((event: IpcSenderEvent, patch: Partial<AppPrefs>) =>
     trusted(event) ? handleWriteAppPrefs(deps, patch) : DEFAULT_APP_PREFS) as (
+    ...args: never[]
+  ) => unknown);
+  // 増分 8D: 世代の一覧と、一覧の id で開く口。開く側は読み込みと同じく送り手の id を
+  // 預け、確定の印がその窓から来たかを確かめる。
+  deps.registrar(IPC_CHANNEL.ListBackups, ((event: IpcSenderEvent) =>
+    trusted(event) ? handleListBackups(deps) : []) as (...args: never[]) => unknown);
+  deps.registrar(IPC_CHANNEL.OpenBackup, ((event: IpcSenderEvent, id: unknown) =>
+    trusted(event) ? handleOpenBackup(deps, id, event.sender.id) : REFUSED) as (
     ...args: never[]
   ) => unknown);
   // 所見3: close ブリッジの受け口だけ event.sender.id を読む（要求元 webContents の検証用）。

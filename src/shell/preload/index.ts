@@ -4,6 +4,7 @@ import {
   IPC_CHANNEL,
   type AppPrefs,
   type AutoSaveConfig,
+  type BackupEntry,
   type ConfigureAutoSaveResponse,
   type DiagnosticLogRecord,
   type LoadResponse,
@@ -132,6 +133,12 @@ export function buildApi(): TimeMapApi {
       ipcRenderer.invoke(IPC_CHANNEL.ReadAppPrefs) as Promise<AppPrefs>,
     writeAppPrefs: (patch: Partial<AppPrefs>): Promise<AppPrefs> =>
       ipcRenderer.invoke(IPC_CHANNEL.WriteAppPrefs, patch) as Promise<AppPrefs>,
+    // 増分 8D: 世代の一覧と、一覧の id で開く口。描画プロセスはパスを一切扱わない
+    // （一覧は id しか運ばず、開くときも id しか渡せない）。
+    listBackups: (): Promise<readonly BackupEntry[]> =>
+      ipcRenderer.invoke(IPC_CHANNEL.ListBackups) as Promise<readonly BackupEntry[]>,
+    openBackup: (id: string): Promise<LoadResponse> =>
+      ipcRenderer.invoke(IPC_CHANNEL.OpenBackup, id) as Promise<LoadResponse>,
   };
 }
 

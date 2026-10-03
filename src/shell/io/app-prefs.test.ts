@@ -6,7 +6,13 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_APP_PREFS } from '../ipc/contract';
+import {
+  AUTO_SAVE_INTERVAL_MINUTES_RANGE,
+  BACKUP_GENERATIONS_RANGE,
+  DEFAULT_APP_PREFS,
+} from '../ipc/contract';
+import { DEFAULT_AUTO_SAVE_INTERVAL_MS } from './autosave';
+import { DEFAULT_MAX_GENERATIONS } from './backup';
 
 import {
   APP_PREFS_FILE,
@@ -49,7 +55,10 @@ describe('置き場', () => {
 
 describe('解釈（壊れていても既定へ倒す）', () => {
   it('素直な JSON はそのまま読む', () => {
-    expect(parseAppPrefs('{"showFirstRunGuide":false}')).toEqual({ showFirstRunGuide: false });
+    expect(parseAppPrefs('{"showFirstRunGuide":false}')).toEqual({
+      ...DEFAULT_APP_PREFS,
+      showFirstRunGuide: false,
+    });
   });
 
   it('壊れた JSON・配列・null は既定', () => {
@@ -66,10 +75,45 @@ describe('解釈（壊れていても既定へ倒す）', () => {
 
 describe('併合', () => {
   it('渡された鍵だけを差し替える', () => {
-    expect(mergeAppPrefs({ showFirstRunGuide: true }, {})).toEqual({ showFirstRunGuide: true });
-    expect(mergeAppPrefs({ showFirstRunGuide: true }, { showFirstRunGuide: false })).toEqual({
+    expect(mergeAppPrefs(DEFAULT_APP_PREFS, {})).toEqual(DEFAULT_APP_PREFS);
+    expect(mergeAppPrefs(DEFAULT_APP_PREFS, { showFirstRunGuide: false })).toEqual({
+      ...DEFAULT_APP_PREFS,
       showFirstRunGuide: false,
     });
+    expect(
+      mergeAppPrefs(DEFAULT_APP_PREFS, { autoSaveIntervalMinutes: 10, backupGenerations: 20 }),
+    ).toEqual({ ...DEFAULT_APP_PREFS, autoSaveIntervalMinutes: 10, backupGenerations: 20 });
+  });
+
+  it('範囲外・整数でない値は今の値のまま（主プロセスの入口として信用しない）', () => {
+    const current = { ...DEFAULT_APP_PREFS, autoSaveIntervalMinutes: 7, backupGenerations: 3 };
+    for (const bad of [0, -1, 1.5, Number.NaN, AUTO_SAVE_INTERVAL_MINUTES_RANGE.max + 1]) {
+      expect(mergeAppPrefs(current, { autoSaveIntervalMinutes: bad }).autoSaveIntervalMinutes).toBe(7);
+    }
+    for (const bad of [0, 2.5, BACKUP_GENERATIONS_RANGE.max + 1]) {
+      expect(mergeAppPrefs(current, { backupGenerations: bad }).backupGenerations).toBe(3);
+    }
+  });
+});
+
+describe('自動保存の間隔と世代数（増分 8D）', () => {
+  it('既定は FR-108 の 5 分・10 世代で、主プロセスの既定と同じ値', () => {
+    expect(DEFAULT_APP_PREFS.autoSaveIntervalMinutes * 60 * 1000).toBe(DEFAULT_AUTO_SAVE_INTERVAL_MS);
+    expect(DEFAULT_APP_PREFS.backupGenerations).toBe(DEFAULT_MAX_GENERATIONS);
+  });
+
+  it('範囲内の整数だけを読む（手で書き換えたファイルの 0 分・1 億世代は既定へ倒す）', () => {
+    expect(parseAppPrefs('{"autoSaveIntervalMinutes":10,"backupGenerations":20}')).toEqual({
+      ...DEFAULT_APP_PREFS,
+      autoSaveIntervalMinutes: 10,
+      backupGenerations: 20,
+    });
+    expect(parseAppPrefs('{"autoSaveIntervalMinutes":0,"backupGenerations":100000000}')).toEqual(
+      DEFAULT_APP_PREFS,
+    );
+    expect(parseAppPrefs('{"autoSaveIntervalMinutes":"10","backupGenerations":2.5}')).toEqual(
+      DEFAULT_APP_PREFS,
+    );
   });
 });
 
@@ -82,9 +126,13 @@ describe('読み書き（失敗を例外にしない）', () => {
   it('書いたものを読み戻せる', async () => {
     const env: AppPrefsEnv = { fs: memoryFs(), userDataDir: DIR };
     await expect(writeAppPrefs(env, { showFirstRunGuide: false })).resolves.toEqual({
+      ...DEFAULT_APP_PREFS,
       showFirstRunGuide: false,
     });
-    await expect(readAppPrefs(env)).resolves.toEqual({ showFirstRunGuide: false });
+    await expect(readAppPrefs(env)).resolves.toEqual({
+      ...DEFAULT_APP_PREFS,
+      showFirstRunGuide: false,
+    });
   });
 
   it('書けなくても投げず、いまの値を返す', async () => {
@@ -99,6 +147,7 @@ describe('読み書き（失敗を例外にしない）', () => {
       userDataDir: DIR,
     };
     await expect(writeAppPrefs(env, { showFirstRunGuide: false })).resolves.toEqual({
+      ...DEFAULT_APP_PREFS,
       showFirstRunGuide: false,
     });
     // 覚え書きは残らない（次の起動でまたガイドが出る、が最悪の結果）。

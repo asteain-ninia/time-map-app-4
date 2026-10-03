@@ -36,7 +36,14 @@ import {
   type Manifest,
 } from '../../domain/persistence/index';
 import type { DomainProject } from '../../domain/persistence/index';
-import type { LoadResponse, SaveRequest, SaveResponse, TimeMapApi } from '../../shell/ipc/contract';
+import {
+  DEFAULT_APP_PREFS,
+  type BackupEntry,
+  type LoadResponse,
+  type SaveRequest,
+  type SaveResponse,
+  type TimeMapApi,
+} from '../../shell/ipc/contract';
 
 import { createSessionStore, type SessionStore } from '../state/store';
 import { DEFAULT_APP_SETTINGS, DEFAULT_PROJECT_SETTINGS } from '../state/settings';
@@ -71,8 +78,11 @@ function makeApi(overrides: Partial<TimeMapApi> = {}): TimeMapApi {
     configureAutoSave: vi.fn(async () => ({ ok: true as const })),
     onAutoSaveTick: vi.fn(() => () => {}),
     // 決定 (2): アプリ側の設定（初回ガイドの覚え書き）。ここでは使わないスタブ。
-    readAppPrefs: vi.fn(async () => ({ showFirstRunGuide: true })),
-    writeAppPrefs: vi.fn(async () => ({ showFirstRunGuide: true })),
+    readAppPrefs: vi.fn(async () => DEFAULT_APP_PREFS),
+    writeAppPrefs: vi.fn(async () => DEFAULT_APP_PREFS),
+    // 増分 8D: 世代の一覧と、一覧の id で開く口（既定は世代なし）。
+    listBackups: vi.fn(async (): Promise<readonly BackupEntry[]> => []),
+    openBackup: vi.fn(async (): Promise<LoadResponse> => ({ ok: false, reason: 'cancelled' })),
     // FR-107 close ブリッジ購読（このコントローラは購読しない — App.tsx が host 側で
     // 繋ぐ）。契約の全面を満たすためのスタブ。
     onCloseRequest: vi.fn(() => () => {}),

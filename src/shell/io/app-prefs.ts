@@ -15,7 +15,12 @@
 import { mkdir as fsMkdir, readFile as fsReadFile, writeFile as fsWriteFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-import { DEFAULT_APP_PREFS, type AppPrefs } from '../ipc/contract';
+import {
+  AUTO_SAVE_INTERVAL_MINUTES_RANGE,
+  BACKUP_GENERATIONS_RANGE,
+  DEFAULT_APP_PREFS,
+  type AppPrefs,
+} from '../ipc/contract';
 
 /** ファイル名（userData 直下）。 */
 export const APP_PREFS_FILE = 'app-prefs.json';
@@ -61,18 +66,61 @@ export function parseAppPrefs(text: string): AppPrefs {
   } catch {
     return DEFAULT_APP_PREFS;
   }
-  if (typeof value !== 'object' || value === null) return DEFAULT_APP_PREFS;
-  const raw = (value as Record<string, unknown>)['showFirstRunGuide'];
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return DEFAULT_APP_PREFS;
+  }
+  const record = value as Record<string, unknown>;
+  const raw = record['showFirstRunGuide'];
   return {
     showFirstRunGuide:
       typeof raw === 'boolean' ? raw : DEFAULT_APP_PREFS.showFirstRunGuide,
+    autoSaveIntervalMinutes: integerInRange(
+      record['autoSaveIntervalMinutes'],
+      AUTO_SAVE_INTERVAL_MINUTES_RANGE,
+      DEFAULT_APP_PREFS.autoSaveIntervalMinutes,
+    ),
+    backupGenerations: integerInRange(
+      record['backupGenerations'],
+      BACKUP_GENERATIONS_RANGE,
+      DEFAULT_APP_PREFS.backupGenerations,
+    ),
   };
 }
 
-/** 部分更新を併合する（純粋）。 */
+/**
+ * 範囲内の整数ならその値、そうでなければ既定（増分 8D）。ファイルは手で書き換えられうる
+ * ので、0 分（＝毎ティック保存）や 1 億世代のような値を主プロセスへそのまま流さない。
+ */
+function integerInRange(
+  raw: unknown,
+  range: { readonly min: number; readonly max: number },
+  fallback: number,
+): number {
+  if (typeof raw !== 'number' || !Number.isInteger(raw)) return fallback;
+  if (raw < range.min || raw > range.max) return fallback;
+  return raw;
+}
+
+/**
+ * 部分更新を併合する（純粋）。範囲外の値は **今の値のまま**にする（設定画面が先に断るので
+ * ここへ来るのは壊れた呼び出しだけだが、主プロセスの入口として信用しない）。
+ */
 export function mergeAppPrefs(current: AppPrefs, patch: Partial<AppPrefs>): AppPrefs {
   return {
-    showFirstRunGuide: patch.showFirstRunGuide ?? current.showFirstRunGuide,
+    showFirstRunGuide:
+      typeof patch.showFirstRunGuide === 'boolean'
+        ? patch.showFirstRunGuide
+        : current.showFirstRunGuide,
+    autoSaveIntervalMinutes: integerInRange(
+      patch.autoSaveIntervalMinutes,
+      AUTO_SAVE_INTERVAL_MINUTES_RANGE,
+      current.autoSaveIntervalMinutes,
+    ),
+    backupGenerations: integerInRange(
+      patch.backupGenerations,
+      BACKUP_GENERATIONS_RANGE,
+      current.backupGenerations,
+    ),
   };
 }
 

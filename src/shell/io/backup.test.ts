@@ -7,6 +7,8 @@ import {
   backupKeyOf,
   backupName,
   compareBackupNames,
+  describeBackups,
+  listBackupGenerations,
   DEFAULT_MAX_GENERATIONS,
   nextSequence,
   runBackup,
@@ -148,5 +150,69 @@ describe('runBackup (受け入れ基準3 / 教訓5.22 create-then-prune)', () =>
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.deletedNames).toEqual([]);
+  });
+});
+
+// --- 増分 8D: 世代の一覧（設計書 §E.1 の V14）-------------------------------------
+
+describe('listBackupGenerations / describeBackups（増分 8D）', () => {
+  it('その保存ファイルの世代だけを新しい順に並べ、名前の時刻を読む（桁数は決め打ちしない）', () => {
+    const names = [
+      backupName(BASE, 1000, 0),
+      backupName(BASE, 3000, 0),
+      backupName(BASE, 3000, 1),
+      backupName('other.gimoza', 9000, 0),
+      `${BASE}.bak.abc-0000`,
+      BASE,
+    ];
+    expect(listBackupGenerations(BASE, names)).toEqual([
+      { fileName: backupName(BASE, 3000, 1), savedAtMs: 3000 },
+      { fileName: backupName(BASE, 3000, 0), savedAtMs: 3000 },
+      { fileName: backupName(BASE, 1000, 0), savedAtMs: 1000 },
+    ]);
+  });
+
+  it('大きさが測れない世代は行ごと落とし、中身が読めない世代は地物数だけ null', async () => {
+    const files = new Map<string, Uint8Array>([
+      [`/d/${backupName(BASE, 1000, 0)}`, new Uint8Array([9, 9])],
+      [`/d/${backupName(BASE, 2000, 0)}`, new Uint8Array([1])],
+    ]);
+    const rows = await describeBackups(
+      {
+        listDir: async () => [
+          ...[...files.keys()].map((p) => p.slice(3)),
+          backupName(BASE, 3000, 0), // 一覧には出たが stat の前に消えた
+        ],
+        statSize: async (p) => {
+          const data = files.get(p);
+          if (data === undefined) throw new Error('ENOENT');
+          return data.length;
+        },
+        readFile: async (p) => files.get(p) ?? new Uint8Array(),
+      },
+      (dir, name) => `${dir}/${name}`,
+      '/d',
+      BASE,
+    );
+    expect(rows.map((r) => [r.savedAtMs, r.byteSize, r.featureCount])).toEqual([
+      [2000, 1, null],
+      [1000, 2, null],
+    ]);
+  });
+
+  it('ディレクトリが読めなければ空（例外にしない）', async () => {
+    const rows = await describeBackups(
+      {
+        listDir: async () => {
+          throw new Error('EACCES');
+        },
+        statSize: async () => 0,
+        readFile: async () => new Uint8Array(),
+      },
+      (dir, name) => `${dir}/${name}`,
+      '/d',
+      BASE,
+    );
+    expect(rows).toEqual([]);
   });
 });

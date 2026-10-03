@@ -54,10 +54,12 @@ describe('preload exposes the typed TimeMapApi (受け入れ基準4)', () => {
       'appendLog',
       'commitLoadedPath',
       'configureAutoSave',
+      'listBackups',
       'load',
       'loadDropped',
       'onAutoSaveTick',
       'onCloseRequest',
+      'openBackup',
       'openImage',
       'readAppPrefs',
       'save',
@@ -134,6 +136,22 @@ describe('each API method invokes the correct shared channel (受け入れ基準
     const api = buildApi();
     await api.commitLoadedPath('tok-42');
     expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.CommitLoadedPath, 'tok-42');
+  });
+
+  // 増分 8D（設計書 §E.1 の V14）: 世代の一覧と、一覧の id で開く口の契約テスト 2 件。
+  it('listBackups → IPC_CHANNEL.ListBackups（引数なし。パスを渡す口が無い）', async () => {
+    const api = buildApi();
+    await api.listBackups();
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.ListBackups);
+    // 描画プロセスから渡せるのは何も無い（どのファイルの世代かは主プロセスが決める）。
+    expect(invoke.mock.calls[0]).toHaveLength(1);
+  });
+
+  it('openBackup → IPC_CHANNEL.OpenBackup に id だけを渡す', async () => {
+    const api = buildApi();
+    await api.openBackup('backup-id-7');
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.OpenBackup, 'backup-id-7');
+    expect(invoke.mock.calls[0]).toHaveLength(2);
   });
 });
 

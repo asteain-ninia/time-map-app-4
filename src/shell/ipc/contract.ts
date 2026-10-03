@@ -101,6 +101,20 @@ export const IPC_CHANNEL = {
   ReadAppPrefs: 'tmap:read-app-prefs',
   /** アプリ側の設定を書く（部分更新。書いたあとの全体を返す）。 */
   WriteAppPrefs: 'tmap:write-app-prefs',
+  /**
+   * **いまの保存先の世代を一覧する**（増分 8D。設計書 §E.1 の V14）。
+   *
+   * 世代（`<名前>.bak.<時刻>-<連番>`）は保存のたびに作られていたのに、描画プロセスから
+   * 一覧する口も戻す口も無かった。主プロセスが保存先の隣を読み、新しい順に返す。
+   * 返す 1 件ごとに **その場限りの id** を振り、`OpenBackup` はその id しか受け取らない。
+   */
+  ListBackups: 'tmap:list-backups',
+  /**
+   * **一覧で選んだ世代を開く**（増分 8D）。引数は `ListBackups` が **直前に返した id だけ**。
+   * 任意のパスは受け取らない（主プロセスが id → パスの表を持ち、表に無い id は断る）。
+   * 開いたファイルは **保存先にならない**（次の保存は必ず「名前を付けて保存」）。
+   */
+  OpenBackup: 'tmap:open-backup',
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNEL)[keyof typeof IPC_CHANNEL];
@@ -171,6 +185,13 @@ export type LoadResponse =
        * renderer simply skips the commit (a safe degrade — save keeps the prior target).
        */
       readonly commitToken?: string;
+      /**
+       * **世代から開いたときだけ**付く（増分 8D）。何の、いつの世代かを画面に出すための
+       * 情報で、このとき `path` は世代そのもののパスである ―― 描画プロセスはこれを
+       * **保存先にしてはいけない**（アプリバーは「〈元の名前〉（…の世代から復旧・保存先は
+       * 未確定）」と出し、次の保存は「名前を付けて保存」へ落ちる）。
+       */
+      readonly restoredFrom?: RestoredFrom;
     }
   | { readonly ok: false; readonly reason: 'cancelled' }
   | {
@@ -180,6 +201,33 @@ export type LoadResponse =
       // For the `invalid` case, the structured parse result (FR-104).
       readonly parse?: ParseResult;
     };
+
+/**
+ * 世代の一覧の 1 行（増分 8D。設計書 §E.1 の V14 の型）。
+ *
+ * **パスは載せない**。描画プロセスが持つのは開くための `id` だけで、`id` は主プロセスが
+ * 一覧を作るたびに振り直す（前の一覧の id は次の一覧を作った時点で使えなくなる）。
+ */
+export interface BackupEntry {
+  /** `OpenBackup` に渡す、その場限りの印。 */
+  readonly id: string;
+  /** 保存した時刻（epoch ms。実時間）。 */
+  readonly savedAtMs: number;
+  /** ファイルの大きさ（バイト）。 */
+  readonly byteSize: number;
+  /** 地物の数。中身が読めなかった世代は null（画面は「—」）。 */
+  readonly featureCount: number | null;
+  /** 元の保存ファイルの名前（拡張子込み。例 `derle-world.gimoza`）。 */
+  readonly sourceName: string;
+}
+
+/** 世代から開いたときの「何の、いつの世代か」（{@link LoadResponse} の `restoredFrom`）。 */
+export interface RestoredFrom {
+  /** 元の保存ファイルの名前（拡張子込み）。 */
+  readonly sourceName: string;
+  /** その世代を保存した時刻（epoch ms）。 */
+  readonly savedAtMs: number;
+}
 
 /** Auto-save configuration pushed from the settings unit (FR-108). */
 export interface AutoSaveConfig {
@@ -275,10 +323,30 @@ export type Unsubscribe = () => void;
 export interface AppPrefs {
   /** 初回起動のガイドを出すか（「今後表示しない」で false になる）。 */
   readonly showFirstRunGuide: boolean;
+  /**
+   * 自動保存の間隔（分）。増分 8D（設計書 G-5 / FR-108、V12 の④）。**アプリ全体の設定**
+   * なので保存ファイルではなくここに置く（どのプロジェクトを開いても同じ間隔）。
+   */
+  readonly autoSaveIntervalMinutes: number;
+  /** 保存ファイルごとに残す世代の数（増分 8D。FR-108）。 */
+  readonly backupGenerations: number;
 }
 
-/** 読めなかったとき・まだ無いときの既定（＝ガイドは出る）。 */
-export const DEFAULT_APP_PREFS: AppPrefs = { showFirstRunGuide: true };
+/** 自動保存の間隔（分）の範囲（両端を含む）。主プロセスの読み込みと設定画面が同じ値を引く。 */
+export const AUTO_SAVE_INTERVAL_MINUTES_RANGE = { min: 1, max: 120 } as const;
+/** 残す世代の数の範囲（両端を含む）。 */
+export const BACKUP_GENERATIONS_RANGE = { min: 1, max: 100 } as const;
+
+/**
+ * 読めなかったとき・まだ無いときの既定（＝ガイドは出る・5 分ごと・10 世代）。
+ * 5 分と 10 世代は FR-108 の既定値で、`io/autosave.ts` と `io/backup.ts` の既定と同じ
+ * （app-prefs.test.ts が突き合わせる）。
+ */
+export const DEFAULT_APP_PREFS: AppPrefs = {
+  showFirstRunGuide: true,
+  autoSaveIntervalMinutes: 5,
+  backupGenerations: 10,
+};
 
 export interface TimeMapApi {
   readonly save: (req: SaveRequest) => Promise<SaveResponse>;
@@ -337,4 +405,14 @@ export interface TimeMapApi {
   readonly readAppPrefs: () => Promise<AppPrefs>;
   /** アプリ側の設定を部分更新する。書けなくても例外にせず、結果の全体を返す。 */
   readonly writeAppPrefs: (patch: Partial<AppPrefs>) => Promise<AppPrefs>;
+  /**
+   * いまの保存先の世代を新しい順に返す（増分 8D）。保存先がまだ無ければ空。
+   * **前に受け取った id はこの呼び出しで無効になる**。
+   */
+  readonly listBackups: () => Promise<readonly BackupEntry[]>;
+  /**
+   * {@link listBackups} が直前に返した id の世代を開く（増分 8D）。**それ以外の id は
+   * 断られる**（`ok: false` / `read-failed`）。開けた結果は保存先にならない。
+   */
+  readonly openBackup: (id: string) => Promise<LoadResponse>;
 }

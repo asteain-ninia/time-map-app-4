@@ -13,7 +13,7 @@ import {
   BASEMAP_ENTRY,
   MANIFEST_ENTRY,
 } from './entry-paths';
-import { buildTmap, readTmap } from './tmap';
+import { buildTmap, countFeaturesInTmap, countManifestFeatures, readTmap } from './tmap';
 import type { NamedAsset } from '../ipc/contract';
 
 const baseMap = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]); // PNG-ish bytes
@@ -198,5 +198,49 @@ describe('readTmap completeness + ZIP tolerance (Sol round-3 #2/#4)', () => {
     });
     const res = readTmap(bytes, { maxEntryBytes: 1000 });
     expect(res.ok).toBe(true);
+  });
+});
+
+// --- 増分 8D: 世代の一覧の「地物数」 ---------------------------------------------
+
+describe('countFeaturesInTmap / countManifestFeatures（増分 8D）', () => {
+  it('全部の歴史・全部の錨に出てくる地物 ID の種類を数える（同じ地物は 1 回）', () => {
+    const manifest = {
+      histories: [
+        {
+          entries: [
+            { anchor: { snapshot: { features: [{ id: 'a' }, { id: 'b' }] } } },
+            { anchor: { snapshot: { features: [{ id: 'a' }] } } },
+          ],
+        },
+        { entries: [{ anchor: { snapshot: { features: [{ id: 'c' }] } } }] },
+      ],
+    };
+    expect(countManifestFeatures(manifest)).toBe(3);
+    expect(countManifestFeatures({ histories: [] })).toBe(0);
+  });
+
+  it('形が違えば null（一覧はその行の地物数を「—」にする）', () => {
+    for (const bad of [null, 3, {}, { histories: 'x' }, { histories: [{ entries: 1 }] }]) {
+      expect(countManifestFeatures(bad)).toBeNull();
+    }
+  });
+
+  it('保存ファイルから数える。マニフェスト以外は展開しない', () => {
+    const bytes = buildTmap({
+      manifest: serialize(richValidProject()),
+      baseMapImage: baseMap,
+      attachments,
+    });
+    const counted = countFeaturesInTmap(bytes);
+    expect(counted).toBe(countManifestFeatures(serialize(richValidProject())));
+    expect(counted).toBeGreaterThan(0);
+  });
+
+  it('壊れた ZIP・マニフェストの無い ZIP・大きすぎる入れ物は null（例外にしない）', () => {
+    expect(countFeaturesInTmap(new Uint8Array([1, 2, 3]))).toBeNull();
+    expect(countFeaturesInTmap(zipSync({ [BASEMAP_ENTRY]: baseMap }))).toBeNull();
+    const ok = buildTmap({ manifest: serialize(richValidProject()), baseMapImage: baseMap, attachments });
+    expect(countFeaturesInTmap(ok, { maxContainerBytes: 10 })).toBeNull();
   });
 });

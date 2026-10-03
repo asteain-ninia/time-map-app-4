@@ -222,3 +222,64 @@ export function readTmap(bytes: Uint8Array, caps: ReadTmapCaps = {}): ReadTmapRe
 
   return { ok: true, contents: { manifest, baseMapImage, attachments } };
 }
+
+/**
+ * 保存ファイルの中の **地物の数**（増分 8D。世代の一覧の「地物数」の列）。
+ *
+ * 世代の一覧は 10 個前後のファイルを一度に読むので、背景地図や添付は展開しない
+ * ―― **マニフェストの 1 エントリだけ**を取り出して数える。数えるのは全部の歴史・全部の
+ * 錨の写しに出てくる地物 ID の **種類の数**（同じ地物が 100 個の錨に出ても 1 と数える）。
+ *
+ * 壊れている・形が違う・大きすぎるファイルは `null`（＝画面は「—」）。**その 1 行だけを
+ * 「読めない」にして、一覧そのものは出す** ―― 壊れた世代が 1 つ混ざっていても、ほかの
+ * 世代から戻れなくなってはいけない。Zod の境界は通さない（ここは一覧の目安の数で、
+ * 開くときには `loadTmapBytes` がいつもどおり検証する）。
+ */
+export function countFeaturesInTmap(bytes: Uint8Array, caps: ReadTmapCaps = {}): number | null {
+  const maxContainer = caps.maxContainerBytes ?? MAX_TMAP_BYTES;
+  const maxEntry = caps.maxEntryBytes ?? MAX_TMAP_ENTRY_BYTES;
+  if (bytes.length > maxContainer) return null;
+  let manifestBytes: Uint8Array | undefined;
+  try {
+    const entries = unzipSync(bytes, {
+      filter: (file) => file.name === MANIFEST_ENTRY && file.originalSize <= maxEntry,
+    });
+    manifestBytes = entries[MANIFEST_ENTRY];
+  } catch {
+    return null;
+  }
+  if (manifestBytes === undefined || manifestBytes.length > maxEntry) return null;
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(strFromU8(manifestBytes));
+  } catch {
+    return null;
+  }
+  return countManifestFeatures(manifest);
+}
+
+/**
+ * 生のマニフェスト（検証前の JSON）から地物 ID の種類の数を数える。形が違えば `null`。
+ * `histories[].entries[].anchor.snapshot.features[].id` を辿る（schema.ts の形）。
+ */
+export function countManifestFeatures(manifest: unknown): number | null {
+  if (typeof manifest !== 'object' || manifest === null) return null;
+  const histories = (manifest as { histories?: unknown }).histories;
+  if (!Array.isArray(histories)) return null;
+  const ids = new Set<string>();
+  for (const history of histories) {
+    const entries = (history as { entries?: unknown } | null)?.entries;
+    if (!Array.isArray(entries)) return null;
+    for (const entry of entries) {
+      const features = (
+        entry as { anchor?: { snapshot?: { features?: unknown } } } | null
+      )?.anchor?.snapshot?.features;
+      if (!Array.isArray(features)) return null;
+      for (const feature of features) {
+        const id = (feature as { id?: unknown } | null)?.id;
+        if (typeof id === 'string') ids.add(id);
+      }
+    }
+  }
+  return ids.size;
+}

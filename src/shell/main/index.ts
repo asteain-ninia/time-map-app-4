@@ -31,7 +31,9 @@ import { isAllowedNavigation, isTrustedDevServerUrl } from './renderer-entry';
 import { CLOSE_DECISION, createCloseGuardHub } from './close-guard';
 import {
   registerIpcHandlers,
+  restoreAutoSaveConfig,
   type CurrentPathRef,
+  type IssuedBackup,
   type IpcDeps,
   type LoadCommitCounterRef,
   type PendingLoadEntry,
@@ -432,6 +434,14 @@ let pendingLoadPathEntry: PendingLoadEntry | undefined;
 let loadCommitCount = 0;
 
 /**
+ * 増分 8D: 世代の一覧で描画プロセスへ渡した id の表（`ListBackups` のたびに丸ごと
+ * 差し替える）と、世代から戻した元のファイル（保存先が未確定へ戻ったあとの一覧の対象・
+ * 名前を付けて保存の既定）。
+ */
+let issuedBackups: ReadonlyMap<string, IssuedBackup> = new Map();
+let restoredSourcePath: string | undefined;
+
+/**
  * FR-117 診断ログの環境。`wireIpc` が起動時（app ready 後 — `app.getPath` を使うため）
  * に一度だけ設定し、close ガードのログ（{@link logCloseGuard}）も同じ 1 個を読む
  * （単一の真実源: ログ先が 2 つに割れない）。設定前は `undefined` = ファイル出力なし。
@@ -541,10 +551,14 @@ function wireIpc(): void {
       ipcMain.handle(channel, handler as Parameters<typeof ipcMain.handle>[1]);
     },
     dialog: {
-      showSaveDialog: async () => {
+      showSaveDialog: async (defaultPath) => {
         // F2: E2E だけ、ネイティブダイアログの代わりに指定された行き先を返す。
         if (E2E_SAVE_AS_PATH !== null) return E2E_SAVE_AS_PATH;
-        const result = await dialog.showSaveDialog({ filters: [{ name: 'gimoza', extensions: ['gimoza'] }] });
+        // 増分 8D: 世代から戻したあとは、元の保存ファイルを既定の名前にする（V14 の規則 ②）。
+        const result = await dialog.showSaveDialog({
+          filters: [{ name: 'gimoza', extensions: ['gimoza'] }],
+          ...(defaultPath === undefined ? {} : { defaultPath }),
+        });
         return result.canceled ? undefined : result.filePath;
       },
       showOpenDialog: async () => {
@@ -575,6 +589,18 @@ function wireIpc(): void {
     pendingLoadPath,
     newLoadToken: () => randomUUID(),
     loadCommitCounter,
+    backupListing: {
+      get: () => issuedBackups,
+      set: (listing) => {
+        issuedBackups = listing;
+      },
+    },
+    restoredSource: {
+      get: () => restoredSourcePath,
+      set: (path) => {
+        restoredSourcePath = path;
+      },
+    },
     applyAutoSaveConfig,
     get maxGenerations(): number {
       return maxGenerations;
@@ -600,6 +626,9 @@ function wireIpc(): void {
   };
 
   registerIpcHandlers(deps);
+  // 増分 8D: 設定画面で変えた自動保存の間隔・世代数（userData の app-prefs.json）を、
+  // 起動のたびに効かせ直す。読めなければ既定（5 分・10 世代）のまま動く。
+  void restoreAutoSaveConfig(deps);
 }
 
 /**

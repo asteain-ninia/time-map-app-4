@@ -17,6 +17,8 @@
 // directory listing / copy / delete is the thin `runBackup` wrapper which takes
 // an injected port.
 
+import { countFeaturesInTmap, MAX_TMAP_BYTES } from './tmap';
+
 /** Default generation cap (FR-108). Settings may override; this is the既定値. */
 export const DEFAULT_MAX_GENERATIONS = 10;
 
@@ -115,6 +117,103 @@ export function nextSequence(
     if (Number.isFinite(seq) && seq > max) max = seq;
   }
   return max + 1;
+}
+
+// --- 世代の一覧（増分 8D。設計書 §E.1 の V14）--------------------------------
+
+/**
+ * 一覧に出す 1 世代（名前から読み取れるぶん）。`savedAtMs` は名前に埋めた保存時刻
+ * （実時間）で、ファイルの更新時刻は見ない ―― 新旧の並びを決めるのは名前の鍵 1 つ
+ * （{@link compareBackupNames}。教訓 5.15）。
+ */
+export interface BackupGeneration {
+  /** 世代のファイル名（ディレクトリを含まない）。 */
+  readonly fileName: string;
+  /** 保存した時刻（epoch ms）。 */
+  readonly savedAtMs: number;
+}
+
+/**
+ * ディレクトリの中の名前から、`baseName` の世代だけを **新しい順** に取り出す（純粋）。
+ *
+ * 時刻の桁数は決め打ちしない（{@link backupName} は 16 桁で書く。設計書の `<ts13>` は
+ * 書いた当時の見込み）。数字以外が混ざった名前は世代とみなさない。
+ */
+export function listBackupGenerations(
+  baseName: string,
+  names: readonly string[],
+): BackupGeneration[] {
+  const generations: BackupGeneration[] = [];
+  for (const fileName of names) {
+    const key = backupKeyOf(baseName, fileName);
+    if (key === undefined) continue;
+    if (!/^\d+$/.test(key.ts) || !/^\d+$/.test(key.seq)) continue;
+    const savedAtMs = Number.parseInt(key.ts, 10);
+    if (!Number.isFinite(savedAtMs)) continue;
+    generations.push({ fileName, savedAtMs });
+  }
+  // compareBackupNames は古い順。一覧は新しいものを上に出す。
+  return generations.sort((a, b) => compareBackupNames(baseName, b.fileName, a.fileName));
+}
+
+/** 一覧を作るときに読むもの（注入。Electron 抜きで単体テストできる）。 */
+export interface BackupInspectPorts {
+  /** ディレクトリの中のファイル名。 */
+  listDir: (dir: string) => Promise<readonly string[]>;
+  /** ファイルの大きさ（バイト）。 */
+  statSize: (path: string) => Promise<number>;
+  /** ファイルの中身。 */
+  readFile: (path: string) => Promise<Uint8Array>;
+}
+
+/** 一覧の 1 行ぶんの中身（主プロセスの内側の形。画面へ出す id はまだ振っていない）。 */
+export interface DescribedBackup extends BackupGeneration {
+  /** 世代の絶対パス（**主プロセスの外へは出さない**）。 */
+  readonly path: string;
+  readonly byteSize: number;
+  /** 地物の数。読めなかった世代は null。 */
+  readonly featureCount: number | null;
+}
+
+/**
+ * `dir` にある `baseName` の世代を新しい順に並べ、大きさと地物数を添える。
+ *
+ * - 大きさが測れない（一覧を作る間に消えた）世代は **行ごと出さない**（開けないので）。
+ * - 中身が読めない世代は **地物数だけ null** にして行は出す（大きさと日時で選べる）。
+ * - ディレクトリが読めなければ空の一覧（例外にしない）。
+ */
+export async function describeBackups(
+  ports: BackupInspectPorts,
+  joinPath: (dir: string, name: string) => string,
+  dir: string,
+  baseName: string,
+): Promise<DescribedBackup[]> {
+  let names: readonly string[];
+  try {
+    names = await ports.listDir(dir);
+  } catch {
+    return [];
+  }
+  const rows: DescribedBackup[] = [];
+  for (const generation of listBackupGenerations(baseName, names)) {
+    const path = joinPath(dir, generation.fileName);
+    let byteSize: number;
+    try {
+      byteSize = await ports.statSize(path);
+    } catch {
+      continue;
+    }
+    let featureCount: number | null = null;
+    if (byteSize <= MAX_TMAP_BYTES) {
+      try {
+        featureCount = countFeaturesInTmap(await ports.readFile(path));
+      } catch {
+        featureCount = null;
+      }
+    }
+    rows.push({ ...generation, path, byteSize, featureCount });
+  }
+  return rows;
 }
 
 // --- thin fs-backed runner (injected port; Electron-free) -------------------

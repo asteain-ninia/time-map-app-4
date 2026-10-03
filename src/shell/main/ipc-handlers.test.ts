@@ -29,7 +29,14 @@ import {
   handleSaveAs,
   registerIpcHandlers,
   validateSaveRequest,
+  autoSaveConfigOf,
+  handleListBackups,
+  handleOpenBackup,
+  handleWriteAppPrefs,
+  restoreAutoSaveConfig,
+  UNKNOWN_BACKUP_MSG,
   type IpcDeps,
+  type IssuedBackup,
   type PendingLoadEntry,
 } from './ipc-handlers';
 import type { SaveEnv } from '../io/save';
@@ -101,6 +108,9 @@ function makeDeps(overrides: Partial<IpcDeps> = {}): {
   let pending: PendingLoadEntry | undefined;
   let tokenSeq = 0;
   let loadCommitCount = 0;
+  // 増分 8D: 世代の一覧で渡した id の表と、世代から戻した元のファイル。
+  let issued: ReadonlyMap<string, IssuedBackup> = new Map();
+  let restored: string | undefined;
   const deps: IpcDeps = {
     registrar: () => {},
     dialog: {
@@ -131,6 +141,18 @@ function makeDeps(overrides: Partial<IpcDeps> = {}): {
       get: () => loadCommitCount,
       bump: () => {
         loadCommitCount += 1;
+      },
+    },
+    backupListing: {
+      get: () => issued,
+      set: (listing) => {
+        issued = listing;
+      },
+    },
+    restoredSource: {
+      get: () => restored,
+      set: (p) => {
+        restored = p;
       },
     },
     applyAutoSaveConfig: vi.fn(),
@@ -871,5 +893,246 @@ describe('validateSaveRequest — Sol round-2 #2/#3', () => {
     if (res.ok) return;
     expect(res.reason).toBe('write-failed');
     expect(saveCalls).toHaveLength(0);
+  });
+});
+
+// --- 増分 8D: 世代の一覧と復元（設計書 §E.1 の V14）---------------------------
+
+describe('増分 8D: 世代の一覧と、一覧の id でしか開けない口', () => {
+  const SENDER = 5;
+  const SOURCE = '/d/w.gimoza';
+
+  /**
+   * 記憶の中のディスクを本当に読む fixture。既定の fixture の readFile は「どのパスでも
+   * 同じ正しいファイル」を返すので、世代そのものの中身・大きさを見る検査には使えない。
+   */
+  function makeDiskDeps(overrides: Partial<IpcDeps> = {}): ReturnType<typeof makeDeps> {
+    const made = makeDeps(overrides);
+    const { disk } = made;
+    const readFile = {
+      readFile: vi.fn(async (p: string) => {
+        const data = disk.get(p);
+        if (data === undefined) throw new Error(`ENOENT ${p}`);
+        return data;
+      }),
+      statSize: vi.fn(async (p: string) => {
+        const data = disk.get(p);
+        if (data === undefined) throw new Error(`ENOENT ${p}`);
+        return data.length;
+      }),
+    };
+    return { ...made, deps: { ...made.deps, readFile, ...overrides } };
+  }
+
+  /** SOURCE を保存先にして 2 回保存する（＝世代が 2 つできる）。 */
+  async function saveTwice(deps: IpcDeps): Promise<void> {
+    deps.currentPath.set(SOURCE);
+    expect((await handleSave(deps, makeSaveReq())).ok).toBe(true);
+    expect((await handleSave(deps, makeSaveReq())).ok).toBe(true);
+  }
+
+  const backupsOf = (disk: Map<string, Uint8Array>): string[] =>
+    [...disk.keys()].filter((p) => p.startsWith(`${SOURCE}.bak.`)).sort();
+
+  it('保存先が無い（一度も保存していない新規）なら空で、前の一覧の id も消える', async () => {
+    const { deps } = makeDiskDeps();
+    deps.backupListing.set(new Map([['old', { path: '/x', sourcePath: '/x', sourceName: 'x', savedAtMs: 1 }]]));
+    await expect(handleListBackups(deps)).resolves.toEqual([]);
+    expect(deps.backupListing.get().size).toBe(0);
+  });
+
+  it('いまの保存先の世代を新しい順に返す（日時・大きさ・地物数・元の名前。パスは渡さない）', async () => {
+    const { deps, disk } = makeDiskDeps();
+    await saveTwice(deps);
+    const backups = backupsOf(disk);
+    expect(backups).toHaveLength(2);
+
+    const list = await handleListBackups(deps);
+    expect(list).toHaveLength(2);
+    for (const entry of list) {
+      // 描画プロセスへ渡る鍵はこの 5 つだけ（パスは載らない）。
+      expect(Object.keys(entry).sort()).toEqual(
+        ['byteSize', 'featureCount', 'id', 'savedAtMs', 'sourceName'].sort(),
+      );
+      expect(entry.sourceName).toBe('w.gimoza');
+      expect(entry.savedAtMs).toBe(1000); // fixture の now()
+      expect(entry.byteSize).toBeGreaterThan(0);
+      expect(entry.featureCount).toBeGreaterThan(0);
+      expect(JSON.stringify(entry)).not.toContain('/d/');
+    }
+    // 新しい順: 同じ時刻なら連番の大きいほうが上。id → 実体の表もその順で作られている。
+    const paths = list.map((e) => deps.backupListing.get().get(e.id)?.path);
+    expect(paths).toEqual([...backups].reverse());
+  });
+
+  it('読めない世代は地物数だけ null にして行は出す（ほかの世代から戻れなくしない）', async () => {
+    const { deps, disk } = makeDiskDeps();
+    await saveTwice(deps);
+    const [older] = backupsOf(disk);
+    disk.set(older!, new Uint8Array([1, 2, 3, 4]));
+    const list = await handleListBackups(deps);
+    expect(list).toHaveLength(2);
+    expect(list.map((e) => e.featureCount === null)).toEqual([false, true]);
+  });
+
+  it('一覧の id で開くと「何の、いつの世代か」が付き、確定しても保存先は世代のパスにならない', async () => {
+    const { deps } = makeDiskDeps();
+    await saveTwice(deps);
+    const [newest] = await handleListBackups(deps);
+    const res = await handleOpenBackup(deps, newest!.id, SENDER);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.restoredFrom).toEqual({ sourceName: 'w.gimoza', savedAtMs: 1000 });
+    expect(res.path).toContain('.bak.'); // 開いたのは世代そのもの
+
+    handleCommitLoadedPath(deps, res.commitToken, SENDER);
+    // **核心**: 保存先は世代のパスに昇格せず、未確定へ戻る。
+    expect(deps.currentPath.get()).toBeUndefined();
+    expect(deps.restoredSource.get()).toBe(SOURCE);
+  });
+
+  it('世代を開いた直後の保存は「名前を付けて保存」に落ち、既定は元のファイル。世代は書き換わらない', async () => {
+    const { deps, disk } = makeDiskDeps();
+    await saveTwice(deps);
+    const [newest] = await handleListBackups(deps);
+    const backupPath = deps.backupListing.get().get(newest!.id)!.path;
+    const before = disk.get(backupPath);
+    const res = await handleOpenBackup(deps, newest!.id, SENDER);
+    if (!res.ok) throw new Error('open failed');
+    handleCommitLoadedPath(deps, res.commitToken, SENDER);
+
+    const saved = await handleSave(deps, makeSaveReq());
+    expect(saved.ok).toBe(true);
+    // ダイアログが開き、既定は元の保存ファイル（V14 の規則 ②）。
+    expect(deps.dialog.showSaveDialog).toHaveBeenLastCalledWith(SOURCE);
+    if (saved.ok) expect(saved.path).toBe('/d/new.gimoza'); // ダイアログで選ばれた先
+    expect(disk.get(backupPath)).toBe(before); // 世代そのものは一切触られていない
+    // 書けた先が保存先になり、元のファイルの覚え書きは役目を終える。
+    expect(deps.currentPath.get()).toBe('/d/new.gimoza');
+    expect(deps.restoredSource.get()).toBeUndefined();
+    // 以後の名前を付けて保存は既定を付けない（これまでどおり）。
+    await handleSaveAs(deps, makeSaveReq());
+    expect(deps.dialog.showSaveDialog).toHaveBeenLastCalledWith();
+  });
+
+  it('戻したあとの一覧は、元のファイルの世代を出す（保存先が未確定でも行き先を失わない）', async () => {
+    const { deps } = makeDiskDeps();
+    await saveTwice(deps);
+    const [newest] = await handleListBackups(deps);
+    const res = await handleOpenBackup(deps, newest!.id, SENDER);
+    if (!res.ok) throw new Error('open failed');
+    handleCommitLoadedPath(deps, res.commitToken, SENDER);
+    await expect(handleListBackups(deps)).resolves.toHaveLength(2);
+  });
+
+  it('別のファイルを普通に開いて確定したら、元のファイルの覚え書きは捨てる', async () => {
+    const { deps } = makeDiskDeps();
+    await saveTwice(deps);
+    const [newest] = await handleListBackups(deps);
+    const res = await handleOpenBackup(deps, newest!.id, SENDER);
+    if (!res.ok) throw new Error('open failed');
+    handleCommitLoadedPath(deps, res.commitToken, SENDER);
+    const other = await handleLoadDropped(deps, SOURCE, SENDER);
+    if (!other.ok) throw new Error('load failed');
+    expect(other.restoredFrom).toBeUndefined();
+    handleCommitLoadedPath(deps, other.commitToken, SENDER);
+    expect(deps.currentPath.get()).toBe(SOURCE);
+    expect(deps.restoredSource.get()).toBeUndefined();
+  });
+
+  it('世代を開いたが確定しなかった（修復で中止）なら、保存先は前のまま', async () => {
+    const { deps } = makeDiskDeps();
+    await saveTwice(deps);
+    const [newest] = await handleListBackups(deps);
+    const res = await handleOpenBackup(deps, newest!.id, SENDER);
+    expect(res.ok).toBe(true);
+    expect(deps.currentPath.get()).toBe(SOURCE);
+    expect(deps.restoredSource.get()).toBeUndefined();
+  });
+
+  it('listBackups が返していない id は断る（任意のパス・前の一覧の id・文字列でない値）', async () => {
+    const { deps, disk } = makeDiskDeps();
+    await saveTwice(deps);
+    const first = await handleListBackups(deps);
+    const staleId = first[0]!.id;
+    // 一覧を作り直すと、前の一覧の id は使えなくなる。
+    await handleListBackups(deps);
+    const realBackupPath = backupsOf(disk)[0]!;
+    const readFile = deps.readFile.readFile as ReturnType<typeof vi.fn>;
+    readFile.mockClear();
+
+    for (const bad of [staleId, realBackupPath, SOURCE, '', 42, null, undefined, { id: staleId }]) {
+      const res = await handleOpenBackup(deps, bad, SENDER);
+      expect(res).toEqual({ ok: false, reason: 'read-failed', message: UNKNOWN_BACKUP_MSG });
+    }
+    // 断った呼び出しはディスクを 1 バイトも読んでいない。
+    expect(readFile).not.toHaveBeenCalled();
+    expect(deps.pendingLoadPath.get()).toBeUndefined();
+  });
+
+  it('registerIpcHandlers が 2 本を結線し、信用しない送り手には何も渡さない', async () => {
+    const handlers = new Map<IpcChannel, (...args: never[]) => unknown>();
+    const { deps } = makeDiskDeps({
+      registrar: (channel, handler) => {
+        handlers.set(channel, handler);
+      },
+      isTrustedSender: (id) => id === SENDER,
+    });
+    registerIpcHandlers(deps);
+    await saveTwice(deps);
+    const list = handlers.get(IPC_CHANNEL.ListBackups) as (e: unknown) => Promise<unknown[]>;
+    const open = handlers.get(IPC_CHANNEL.OpenBackup) as (
+      e: unknown,
+      id: unknown,
+    ) => Promise<{ ok: boolean; commitToken?: string }>;
+
+    expect(await list({ sender: { id: 99 } })).toEqual([]);
+    const entries = (await list({ sender: { id: SENDER } })) as { id: string }[];
+    expect(entries).toHaveLength(2);
+    expect(await open({ sender: { id: 99 } }, entries[0]!.id)).toEqual({
+      ok: false,
+      reason: 'cancelled',
+    });
+    const res = await open({ sender: { id: SENDER } }, entries[0]!.id);
+    expect(res.ok).toBe(true);
+    // 送り手の id が預けられている（確定の印が同じ窓から来たかを確かめるため）。
+    expect(deps.pendingLoadPath.get()?.senderId).toBe(SENDER);
+  });
+});
+
+describe('増分 8D: 自動保存の間隔・世代数はアプリ側の設定から効かせる（V12 の④）', () => {
+  it('分 → ミリ秒、世代数はそのまま', () => {
+    expect(
+      autoSaveConfigOf({ ...DEFAULT_APP_PREFS, autoSaveIntervalMinutes: 10, backupGenerations: 20 }),
+    ).toEqual({ intervalMs: 600_000, maxGenerations: 20 });
+  });
+
+  it('設定を書いたその場で自動保存へ効かせる（口は 1 本）', async () => {
+    const { deps } = makeDeps();
+    await handleWriteAppPrefs(deps, { autoSaveIntervalMinutes: 10, backupGenerations: 20 });
+    expect(deps.applyAutoSaveConfig).toHaveBeenCalledWith({ intervalMs: 600_000, maxGenerations: 20 });
+  });
+
+  it('起動時に保存してあった設定を効かせ直す（読めなければ既定）', async () => {
+    const { deps } = makeDeps({
+      readAppPrefs: vi.fn(async () => ({
+        ...DEFAULT_APP_PREFS,
+        autoSaveIntervalMinutes: 3,
+        backupGenerations: 2,
+      })),
+    });
+    await restoreAutoSaveConfig(deps);
+    expect(deps.applyAutoSaveConfig).toHaveBeenCalledWith({ intervalMs: 180_000, maxGenerations: 2 });
+
+    const failing = makeDeps({
+      readAppPrefs: vi.fn(async () => {
+        throw new Error('EACCES');
+      }),
+    });
+    await restoreAutoSaveConfig(failing.deps);
+    expect(failing.deps.applyAutoSaveConfig).toHaveBeenCalledWith({
+      intervalMs: 5 * 60 * 1000,
+      maxGenerations: 10,
+    });
   });
 });
