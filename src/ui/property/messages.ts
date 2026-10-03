@@ -252,6 +252,12 @@ export const PROPERTY_STRINGS = {
     names === ''
       ? `下位領域 ${String(count)} 件は、この年から最上位になります`
       : `下位領域 ${String(count)} 件（${names}）は、この年から最上位になります`,
+  /**
+   * 終わらせる地物が後の年の錨で再び現れるとき（増分 7 の手直し 2 回目）。子が最上位に
+   * なるのはその年までで、再び現れた年からは元の所属に戻る（子の居ない殻を作らない）。
+   */
+  endHereImpactReappears: (year: string): string =>
+    `この地物は${year}の記録で再び現れます。下位領域はその年から元の所属に戻ります`,
   endHereImpactHeadingEnds: '終わるもの',
   endHereImpactHeadingPromoted: '最上位になるもの',
   /** **入口 B** を畳んでおく節の見出し（設計書 §C.6 の「取り返しのつかないこと」）。 */

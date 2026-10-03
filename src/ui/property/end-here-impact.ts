@@ -6,9 +6,11 @@
 // なる」と言っている。ドメインの確定（`createAnchorIntervalCommandForRoot`）は既に子を
 // 起こして最上位にしているので、ここは **押す前の文**だけを作る。
 //
-// 数え上げは呼び出し側が確定と同じ `residentFeatureIds` から引き、**その年に居る子**だけを
-// 渡す（それより前に終わっていた子は画面上の姿が変わらないので、「この年から最上位に
-// なります」と言うと嘘になる）。純粋なので単体で固定できる。
+// 数え上げは呼び出し側が確定と同じ `planEnding`（`domain/affiliation/interval-edit.ts`。
+// 確定の `editFeatureInterval` を空打ちする）から引き、**直接の子のうちその年に居るもの**だけを
+// 渡す（孫は数えない。その年より前に終わっていた子は画面上の姿が変わらないので、
+// 「この年から最上位になります」と言うと嘘になる）。終わらせる地物が後の年の錨で再び
+// 現れるなら、その年も渡す（子が最上位なのはその年まで）。純粋なので単体で固定できる。
 
 import type { ImpactGroup } from '../shell/ImpactConfirmDialog';
 
@@ -33,8 +35,10 @@ export function buildEndHereImpactView(input: {
   readonly promotedCount: number;
   /** その名前（引けたものだけ）。 */
   readonly promotedNames: readonly string[];
+  /** 後の年の錨で再び現れるならその年の表示（「1700年」）。ずっと終わるなら省く。 */
+  readonly reappearsLabel?: string;
 }): EndHereImpactView {
-  const { targetName, yearLabel, promotedCount, promotedNames } = input;
+  const { targetName, yearLabel, promotedCount, promotedNames, reappearsLabel } = input;
   return {
     title: PROPERTY_STRINGS.endHereImpactTitle(targetName, yearLabel),
     groups: [
@@ -49,7 +53,12 @@ export function buildEndHereImpactView(input: {
         lines:
           promotedCount === 0
             ? []
-            : [PROPERTY_STRINGS.endHereImpactPromoted(promotedCount, summarizeNames(promotedNames))],
+            : [
+                PROPERTY_STRINGS.endHereImpactPromoted(promotedCount, summarizeNames(promotedNames)),
+                ...(reappearsLabel === undefined
+                  ? []
+                  : [PROPERTY_STRINGS.endHereImpactReappears(reappearsLabel)]),
+              ],
       },
     ],
     // 実行ボタンは **素性欄のボタンと同じ文**（「1500年に終わったことにする」）。押した

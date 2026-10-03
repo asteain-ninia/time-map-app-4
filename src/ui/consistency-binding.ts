@@ -65,15 +65,12 @@ import {
   deleteAnchor,
   type AnchorSeries,
   type RejectReason,
+  type SeriesResult,
 } from '../domain/anchor-series';
 import type { AnchorIntervalEditIntent } from './property/index';
 import { ANCHOR_INTERVAL_OP } from './property/index';
 import { deleteFeatureFromHistories } from '../domain/deletion/index';
-import {
-  materializeOwnSeries,
-  childrenPromotedByEnding,
-  promoteToTopLevelFrom,
-} from '../domain/affiliation/materialize';
+import { editFeatureInterval } from '../domain/affiliation/interval-edit';
 import { getCalendar, type Calendar } from '../domain/time/calendar';
 import { validate as validateTimePoint } from '../domain/time/validate';
 import { featuresAt, verticesAt } from './live-lookup';
@@ -1120,15 +1117,12 @@ function runIntervalOp(
   series: AnchorSeries,
   intent: AnchorIntervalEditIntent,
   anchorId: AnchorId,
-): { ok: true; series: AnchorSeries } | { ok: false; reason: RejectReason } {
-  const result =
-    intent.op === ANCHOR_INTERVAL_OP.ChangeStart
-      ? changeStart(series, anchorId, intent.newStart, calendar)
-      : intent.op === ANCHOR_INTERVAL_OP.SetEnd
-        ? setEnd(series, anchorId, intent.newEnd, calendar)
-        : deleteAnchor(series, anchorId, calendar);
-  if (!result.ok) return { ok: false, reason: result.reason };
-  return { ok: true, series: result.series };
+): SeriesResult {
+  return intent.op === ANCHOR_INTERVAL_OP.ChangeStart
+    ? changeStart(series, anchorId, intent.newStart, calendar)
+    : intent.op === ANCHOR_INTERVAL_OP.SetEnd
+      ? setEnd(series, anchorId, intent.newEnd, calendar)
+      : deleteAnchor(series, anchorId, calendar);
 }
 
 /**
@@ -1149,37 +1143,28 @@ export function createAnchorIntervalCommandForRoot(
   root: DomainRoot,
   intent: AnchorIntervalEditIntent,
 ): AnchorIntervalCommandResult {
-  // 記録の置き場（司令塔の決定 (2)）: まとめ役を「この年に終わったことにする」と、
-  // その錨に居候している子は道連れに消える。子は道連れにせず、その年から最上位として
-  // 続くのが所有者の裁定（子は最上位へ昇格）。だから終わらせる前に、居候の記録を
-  // 全部の年ぶん自分の系列へ起こし、終わる年から parentId を外す。
-  const endTime =
-    intent.op === ANCHOR_INTERVAL_OP.SetEnd && intent.newEnd !== null ? intent.newEnd : null;
-  // **自分の系列を持つ子も数える**（2026-10-03）。居候だけを見ていたので、別の親から
-  // 移された子・連邦化で束ねられた子は、親が終わったあとも消えた親を指し続けていた。
-  // 押す前の影響の板（`App.endFeatureHere`）も同じ 1 本で数える。
-  const promoted: readonly FeatureId[] =
-    endTime === null
-      ? []
-      : childrenPromotedByEnding(root.histories, intent.featureId, endTime, calendar);
-  let base: readonly FeatureHistory[] = root.histories;
-  if (endTime !== null && promoted.length > 0) {
-    // 起こすのは居候だけ（既に系列を持つ子は `materializeOwnSeries` が触らない）。
-    base = materializeOwnSeries(base, promoted, calendar).histories;
-    base = promoteToTopLevelFrom(base, promoted, endTime, calendar);
+  // 記録の置き場（司令塔の決定 (2)）と所属の記録（増分 7 の手直し 2 回目）:
+  // 存続期間を動かして地物が **居なくなる区間**では、
+  //   - その錨に居候している子・孫を先に自分の系列へ起こし（道連れに消さない）、
+  //   - その区間の中だけ、この地物を指している直接の子の親を外す（区間の外・別の親を指す
+  //     錨は触らない。孫は外さない）、
+  //   - この地物の親の子の並びを時刻ごとの実際の所属に揃える（揃えないと、アプリが
+  //     書いたファイルを開き直すと `child-parent-mismatch` で修復を聞かれていた）。
+  // 押す前の影響の板（`App.endFeatureHere`）も同じ `editFeatureInterval` で数える。
+  const edited = editFeatureInterval(
+    root.histories,
+    intent.featureId,
+    (series) => runIntervalOp(series, intent, intent.anchorId),
+    calendar,
+  );
+  if (!edited.ok) {
+    return {
+      ok: false,
+      reason: edited.reason ?? { code: 'anchorNotFound', id: intent.anchorId },
+    };
   }
-
-  const index = base.findIndex((h) => h.featureId === intent.featureId);
-  const history = index >= 0 ? base[index] : undefined;
-  if (history === undefined) {
-    return { ok: false, reason: { code: 'anchorNotFound', id: intent.anchorId } };
-  }
-
-  const run = runIntervalOp(history.series, intent, intent.anchorId);
-  if (!run.ok) return { ok: false, reason: run.reason };
-
-  const updatedHistory: FeatureHistory = { featureId: history.featureId, series: run.series };
-  const histories = base.map((h, i) => (i === index ? updatedHistory : h));
+  const histories = edited.histories;
+  const promoted = edited.promoted;
   const finalState: DomainRoot = { ...root, histories };
 
   // The feature's identity is unchanged — only its existence interval moved — so it

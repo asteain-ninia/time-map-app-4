@@ -16,10 +16,9 @@
 // 命令なので、取り消しは構築時の histories をそのまま戻すことで対称になる
 // （系列の起こし・消しも同じ 1 段に含まれる）。
 
-import { createAnchor, createAnchorSnapshot, type Anchor } from '../anchor';
-import { applyPastEdit, type AnchorEntry } from '../anchor-series';
-import { pruneVertexStore, withParentId, type Feature } from '../feature';
-import { createVertexStore } from '../vertex';
+import { createAnchor, createAnchorSnapshot } from '../anchor';
+import type { AnchorEntry } from '../anchor-series';
+import { pruneVertexStore, type Feature } from '../feature';
 import { deriveAnchorId } from '../anchor-id';
 import { asAnchorId, idToString, type FeatureId } from '../ids';
 import type { FeatureHistory } from '../persistence/serialize';
@@ -48,7 +47,8 @@ export function hasOwnSeries(
 /**
  * `ownerId` の歴史の錨の中に居候している地物の id（`ownerId` 自身は除く）。
  * 自分の系列を持つものは既に独立しているので除く。まとめ役を消す／終わらせる前に、
- * 記録を起こすべき相手を数え上げるのに使う（孫も同じ錨に居るので一緒に拾える）。
+ * 記録を起こすべき相手を数え上げるのに使う（孫も同じ錨に居るので一緒に拾える ―― 起こすのは
+ * 孫も含めて全部。最上位にするのは直接の子だけで、それは `interval-edit.ts` が決める）。
  */
 export function residentFeatureIds(
   histories: readonly FeatureHistory[],
@@ -66,49 +66,6 @@ export function residentFeatureIds(
       if (hasOwnSeries(histories, f.id)) continue;
       out.push(f.id);
     }
-  }
-  return out;
-}
-
-/**
- * `featureId` を `at` の年で終わらせたとき、**その年から最上位になる子**（司令塔の決定 (2)）。
- *
- * 2 種類ある:
- *   1. 居候 ―― 自分の系列を持たず、`featureId` の錨の中に居る子（{@link residentFeatureIds}）。
- *      終わらせる前に {@link materializeOwnSeries} で自分の系列を起こす必要がある。
- *   2. **自分の系列を持つ子** ―― 別の親から移された・連邦化で束ねられた子は、記録の置き場の
- *      直し（決定 (1)）で自分の系列を持っている。`at` 以後に生きている錨の自分の姿で
- *      `parentId === featureId` のものを数える（前の年だけ子だったものは数えない）。
- *      これを落とすと、親が終わったあとも子が消えた親を指し続け、開き直すと
- *      `tree-topology / dangling-parent` で修復を聞かれる（2026-10-03 に探針で確認）。
- *
- * 確定（`createAnchorIntervalCommandForRoot`）と、押す前の影響の板（`App.endFeatureHere`）が
- * **この 1 本**で数える（教訓 5.26: 予告と確定で別の数え方を作らない）。
- */
-export function childrenPromotedByEnding(
-  histories: readonly FeatureHistory[],
-  featureId: FeatureId,
-  at: TimePoint,
-  calendar: Calendar,
-): readonly FeatureId[] {
-  const out: FeatureId[] = [...residentFeatureIds(histories, featureId)];
-  const seen = new Set<FeatureId>(out);
-  for (const history of histories) {
-    const id = history.featureId;
-    if (id === featureId || seen.has(id)) continue;
-    const entries = history.series.entries;
-    const childAfter = entries.some((entry, i) => {
-      // `at` 以後に効いている錨だけ。錨が効くのは「自分の終わり」か「次の錨の始まり」の
-      // 早いほうまで（終わりが null でも、次の錨が来ればそこで引き継がれる）。
-      const next = entries[i + 1];
-      const effectiveEnd = entry.end ?? next?.start ?? null;
-      if (effectiveEnd !== null && compare(effectiveEnd, at, calendar) <= 0) return false;
-      const self = entry.anchor.snapshot.features.find((f) => f.id === id);
-      return self?.parentId === featureId;
-    });
-    if (!childAfter) continue;
-    seen.add(id);
-    out.push(id);
   }
   return out;
 }
@@ -258,68 +215,4 @@ export function materializeOwnSeries(
   });
 
   return { histories: rebuilt, materializedIds };
-}
-
-/**
- * `at` の年から先で `featureIds` を最上位にする（parentId を外す）。まとめ役を
- * その年で終わらせたとき、子は道連れにならず最上位として続く（司令塔の決定 (2)）。
- * 呼ぶ前に {@link materializeOwnSeries} で自分の系列を起こしておくこと（居候のままだと
- * 書き込む先が親の錨になり、親が終わると一緒に消える）。
- *
- * - `at` に錨が無ければ `at` に錨を 1 本挿す（その時点の状態を引き継ぐ＝過去編集の作法）。
- * - `at` より後の錨からも parentId を外す（carry-forward が親を連れ戻さないように）。
- * - `at` より前の錨は触らない（終わる前は子のままだったという記録を残す）。
- */
-export function promoteToTopLevelFrom(
-  histories: readonly FeatureHistory[],
-  featureIds: readonly FeatureId[],
-  at: TimePoint,
-  calendar: Calendar,
-): readonly FeatureHistory[] {
-  let next = histories;
-  for (const id of featureIds) {
-    const index = next.findIndex((h) => h.featureId === id);
-    if (index < 0) continue;
-    const history = next[index];
-    if (history === undefined) continue;
-    const edited = applyPastEdit(
-      history.series,
-      at,
-      (effective): Anchor => {
-        const base =
-          effective.kind === 'present'
-            ? effective.entry.anchor.snapshot
-            : createAnchorSnapshot([], createVertexStore([]));
-        const features = base.features.map((f) =>
-          f.id === id ? withParentId(f, undefined) : f,
-        );
-        return createAnchor(
-          deriveAnchorId(id, at),
-          createAnchorSnapshot(features, base.vertices),
-        );
-      },
-      calendar,
-    );
-    const entries = edited.entries.map((entry) => {
-      if (compare(entry.start, at, calendar) <= 0) return entry;
-      let touched = false;
-      const features = entry.anchor.snapshot.features.map((f) => {
-        if (f.id !== id) return f;
-        if (f.parentId === undefined) return f;
-        touched = true;
-        return withParentId(f, undefined);
-      });
-      if (!touched) return entry;
-      return {
-        anchor: createAnchor(
-          entry.anchor.id,
-          createAnchorSnapshot(features, entry.anchor.snapshot.vertices),
-        ),
-        start: entry.start,
-        end: entry.end,
-      };
-    });
-    next = next.map((h, i) => (i === index ? { featureId: id, series: { entries } } : h));
-  }
-  return next;
 }
