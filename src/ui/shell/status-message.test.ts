@@ -71,3 +71,43 @@ describe('StatusMessageStore（設計書 §H.5）', () => {
     expect(listener).not.toHaveBeenCalled();
   });
 });
+
+// 増分 8C の手直し（反証 #2）: 結果の文に添えるボタン（「測量の線を消しました［戻す］」）。
+describe('StatusMessageStore — 結果に添えるボタン（増分 8C の手直し）', () => {
+  const action = { label: '戻す', run: () => undefined };
+
+  it('ボタンつきで出せる。同じ文・同じ色味・同じボタンなら差し替えない（同一性を保つ）', () => {
+    const store = new StatusMessageStore();
+    const listener = vi.fn();
+    store.subscribe(listener);
+    store.set('測量の線を消しました', STATUS_TONE.Success, action);
+    const first = store.get();
+    expect(first?.action).toBe(action);
+    store.set('測量の線を消しました', STATUS_TONE.Success, action);
+    expect(store.get()).toBe(first);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('同じ文でもボタンの無い結果が来たら、ボタンの無い結果に置き換わる', () => {
+    const store = new StatusMessageStore();
+    store.set('測量の線を消しました', STATUS_TONE.Success, action);
+    store.success('測量の線を消しました');
+    expect(store.get()?.action).toBeUndefined();
+  });
+
+  it('dropAction はそのボタンを持つ結果のボタンだけを外し、文と色味は残す', () => {
+    const store = new StatusMessageStore();
+    store.set('測量の線を消しました', STATUS_TONE.Success, action);
+    store.dropAction(action);
+    expect(store.get()).toEqual({ text: '測量の線を消しました', tone: STATUS_TONE.Success });
+  });
+
+  it('dropAction は別の結果に置き換わっていれば何もしない（新しい結果を消さない）', () => {
+    const store = new StatusMessageStore();
+    store.set('測量の線を消しました', STATUS_TONE.Success, action);
+    store.failure('保存できませんでした。');
+    const current = store.get();
+    store.dropAction(action);
+    expect(store.get()).toBe(current);
+  });
+});

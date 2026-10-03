@@ -18,6 +18,7 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { createCommandResult } from '../../domain/command/result';
 import { asFeatureId } from '../../domain/ids';
 import { SURVEY_PHASE } from '../../domain/survey/index';
 
@@ -273,5 +274,68 @@ describe('survey slice never touches the persisted truth (非保存 UI display)'
     store.getState().setActiveTool(asToolId('add.area'));
 
     expect(store.getState().survey).toBe(before);
+  });
+});
+
+// --- 増分 8C の手直し（反証 #2）: 消した線を戻す覚えと、それを捨てる契機 ----------------
+
+describe('surveyRestoreRemovedLine — 直前に消した線を戻す（増分 8C の手直し）', () => {
+  /** 線を 2 本測ってから 1 本目を消した状態。 */
+  function removedOne() {
+    const store = makeStore({ mode: EDIT_MODE.Edit });
+    store.getState().surveyEnable();
+    store.getState().surveyClickPoint(P1);
+    store.getState().surveyClickPoint(P2);
+    store.getState().surveyClickPoint(P2);
+    store.getState().surveyClickPoint(P3);
+    const ids = store.getState().survey.lines.map((l) => l.id);
+    store.getState().surveyRemoveLine(ids[0]!);
+    expect(store.getState().survey.removed).not.toBeNull();
+    return { store, ids };
+  }
+
+  it('消した線を元の位置へ戻し、true を返す。覚えが無ければ false で何も書かない', () => {
+    const { store, ids } = removedOne();
+    expect(store.getState().surveyRestoreRemovedLine()).toBe(true);
+    expect(store.getState().survey.lines.map((l) => l.id)).toEqual(ids);
+    const after = store.getState().survey;
+    expect(store.getState().surveyRestoreRemovedLine()).toBe(false);
+    expect(store.getState().survey).toBe(after);
+  });
+
+  it('地物の編集（applyCommandResult）で覚えを捨てる ―― そのあとの Ctrl+Z は地物の取り消しへ', () => {
+    const { store } = removedOne();
+    const lines = store.getState().survey.lines;
+    store.getState().applyCommandResult({ tag: 'd1' }, createCommandResult({}));
+    expect(store.getState().survey.removed).toBeNull();
+    expect(store.getState().survey.lines).toBe(lines);
+    expect(store.getState().surveyRestoreRemovedLine()).toBe(false);
+  });
+
+  it('地物の取り消し／やり直し（applyUndoRedoResult）でも覚えを捨てる', () => {
+    const { store } = removedOne();
+    store.getState().applyUndoRedoResult({ tag: 'd0' }, createCommandResult({}));
+    expect(store.getState().survey.removed).toBeNull();
+  });
+
+  it('道具の持ち替え・鍵の切り替えで覚えを捨てる', () => {
+    const a = removedOne().store;
+    a.getState().setActiveTool(asToolId('edit.knife'));
+    expect(a.getState().survey.removed).toBeNull();
+    const b = removedOne().store;
+    b.getState().setMode(EDIT_MODE.View);
+    expect(b.getState().survey.removed).toBeNull();
+  });
+
+  it('覚えが無いときの編集・持ち替えは survey の参照を変えない（測量の層を描き直させない）', () => {
+    const store = makeStore({ mode: EDIT_MODE.Edit });
+    store.getState().surveyEnable();
+    store.getState().surveyClickPoint(P1);
+    store.getState().surveyClickPoint(P2);
+    const before = store.getState().survey;
+    store.getState().applyCommandResult({ tag: 'd1' }, createCommandResult({}));
+    store.getState().setActiveTool(asToolId('edit.knife'));
+    expect(store.getState().survey.lines).toBe(before.lines);
+    expect(store.getState().survey.removed).toBeNull();
   });
 });
