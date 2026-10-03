@@ -70,6 +70,49 @@ export function residentFeatureIds(
   return out;
 }
 
+/**
+ * `featureId` を `at` の年で終わらせたとき、**その年から最上位になる子**（司令塔の決定 (2)）。
+ *
+ * 2 種類ある:
+ *   1. 居候 ―― 自分の系列を持たず、`featureId` の錨の中に居る子（{@link residentFeatureIds}）。
+ *      終わらせる前に {@link materializeOwnSeries} で自分の系列を起こす必要がある。
+ *   2. **自分の系列を持つ子** ―― 別の親から移された・連邦化で束ねられた子は、記録の置き場の
+ *      直し（決定 (1)）で自分の系列を持っている。`at` 以後に生きている錨の自分の姿で
+ *      `parentId === featureId` のものを数える（前の年だけ子だったものは数えない）。
+ *      これを落とすと、親が終わったあとも子が消えた親を指し続け、開き直すと
+ *      `tree-topology / dangling-parent` で修復を聞かれる（2026-10-03 に探針で確認）。
+ *
+ * 確定（`createAnchorIntervalCommandForRoot`）と、押す前の影響の板（`App.endFeatureHere`）が
+ * **この 1 本**で数える（教訓 5.26: 予告と確定で別の数え方を作らない）。
+ */
+export function childrenPromotedByEnding(
+  histories: readonly FeatureHistory[],
+  featureId: FeatureId,
+  at: TimePoint,
+  calendar: Calendar,
+): readonly FeatureId[] {
+  const out: FeatureId[] = [...residentFeatureIds(histories, featureId)];
+  const seen = new Set<FeatureId>(out);
+  for (const history of histories) {
+    const id = history.featureId;
+    if (id === featureId || seen.has(id)) continue;
+    const entries = history.series.entries;
+    const childAfter = entries.some((entry, i) => {
+      // `at` 以後に効いている錨だけ。錨が効くのは「自分の終わり」か「次の錨の始まり」の
+      // 早いほうまで（終わりが null でも、次の錨が来ればそこで引き継がれる）。
+      const next = entries[i + 1];
+      const effectiveEnd = entry.end ?? next?.start ?? null;
+      if (effectiveEnd !== null && compare(effectiveEnd, at, calendar) <= 0) return false;
+      const self = entry.anchor.snapshot.features.find((f) => f.id === id);
+      return self?.parentId === featureId;
+    });
+    if (!childAfter) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
 interface Occurrence {
   readonly historyIndex: number;
   readonly entryIndex: number;

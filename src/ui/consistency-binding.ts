@@ -71,8 +71,8 @@ import { ANCHOR_INTERVAL_OP } from './property/index';
 import { deleteFeatureFromHistories } from '../domain/deletion/index';
 import {
   materializeOwnSeries,
+  childrenPromotedByEnding,
   promoteToTopLevelFrom,
-  residentFeatureIds,
 } from '../domain/affiliation/materialize';
 import { getCalendar, type Calendar } from '../domain/time/calendar';
 import { validate as validateTimePoint } from '../domain/time/validate';
@@ -1155,10 +1155,16 @@ export function createAnchorIntervalCommandForRoot(
   // 全部の年ぶん自分の系列へ起こし、終わる年から parentId を外す。
   const endTime =
     intent.op === ANCHOR_INTERVAL_OP.SetEnd && intent.newEnd !== null ? intent.newEnd : null;
+  // **自分の系列を持つ子も数える**（2026-10-03）。居候だけを見ていたので、別の親から
+  // 移された子・連邦化で束ねられた子は、親が終わったあとも消えた親を指し続けていた。
+  // 押す前の影響の板（`App.endFeatureHere`）も同じ 1 本で数える。
   const promoted: readonly FeatureId[] =
-    endTime === null ? [] : residentFeatureIds(root.histories, intent.featureId);
+    endTime === null
+      ? []
+      : childrenPromotedByEnding(root.histories, intent.featureId, endTime, calendar);
   let base: readonly FeatureHistory[] = root.histories;
   if (endTime !== null && promoted.length > 0) {
+    // 起こすのは居候だけ（既に系列を持つ子は `materializeOwnSeries` が触らない）。
     base = materializeOwnSeries(base, promoted, calendar).histories;
     base = promoteToTopLevelFrom(base, promoted, endTime, calendar);
   }

@@ -212,7 +212,7 @@ import './map/grid-toggle.css';
 import { buildForest } from '../domain/hierarchy/forest';
 // 増分 7: 所属変更の対象展開（FR-48 後半）と、削除の影響の説明（設計書 §A.3）。
 import { planAffiliationTargets } from '../domain/affiliation/index';
-import { hasOwnSeries, residentFeatureIds } from '../domain/affiliation/materialize';
+import { childrenPromotedByEnding, hasOwnSeries } from '../domain/affiliation/materialize';
 import { deletionStateFromHistories, describeDeletionImpact } from '../domain/deletion/index';
 import { maxDerivedDepth } from '../domain/hierarchy/depth';
 import { FEATURE_KIND, featureDisplayName } from '../domain/feature';
@@ -2175,12 +2175,13 @@ export function App(): JSX.Element {
       // ことにしました」と読めない文になっていた。
       const name = featureNameOf(featureId) ?? '';
       // **子が居るときだけ板を出す**（決定 (2) / 実装係 2 の判断。進捗 増分7.md §12.6）。
-      // 数え上げは確定（`createAnchorIntervalCommandForRoot`）と同じ `residentFeatureIds`
-      // を通し（教訓 5.26 / 5.29: 予告と確定で別の数え方を作らない）、そのうち **この年に
-      // 居る**子だけを「この年から最上位になります」と言う ―― それより前に終わっていた子は
-      // 画面上の姿が変わらない。子が 1 件も居なければ、起きることは「この地物が終わる」
-      // だけで、それはボタンの文がそのまま言っている（Ctrl+Z 1 回で戻る）ので、板は出さない。
-      const promoted = residentFeatureIds(s.domain.histories, featureId).filter(
+      // 数え上げは確定（`createAnchorIntervalCommandForRoot`）と同じ
+      // `childrenPromotedByEnding`（居候＋自分の系列を持つ子）を通し（教訓 5.26 / 5.29:
+      // 予告と確定で別の数え方を作らない）、そのうち **この年に居る**子だけを「この年から
+      // 最上位になります」と言う ―― それより前に終わっていた子は画面上の姿が変わらない。
+      // 子が 1 件も居なければ、起きることは「この地物が終わる」だけで、それはボタンの文が
+      // そのまま言っている（Ctrl+Z 1 回で戻る）ので、板は出さない。
+      const promoted = childrenPromotedByEnding(s.domain.histories, featureId, at, calendar).filter(
         (id) => featureByIdAt(s.domain, at, id) !== null,
       );
       if (promoted.length === 0) {
@@ -2202,7 +2203,7 @@ export function App(): JSX.Element {
         }),
       });
     },
-    [store, endHereRefusalFor, statusMessageStore, featureNameOf, commitEndHere],
+    [store, calendar, endHereRefusalFor, statusMessageStore, featureNameOf, commitEndHere],
   );
 
   /**
