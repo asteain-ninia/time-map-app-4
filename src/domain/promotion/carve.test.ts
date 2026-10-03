@@ -10,8 +10,11 @@ import { describe, expect, it } from 'vitest';
 
 import { createBasicAttributes, createColorInfo } from '../attributes';
 import { createCoordinate } from '../coordinate';
+import { createAnchor, createAnchorSnapshot } from '../anchor';
+import { deriveAnchorId } from '../anchor-id';
 import {
   FEATURE_KIND,
+  createAggregateFeature,
   createLeafFeature,
   isDirectDomainLeaf,
   type Feature,
@@ -26,7 +29,7 @@ import { buildForest, directChildIds } from '../hierarchy/forest';
 import { resolveFeatureArea, resolveLeafShape } from '../hierarchy/resolve-shape';
 import { getCalendar } from '../time/calendar';
 import { timePointYear, type TimePoint } from '../time/time-point';
-import { resolveAt, withEntryEnd } from '../anchor-series';
+import { createAnchorEntry, resolveAt, withEntryEnd } from '../anchor-series';
 import { createGeoParams } from '../geo/geo-params';
 import type { DomainProject } from '../persistence/serialize';
 import { INCONSISTENCY, checkConsistency } from '../persistence/consistency';
@@ -257,5 +260,35 @@ describe('B39 — 面の中に子を順に描くと、平らな形になり修�
     expect(ddHistory.series.entries.map((e) => e.end)).toEqual([timePointYear(1500)]);
     // 終わった後の年には分け残しは居ない。
     expect(effectiveAt(root, timePointYear(1600)).features.some(isDirectDomainLeaf)).toBe(false);
+  });
+
+  it('親が自分の系列を持たない（まとめ役の錨に居候している）面でも、平らに並び整合の検査は空', () => {
+    // 実データの州と同じ形: 「国」（まとめ役）の錨の中に、親の面 P が居候している。
+    const country = asFeatureId('K');
+    const p = square('P', 0, 0, 100, 100, country);
+    const agg = createAggregateFeature(country, createBasicAttributes('国', 0, 3000), COLOR, [P]);
+    const snapshot = createAnchorSnapshot([agg, p.feature], createVertexStore(p.vertices));
+    let root: DomainProject = {
+      ...emptyProject(),
+      histories: [
+        {
+          featureId: country,
+          series: { entries: [createAnchorEntry(createAnchor(deriveAnchorId(country, T0), snapshot), T0, null)] },
+        },
+      ],
+    };
+    expect(checkConsistency(root, calendar).inconsistencies).toHaveLength(0);
+    root = addFirstChild(root, square('C1', 10, 10, 30, 30, P));
+    root = addLaterChild(root, square('C2', 50, 10, 70, 30, P));
+    root = addLaterChild(root, square('C3', 10, 50, 30, 70, P));
+    const eff = effectiveAt(root, T0);
+    const children = directChildIds(buildForest(eff.features), P);
+    const dds = eff.features.filter(isDirectDomainLeaf);
+    expect(dds).toHaveLength(1);
+    expect([...children].sort()).toEqual(
+      [asFeatureId('C1'), asFeatureId('C2'), asFeatureId('C3'), dds[0]!.id].sort(),
+    );
+    const report = checkConsistency(root, calendar);
+    expect(report.inconsistencies, JSON.stringify(report.inconsistencies)).toHaveLength(0);
   });
 });
