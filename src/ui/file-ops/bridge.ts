@@ -105,7 +105,7 @@ export interface FileOpsHost {
    */
   readonly reportRepairDiscards?: (count: number) => void;
   /** 「そのまま残す」で読み込んだ地物の数を、反映のあとで知らせる（2026-10-04）。省略可。 */
-  readonly reportRepairKept?: (count: number) => void;
+  readonly reportRepairKept?: (count: number, discarded: number) => void;
   /**
    * 未保存警告の「保存して続行」から呼ばれる保存（A3）。**上書き確認を通す**ので
    * `save` とは別の口にしてある: これまでこの枝だけが確認を素通りして、読み込み元の

@@ -111,6 +111,12 @@ export const REPAIR_OPTION = {
    * 読み込みを止めず、親を消さずに開ける道を残す。読み込んだあとに件数を知らせる。
    */
   KeepLeafWithChildren: 'keep-leaf-with-children',
+  /**
+   * 末端排他違反 / 錨間オーバーラップ → **そのまま残して読み込む**（重なりは残る。記録を何も
+   * 変えない。2026-10-04、B39 の戻しの再検証 / B91）。以前の選択肢は「一方を除外」だけで、
+   * それが既定だったので、何も触らずに押すと利用者の描いた地物が消えた。こちらを既定にする。
+   */
+  KeepOverlap: 'keep-overlap',
   /** リング階層不整合（穴の親不在・包含/交差違反など）→ 当該地物を除外する。 */
   DropRingHierarchyFeature: 'drop-ring-hierarchy-feature',
   /** 末端排他違反 / 錨間オーバーラップ → 当該地物の一方を除外する。 */
@@ -159,6 +165,8 @@ const LABELS: Readonly<Record<RepairOptionId, string>> = {
     '直轄領（元の形状から下位領域を除いた領域）を生成して集約化し、元の領域を保持したまま修復します（地物は削除しません）。',
   [REPAIR_OPTION.KeepLeafWithChildren]:
     'この地物をそのまま残して読み込みます（記録は何も変えません。下位領域と重なって見えるので、あとで整えてください）。',
+  [REPAIR_OPTION.KeepOverlap]:
+    'そのまま残して読み込みます（重なりは残ります。記録は何も変えません）。',
   [REPAIR_OPTION.DropRingHierarchyFeature]:
     'リング階層（領土と穴の入れ子関係・包含）が壊れている地物を読み込みから除外します。',
   [REPAIR_OPTION.DropOverlappingFeature]: '重なっている地物の一方を読み込みから除外します。',
@@ -243,7 +251,8 @@ export function repairOptionsFor(inc: Inconsistency): RepairOption[] {
       return [opt(REPAIR_OPTION.DropRingHierarchyFeature)];
     case INCONSISTENCY.TerminalExclusion:
     case INCONSISTENCY.AnchorSpatialOverlap:
-      return [opt(REPAIR_OPTION.DropOverlappingFeature)];
+      // **既定は「そのまま残す」**（2026-10-04、B91）。除外は最後の手段。
+      return [opt(REPAIR_OPTION.KeepOverlap), opt(REPAIR_OPTION.DropOverlappingFeature)];
     case INCONSISTENCY.AggregateSumMismatch:
       return [opt(REPAIR_OPTION.DropAggregateFeature)];
     case INCONSISTENCY.TimeConflict:
@@ -1141,6 +1150,120 @@ function orphanResidentsWithOwnSeries(
  * 件数が出るのはいまのところ「各地物に自分の年表を作って残す」だけ（同じ年に自分の系列の
  * 記録と食い違う孤立した歴史の記録は、自分の系列の側を正として捨てる）。
  */
+/** 記録を何も変えずに「そのまま残す」選択肢（読み込みの流れが、その行を残したまま開く）。 */
+export const KEEP_REPAIR_OPTIONS: ReadonlySet<RepairOptionId> = new Set<RepairOptionId>([
+  REPAIR_OPTION.KeepLeafWithChildren,
+  REPAIR_OPTION.KeepOverlap,
+]);
+
+/** {@link repairOptionsInContext} の結果: 並べた選択肢と、並びを変えた理由（1 行。無ければ省略）。 */
+export interface RepairOptionsInContext {
+  readonly options: readonly RepairOption[];
+  readonly note?: string;
+}
+
+/** 子を持つ末端の行で、既定を「そのまま残す」にしたときの 1 行の理由。 */
+export const KEEP_LEAF_WITH_CHILDREN_NOTE = 'この形は自動では整わないので、そのまま開きます。';
+
+/**
+ * 読み込んだプロジェクトを見て選択肢を並べる（2026-10-04、B39 の戻しの再検証のガード B）。
+ * 子を持つ末端の行で、分け残しを作る修復では解けきらない形なら、既定（先頭）を「そのまま残す」
+ * にし、「分け残しを作る」を 2 番目に置く。判定は修復を当てずにできる
+ * （{@link leafWithChildrenMayNotSettle}）。それ以外は {@link repairOptionsFor} のまま。純粋。
+ */
+export function repairOptionsInContext(
+  inc: Inconsistency,
+  project: DomainProject,
+  calendar: Calendar,
+): RepairOptionsInContext {
+  const options = repairOptionsFor(inc);
+  const targetId = inc.featureIds[0];
+  if (
+    inc.kind !== INCONSISTENCY.ShapePreservation ||
+    inc.detail !== SHAPE_DETAIL_LEAF_WITH_CHILDREN ||
+    targetId === undefined ||
+    !leafWithChildrenMayNotSettle(project, targetId, calendar)
+  ) {
+    return { options };
+  }
+  const keep = options.find((o) => o.id === REPAIR_OPTION.KeepLeafWithChildren);
+  if (keep === undefined) return { options };
+  return {
+    options: [keep, ...options.filter((o) => o.id !== REPAIR_OPTION.KeepLeafWithChildren)],
+    note: KEEP_LEAF_WITH_CHILDREN_NOTE,
+  };
+}
+
+/**
+ * 子を持つ末端 `targetId` が、分け残しを作る修復で解けきらないかもしれない形か（修復を当てずに
+ * 判定する）。次のどちらかなら真:
+ *
+ *   - 親が、子の現れる年より後・子の居なくなる年より前に錨を持つ（親の記録が子の居る間に変わる）。
+ *   - 子が、親の次の錨より前に居なくなる（子の居なくなった年から親の錨が作り替えられない）。
+ *
+ * どちらも、分け残しが親の後ろの記録の上に居残る・親の土地に穴があく・隣を除外する修復へ
+ * 進む形（再検証 3-1・2-1）。純粋。
+ */
+export function leafWithChildrenMayNotSettle(
+  project: DomainProject,
+  targetId: FeatureId,
+  calendar: Calendar,
+): boolean {
+  const parentStarts: TimePoint[] = [];
+  const pieces = new Map<FeatureId, TimeInterval[]>();
+  for (const history of project.histories) {
+    const entries = history.series.entries;
+    entries.forEach((entry, i) => {
+      const feats = entry.anchor.snapshot.features;
+      if (feats.some((f) => f.id === targetId)) parentStarts.push(entry.start);
+      const next = entries[i + 1];
+      const end =
+        entry.end === null
+          ? (next?.start ?? null)
+          : next !== undefined && compare(next.start, entry.end, calendar) < 0
+            ? next.start
+            : entry.end;
+      for (const f of feats) {
+        if (f.id === targetId || f.parentId !== targetId) continue;
+        const list = pieces.get(f.id) ?? [];
+        list.push({ start: entry.start, end });
+        pieces.set(f.id, list);
+      }
+    });
+  }
+  // 子ごとに、途切れずに続いている区間へつなぐ（錨が割れているだけの所は「居なくなる」ではない）。
+  const childRuns: TimeInterval[] = [];
+  for (const list of pieces.values()) {
+    const sorted = [...list].sort((x, y) => compare(x.start, y.start, calendar));
+    let cur: { start: TimePoint; end: TimePoint | null } | null = null;
+    for (const iv of sorted) {
+      if (cur !== null && cur.end !== null && compare(iv.start, cur.end, calendar) <= 0) {
+        if (iv.end === null || compare(iv.end, cur.end, calendar) > 0) cur.end = iv.end;
+        continue;
+      }
+      if (cur !== null) childRuns.push(cur);
+      cur = { start: iv.start, end: iv.end };
+    }
+    if (cur !== null) childRuns.push(cur);
+  }
+  for (const run of childRuns) {
+    // 親が子の居る間（現れた年より後・居なくなる年より前）に錨を持つ。
+    const inside = parentStarts.some(
+      (s) =>
+        compare(s, run.start, calendar) > 0 && (run.end === null || compare(s, run.end, calendar) < 0),
+    );
+    if (inside) return true;
+    // 子が親の次の錨より前に居なくなる（親の次の錨が無ければ、居なくなること自体）。
+    if (run.end !== null) {
+      const nextParent = parentStarts
+        .filter((s) => compare(s, run.start, calendar) > 0)
+        .sort((a, b) => compare(a, b, calendar))[0];
+      if (nextParent === undefined || compare(run.end, nextParent, calendar) < 0) return true;
+    }
+  }
+  return false;
+}
+
 export function applyRepairWithReport(
   project: DomainProject,
   inc: Inconsistency,
@@ -1187,6 +1310,7 @@ export function applyRepair(
     case REPAIR_OPTION.MaterializeDirectDomain:
       return materializeDirectDomain(project, inc, calendar);
     case REPAIR_OPTION.KeepLeafWithChildren:
+    case REPAIR_OPTION.KeepOverlap:
       return project; // 記録を変えない（読み込みの流れが、この行を残したまま開く）。
     case REPAIR_OPTION.DetachToTopLevel:
       return detachToTopLevel(project, inc.featureIds);

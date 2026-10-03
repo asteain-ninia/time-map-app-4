@@ -25,10 +25,12 @@ import type { Calendar } from '../../domain/time/calendar';
 import { idToString, type FeatureId } from '../../domain/ids';
 import { repairTargetLabel, type RepairNamer } from './repair-names';
 import {
+  KEEP_REPAIR_OPTIONS,
   REPAIR_OPTION,
   applyRepairWithReport,
   checkConsistency,
   repairOptionsFor,
+  repairOptionsInContext,
   type ConsistencyReport,
   type DomainProject,
   type Inconsistency,
@@ -51,16 +53,30 @@ export interface RepairRow {
   readonly inconsistency: Inconsistency;
   /** The repair options offered for THIS inconsistency's kind (U14, 動的). */
   readonly options: readonly RepairOption[];
+  /** 選択肢の並びを変えた理由（1 行。無ければ省略）。板の行に出す。 */
+  readonly note?: string;
+}
+
+/**
+ * 読み込んだプロジェクト（`context`）があれば、それを見て選択肢を並べる（2026-10-04、B39 の
+ * 戻しの再検証のガード B: 分け残しを作る修復で解けきらない子を持つ末端は「そのまま残す」が既定）。
+ * 板と適用は **同じ context で** 行を作ること（並びが割れると既定が食い違う）。
+ */
+export interface RepairRowContext {
+  readonly project: DomainProject;
+  readonly calendar: Calendar;
 }
 
 /** Build the per-inconsistency rows from a U14 report (option lists from U14). */
-export function buildRepairRows(report: ConsistencyReport): RepairRow[] {
-  return report.inconsistencies.map((inconsistency, index) => ({
-    index,
-    inconsistency,
-    // 種別ごとに U14 から動的に取得 (過剰共有しない, 受け入れ基準 3).
-    options: repairOptionsFor(inconsistency),
-  }));
+export function buildRepairRows(report: ConsistencyReport, context?: RepairRowContext): RepairRow[] {
+  return report.inconsistencies.map((inconsistency, index) => {
+    if (context === undefined) {
+      // 種別ごとに U14 から動的に取得 (過剰共有しない, 受け入れ基準 3).
+      return { index, inconsistency, options: repairOptionsFor(inconsistency) };
+    }
+    const { options, note } = repairOptionsInContext(inconsistency, context.project, context.calendar);
+    return { index, inconsistency, options, ...(note === undefined ? {} : { note }) };
+  });
 }
 
 /**
@@ -323,14 +339,19 @@ export type RepairApplyResult =
       readonly kept?: readonly Inconsistency[];
     };
 
-/** 「そのまま残す」を選んだ不整合と同じもの（種類・内訳・対象の地物が同じ。年は問わない）か。 */
+/**
+ * 「そのまま残す」を選んだ不整合と同じもの（種類・内訳・対象の地物が同じ。年は問わない）か。
+ * 子を持つ末端は親（先頭の id）で、重なりは組（id の集合）で見る。
+ */
 function sameKeptIssue(kept: Inconsistency, inc: Inconsistency): boolean {
-  return (
-    kept.kind === inc.kind &&
-    kept.detail === inc.detail &&
-    kept.featureIds[0] !== undefined &&
-    kept.featureIds[0] === inc.featureIds[0]
-  );
+  if (kept.kind !== inc.kind || kept.detail !== inc.detail) return false;
+  if (kept.kind === 'shape-preservation') {
+    return kept.featureIds[0] !== undefined && kept.featureIds[0] === inc.featureIds[0];
+  }
+  if (kept.featureIds.length === 0 || kept.featureIds.length !== inc.featureIds.length) return false;
+  const a = [...kept.featureIds].map(String).sort();
+  const b = [...inc.featureIds].map(String).sort();
+  return a.every((id, i) => id === b[i]);
 }
 
 /**
@@ -375,7 +396,7 @@ export function applyChosenRepairs(
     const optionId = choices.get(row.index);
     // allChoicesMade guarantees presence; the guard keeps the type total.
     if (optionId === undefined) return { outcome: REPAIR_OUTCOME.Incomplete };
-    if (optionId === REPAIR_OPTION.KeepLeafWithChildren) kept.push(row.inconsistency);
+    if (KEEP_REPAIR_OPTIONS.has(optionId)) kept.push(row.inconsistency);
     const applied = applyRepairWithReport(current, row.inconsistency, optionId, calendar);
     current = applied.project;
     discardedRecords += applied.discardedRecords;

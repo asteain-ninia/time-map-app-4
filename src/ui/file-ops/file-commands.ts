@@ -148,7 +148,7 @@ export interface FileCommandPorts {
    * 修復の板で「そのまま残す」を選んで、子を持つ末端のまま読み込んだ地物の数を知らせる
    * （2026-10-04、B39 の再検証 3-1）。記録は変えていないので、利用者が後で整えられるよう言う。
    */
-  readonly reportRepairKept?: (count: number) => void;
+  readonly reportRepairKept?: (count: number, discarded: number) => void;
 }
 
 /** 反映のときに添える事情（増分 8D の手直し）。 */
@@ -211,15 +211,12 @@ async function completeLoad(ports: FileCommandPorts, transport: LoadTransport): 
   // and is NOT a failure to notify about (受け入れ基準 3: 中止は静かに現状維持).
   const choices = await ports.promptRepair(step.report, false, project);
   if (choices === null) return;
-  const rows = buildRepairRows(step.report);
+  const rows = buildRepairRows(step.report, { project, calendar: ports.calendar });
   const applied = applyChosenRepairs(project, rows, choices, ports.calendar);
   // 教訓 5.22: reflect ONLY when the repaired project is fully consistent.
   if (applied.outcome === REPAIR_OUTCOME.Applied) {
     ports.reflectProject(applied.project, transport.ok ? transport.path : '', { repaired: true });
-    if (applied.discardedRecords > 0) ports.reportRepairDiscards?.(applied.discardedRecords);
-    if (applied.kept !== undefined && applied.kept.length > 0) {
-      ports.reportRepairKept?.(keptFeatureCount(applied.kept));
-    }
+    reportOutcome(ports, applied.discardedRecords, applied.kept);
     return;
   }
   if (applied.outcome === REPAIR_OUTCOME.Unresolved) {
@@ -234,7 +231,10 @@ async function completeLoad(ports: FileCommandPorts, transport: LoadTransport): 
       ports.notify(REPAIR_STRINGS.abortedUnresolved);
       return;
     }
-    const retryRows = buildRepairRows(applied.remaining);
+    const retryRows = buildRepairRows(applied.remaining, {
+      project: applied.project,
+      calendar: ports.calendar,
+    });
     const retried = applyChosenRepairs(
       applied.project,
       retryRows,
@@ -244,11 +244,7 @@ async function completeLoad(ports: FileCommandPorts, transport: LoadTransport): 
     );
     if (retried.outcome === REPAIR_OUTCOME.Applied) {
       ports.reflectProject(retried.project, transport.ok ? transport.path : '', { repaired: true });
-      const discarded = applied.discardedRecords + retried.discardedRecords;
-      if (discarded > 0) ports.reportRepairDiscards?.(discarded);
-      if (retried.kept !== undefined && retried.kept.length > 0) {
-        ports.reportRepairKept?.(keptFeatureCount(retried.kept));
-      }
+      reportOutcome(ports, applied.discardedRecords + retried.discardedRecords, retried.kept);
       return;
     }
     // BUG #5: the SECOND attempt is ALSO Unresolved (or Incomplete, which cannot
@@ -340,7 +336,29 @@ export function quitGuard(ports: FileCommandPorts): Promise<boolean> {
   return runUnsavedGuard(ports.guard);
 }
 
-/** 「そのまま残す」を選んだ不整合の対象の地物の数（同じ地物が年ごとに何行あっても 1 つ）。 */
+/** 「そのまま残す」を選んだ不整合の数（同じ地物・同じ組が年ごとに何行あっても 1 つ）。 */
 function keptFeatureCount(kept: readonly Inconsistency[]): number {
-  return new Set(kept.map((k) => k.featureIds[0])).size;
+  return new Set(
+    kept.map((k) =>
+      k.kind === 'shape-preservation'
+        ? `${k.kind}:${String(k.featureIds[0])}`
+        : `overlap:${[...k.featureIds].map(String).sort().join('|')}`,
+    ),
+  ).size;
+}
+
+/**
+ * 修復して読み込んだあとの知らせ。「そのまま残した」ものがあれば、捨てた記録の件数も一緒に
+ * 1 文で言う（状態行は置き換えなので、2 回に分けると先の知らせが消える）。
+ */
+function reportOutcome(
+  ports: FileCommandPorts,
+  discarded: number,
+  kept: readonly Inconsistency[] | undefined,
+): void {
+  if (kept !== undefined && kept.length > 0 && ports.reportRepairKept !== undefined) {
+    ports.reportRepairKept(keptFeatureCount(kept), discarded);
+    return;
+  }
+  if (discarded > 0) ports.reportRepairDiscards?.(discarded);
 }

@@ -256,6 +256,8 @@ interface PendingRepair {
   readonly report: ConsistencyReport;
   /** 対象を名前で呼ぶための引き先（増分 8D の手直し。読み込んだプロジェクトから作る）。 */
   readonly namer: RepairNamer;
+  /** 選択肢を並べるために見るプロジェクト（読み込んだもの。適用と同じ並びにする）。 */
+  readonly project: DomainProject;
   readonly resolve: (choices: RepairChoices | null) => void;
 }
 
@@ -817,6 +819,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
           setPendingRepair({
             report,
             namer: buildRepairNamer(project),
+            project,
             resolve: (choices) => {
               setPendingRepair(null);
               setRepairUnresolved(false);
@@ -947,8 +950,8 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         statusMessagesRef.current?.notice(REPAIR_STRINGS.discarded(count));
       },
       // 「そのまま残す」で読み込んだ地物の数も、反映のあとで状態行に出す（2026-10-04）。
-      reportRepairKept: (count: number) => {
-        statusMessagesRef.current?.notice(REPAIR_STRINGS.kept(count));
+      reportRepairKept: (count: number, discarded: number) => {
+        statusMessagesRef.current?.notice(REPAIR_STRINGS.kept(count, discarded));
       },
       // A3: 未保存警告の「保存して続行」も上書き確認を通す。実体は下の runGuardedSave
       // （ports から作るので参照の輪を ref で切る）。ここへ来る時点で既に破壊的置換の
@@ -1491,6 +1494,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         <RepairDialog
           report={pendingRepair.report}
           namer={pendingRepair.namer}
+          context={{ project: pendingRepair.project, calendar }}
           onResolve={pendingRepair.resolve}
           unresolved={repairUnresolved}
         />
