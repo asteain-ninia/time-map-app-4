@@ -4,10 +4,18 @@
 // 層は `pointer-events: none` で、**一覧の矩形だけ**が押下を受ける（K-2）。
 // **Escape と地図の他所のクリックで必ず消える**（消す経路は `VertexCandidateStore.clear`
 // の 1 本を通る ―― 閉じ方が経路ごとに割れると、閉じたつもりで居座る＝教訓 5.56 / 5.44）。
+//
+// 増分 8A: 閉じ方と鍵盤の持ち主への名乗りは、ほかの一時的な吹き出し（台帳 #5・#13〜#16）と
+// **同じ作法の 1 か所**（`shell/use-dismissable`）を通す。文書全体の押下の捕捉段と Escape で
+// 閉じ、開閉を `onOpenChange` で報せる（App は `popover` を名乗らせる ―― 設計書 §B.5 の
+// `focusOwner = popover`。板ではないので `modal` にはしない）。
+// `role="dialog"`（非モーダル）にしてあるのは、K-2 の走査が板・吹き出しを `role` で
+// 1 枚として数えるためである（中の行の名前が地図の点として返らないように）。
 
-import { useEffect, useRef, useSyncExternalStore, useState } from 'react';
+import { useRef, useSyncExternalStore, useState, useLayoutEffect } from 'react';
 
 import type { FeatureId, VertexId } from '../../domain/ids';
+import { useDismissable } from '../shell/use-dismissable';
 
 import type { VertexCandidateStore } from './vertex-candidates';
 
@@ -16,23 +24,31 @@ export const VERTEX_CANDIDATE_STRINGS = {
   heading: 'この位置の頂点',
   hint: '掴める距離に複数あります。1 つ選んでください。',
   close: '閉じる',
-  unknownFeature: '（名前なし）',
+  more: (count: number): string => `ほか ${String(count)} 件。拡大すると絞れます。`,
 } as const;
 
 /** 一覧の大きさ（地図の端で内側へ寄せるときに使う）。CSS と同じ値。 */
-export const VERTEX_CANDIDATE_WIDTH = 216;
-export const VERTEX_CANDIDATE_MAX_HEIGHT = 180;
+export const VERTEX_CANDIDATE_WIDTH = 280;
+export const VERTEX_CANDIDATE_MAX_HEIGHT = 240;
 /** クリック位置からのずらし（設計書 §B.5 の「右下 8px」）。 */
 export const VERTEX_CANDIDATE_OFFSET = 8;
+
+/** 閉じる契機の指紋（中身では閉じない ―― 新しい一覧が出た瞬間に自分を閉じないように）。 */
+const CLOSE_KEY = 'vertex-candidates';
 
 export interface VertexCandidateListProps {
   readonly store: VertexCandidateStore;
   /** 1 つ選んだ（その頂点を選択にする）。 */
   readonly onPick: (featureId: FeatureId, vertexId: VertexId) => void;
+  /**
+   * 開閉の報せ（鍵盤の持ち主の `popover` を App が導出する）。開いたら true、閉じたとき・
+   * 部品ごと外れたときは false が必ず届く（名乗りっぱなしで鍵盤が戻らない、を作らない）。
+   */
+  readonly onOpenChange?: (open: boolean) => void;
 }
 
 export function VertexCandidateList(props: VertexCandidateListProps): JSX.Element | null {
-  const { store, onPick } = props;
+  const { store, onPick, onOpenChange } = props;
   const state = useSyncExternalStore(
     (l) => store.subscribe(l),
     () => store.get(),
@@ -42,7 +58,7 @@ export function VertexCandidateList(props: VertexCandidateListProps): JSX.Elemen
   const [cellSize, setCellSize] = useState<{ w: number; h: number } | null>(null);
 
   // 地図セルの大きさは、出すたびに測る（窓の大きさが変わっても端で切れない）。
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (state === null) return;
     const cell = boxRef.current?.parentElement;
     if (cell === undefined || cell === null) return;
@@ -50,21 +66,16 @@ export function VertexCandidateList(props: VertexCandidateListProps): JSX.Elemen
     setCellSize({ w: r.width, h: r.height });
   }, [state]);
 
-  // **Escape で必ず消える。** 捕捉段で聞いて、下の道具へ渡さない（一覧が出ている
-  // あいだの Escape は「一覧をやめる」が正しい ―― §D.4 の階段の一番上）。
-  useEffect(() => {
-    if (state === null) return;
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key !== 'Escape') return;
-      e.stopPropagation();
-      e.preventDefault();
-      store.clear();
-    };
-    document.addEventListener('keydown', onKeyDown, true);
-    return () => {
-      document.removeEventListener('keydown', onKeyDown, true);
-    };
-  }, [state, store]);
+  // **Escape と、一覧の外の押下で必ず消える**（作法は台帳 #5 と同じ 1 か所）。
+  // 地図の押下は `mount/input.ts` の側でも押すたびに畳むので、二重に閉じても害は無い
+  // （`clear` は既に空なら何もしない）。
+  useDismissable({
+    open: state !== null,
+    close: () => store.clear(),
+    closeKey: CLOSE_KEY,
+    insideRefs: [boxRef],
+    onOpenChange,
+  });
 
   if (state === null) return null;
 
@@ -81,7 +92,8 @@ export function VertexCandidateList(props: VertexCandidateListProps): JSX.Elemen
       ref={boxRef}
       className="vertex-candidates"
       data-testid="vertex-candidates"
-      role="group"
+      role="dialog"
+      aria-modal="false"
       aria-label={VERTEX_CANDIDATE_STRINGS.heading}
       style={{ left: `${String(Math.round(left))}px`, top: `${String(Math.round(top))}px` }}
     >
@@ -102,14 +114,14 @@ export function VertexCandidateList(props: VertexCandidateListProps): JSX.Elemen
             <button
               type="button"
               data-testid={`vertex-candidate-${String(row.vertexId)}`}
+              // 観測用（選ぶと選択の持ち主になる地物）。真実は持たない。
+              data-feature-id={String(row.featureId)}
               onClick={() => {
                 onPick(row.featureId, row.vertexId);
                 store.clear();
               }}
             >
-              <span className="vertex-candidates__name">
-                {row.featureName === '' ? VERTEX_CANDIDATE_STRINGS.unknownFeature : row.featureName}
-              </span>
+              <span className="vertex-candidates__name">{row.label}</span>
               <span className="vertex-candidates__dist">
                 {`${row.distancePx.toFixed(1)}px`}
               </span>
@@ -117,6 +129,11 @@ export function VertexCandidateList(props: VertexCandidateListProps): JSX.Elemen
           </li>
         ))}
       </ul>
+      {state.more > 0 ? (
+        <p className="vertex-candidates__more" data-testid="vertex-candidates-more">
+          {VERTEX_CANDIDATE_STRINGS.more(state.more)}
+        </p>
+      ) : null}
     </div>
   );
 }

@@ -10,6 +10,7 @@ import type { StoreApi } from 'zustand/vanilla';
 import type { DragSession } from '../../../domain/editing/index';
 import type { DomainProject } from '../../../domain/persistence/index';
 import type { SessionStore } from '../../state/store';
+import type { RubberBand } from '../rubber-band';
 
 /** 真実の根は U14 の永続 {@link DomainProject}（App.tsx の `DomainRoot` と同じもの）。 */
 export type MountDomainRoot = DomainProject;
@@ -34,4 +35,11 @@ export interface MountTransients {
   scheduleEditPreviewRedraw: () => void;
   /** 押下時に保留中の再描画を吐き出して「見える＝掴める」を保つ。描画側が実体を入れる。 */
   flushRedraw: () => void;
+  /**
+   * 増分 8A（N-07）— ドラッグ中の矩形選択の枠。当たり判定側（選択の口を包む
+   * `withRubberBand`）が書き、描画側の `editHandles` が読む。真実は持たない。
+   * 任意にしてあるのは、箱を組む側（App.tsx）の既存の行を書き換えずに足すため
+   * （無い＝枠を描いていない、と同じ意味）。
+   */
+  rubberBand?: RubberBand | null;
 }

@@ -865,3 +865,37 @@ function featureHandleParts(
   }
   return { under, handles: out };
 }
+
+/**
+ * 増分 8A（V9 / 設計書 §H.5「次の一手をボタンにする」）: **いま選んでいる地物の頂点の印が
+ * 上限のせいで出ていないか**。出ていなければ「視野内で数えた頂点の数」と上限を返し、
+ * 出ている（または上限が掛からない・地物が無い・隠れている）なら null。
+ *
+ * 数え方は {@link featureHandleParts} の上限の判定と **同じ入力・同じ順**である ――
+ * 表示の絞り込みで隠れていれば数えない → `computeHandles` → 視野内へ絞る（選択中の頂点は
+ * 視野の外でも残す）→ 上限と比べる。「理由を出しているのに印が出ている／印が無いのに理由が
+ * 出ない」の食い違いは `active-feature-handles.cap-status.test.ts` が描画の結果と突き合わせて
+ * 見る（教訓 5.29）。ドラッグ中のプレビューは見ない（上限の判定はドラッグで変わらない）。
+ */
+export function activeFeatureHandleCapStatus(
+  root: DomainProject,
+  time: TimePoint,
+  activeFeature: FeatureId | null,
+  displayControl: DisplayControlInput,
+  cap: number | undefined,
+  filter: FilterState,
+  selection: HandleSelectionInput,
+  view: HandleView,
+): { readonly counted: number; readonly cap: number } | null {
+  if (activeFeature === null || cap === undefined) return null;
+  const resolution = resolveDisplayFor(root, time, displayControl);
+  if (!isFeatureVisibleUnderFilter(resolution, filter, activeFeature)) return null;
+  const feature =
+    resolution.areaFeaturesById.get(activeFeature) ??
+    resolution.features.find((f) => f.id === activeFeature);
+  if (feature === undefined) return null;
+  const all = computeHandles(feature, resolution.vertices);
+  const highlight = highlightFor(selection, null, activeFeature);
+  const counted = filterHandlesToView(all, view, highlight).vertices.length;
+  return counted > cap ? { counted, cap } : null;
+}

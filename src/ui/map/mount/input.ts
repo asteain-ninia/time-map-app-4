@@ -23,8 +23,12 @@ import {
   type MapCameraInput,
   type SelectionPort,
 } from '../ports';
-import type { NearVertexCandidate } from '../live-hit-test';
-import { VERTEX_CANDIDATE_MIN, type VertexCandidateStore } from '../vertex-candidates';
+import {
+  createVertexCandidateGesture,
+  watchCandidateStaleness,
+  type DescribedVertexCandidate,
+  type VertexCandidateStore,
+} from '../vertex-candidates';
 import type { FeatureId } from '../../../domain/ids';
 import type { MountStore, MountTransients } from './shared';
 
@@ -54,12 +58,15 @@ export interface MountInputOptions {
   readonly contextMenu: ContextMenuPort;
   /**
    * 頂点の候補一覧（設計書 §B.5 の台帳 #12 / V9）。押した位置の掴める距離に頂点が
-   * **2 つ以上**あるときだけ一覧を出し、そうでなければ畳む。渡さなければ何もしない
-   * （honest stub ―― 無い機能を有るように見せない）。
+   * **2 つ以上**あり、**動かさずに離した**ときだけ一覧を出し、そうでなければ畳む
+   * （増分 8A）。渡さなければ何もしない（honest stub ―― 無い機能を有るように見せない）。
    */
   readonly vertexCandidates?: {
     readonly store: VertexCandidateStore;
-    readonly probe: (point: { readonly x: number; readonly y: number }) => readonly NearVertexCandidate[];
+    readonly probe: (point: {
+      readonly x: number;
+      readonly y: number;
+    }) => readonly DescribedVertexCandidate[];
     readonly nameOf: (featureId: FeatureId) => string;
   };
 }
@@ -137,6 +144,22 @@ export function createMountInput(options: MountInputOptions): MountInput {
     return { x: clientX - box.left, y: clientY - box.top };
   };
 
+  // 頂点の候補一覧（#12 / V9）の押下 → 移動 → 解放。世界・年・道具・表示・カメラが
+  // 替わったら、出ている一覧も保留中の候補も捨てる（教訓 5.2）。
+  const candidateGesture =
+    vertexCandidates === undefined
+      ? undefined
+      : createVertexCandidateGesture({
+          store: vertexCandidates.store,
+          probe: vertexCandidates.probe,
+          activeFeature: () => store.getState().selection.activeFeature,
+          nameOf: vertexCandidates.nameOf,
+        });
+  const unwatchCandidates =
+    candidateGesture === undefined
+      ? (): void => {}
+      : watchCandidateStaleness(store, () => candidateGesture.cancel());
+
   // FR-111 ステータスバーのカーソル座標 — the throttled bridge from the map pointer
   // path to the React-external cursor store. TRAILING throttle (the SAME
   // `throttleTrailing` the map-resize path uses — no new throttle implementation):
@@ -178,25 +201,9 @@ export function createMountInput(options: MountInputOptions): MountInput {
     const { x, y } = toSurface(e.clientX, e.clientY);
     // 頂点の候補一覧（#12 / V9）。**押すたびに畳んでから、要るときだけ出し直す** ――
     // 「地図の他所のクリックで必ず消える」を分岐ではなくこの順序で保証する
-    // （閉じ方が経路ごとに割れると、閉じたつもりで居座る＝教訓 5.56）。
-    if (vertexCandidates !== undefined) {
-      vertexCandidates.store.clear();
-      if (pointerButtonFromCode(e.button) === POINTER_BUTTON.Left) {
-        const found = vertexCandidates.probe({ x, y });
-        if (found.length >= VERTEX_CANDIDATE_MIN) {
-          vertexCandidates.store.set({
-            x,
-            y,
-            rows: found.map((c) => ({
-              featureId: c.featureId,
-              vertexId: c.vertexId,
-              featureName: vertexCandidates.nameOf(c.featureId),
-              distancePx: c.distancePx,
-            })),
-          });
-        }
-      }
-    }
+    // （閉じ方が経路ごとに割れると、閉じたつもりで居座る＝教訓 5.56）。出すのは
+    // 動かさずに離したときだけ（増分 8A。下の pointerup）。
+    candidateGesture?.press({ x, y }, pointerButtonFromCode(e.button) === POINTER_BUTTON.Left);
     // Hand the capture target to the dispatcher so IT owns the pan's pointer
     // capture lifecycle end to end: capture on pan-start, release on EVERY
     // teardown path (release / cancel / mode-change abort). hookTarget is a
@@ -208,6 +215,7 @@ export function createMountInput(options: MountInputOptions): MountInput {
   const onPointerMove = (e: PointerEvent): void => {
     const { x, y } = toSurface(e.clientX, e.clientY);
     dispatcher.pointerMove(PointerDispatcher.normalize(e, x, y, true));
+    candidateGesture?.move({ x, y });
   };
   // FR-111 ステータスバーのカーソル座標 — on the map CELL (see `mapCell` above) so it sees
   // moves over the input layer AND over any tool bridge. Pushes into the React-EXTERNAL
@@ -231,9 +239,12 @@ export function createMountInput(options: MountInputOptions): MountInput {
     // The dispatcher releases the pan's pointer capture itself (it owns the
     // capture lifecycle, set in pointerDown above) — no manual release here.
     dispatcher.pointerUp(PointerDispatcher.normalize(e, x, y));
+    // 解放のあとに出す: クリックの選択（最寄りの頂点）が確定してから一覧が出る。
+    candidateGesture?.release({ x, y });
   };
   const onPointerCancel = (e: PointerEvent): void => {
     dispatcher.pointerCancel(e.pointerId);
+    candidateGesture?.cancel();
   };
   const onPointerLeave = (): void => {
     dispatcher.pointerLeave();
@@ -358,6 +369,8 @@ export function createMountInput(options: MountInputOptions): MountInput {
 
   const dispose = (): void => {
     unsubscribeMode();
+    unwatchCandidates();
+    candidateGesture?.cancel();
     hookTarget.removeEventListener('pointerdown', onPointerDown);
     hookTarget.removeEventListener('pointermove', onPointerMove);
     hookTarget.removeEventListener('pointerup', onPointerUp);
