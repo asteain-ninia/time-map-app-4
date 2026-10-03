@@ -16,6 +16,7 @@
 import { computeHandles } from '../../domain/editing/handles';
 import { EDIT_TOOL, type DragSession } from '../../domain/editing/index';
 import type { WorldCoordinate } from '../../domain/coordinate';
+import { shortestLonDeltaDeg } from '../../domain/geo/longitude';
 
 import type { DisplayResolution } from './display-resolution-cache';
 
@@ -39,5 +40,11 @@ export function edgeAddMidpoint(
       e.endVertexId === target.endVertexId &&
       (target.ringId === undefined || e.ringId === target.ringId),
   );
-  return edge?.midpoint;
+  if (edge === undefined) return undefined;
+  // **押した所と同じ経度の巻き（±360°）で返す**（増分 8A の手直し）。中点は [-180, 180) へ
+  // 畳んだ値なので、経度 180° の近くや ±360° の複製の上で押すと、押した点（連続の経度）との
+  // 差が 360° 近くになり、確定の関門が「半周以上動かした」（long-drag）と断っていた。
+  // 押した点から最短の向きで中点へ寄せれば、ドラッグで同じ所まで運んだのと同じ値になる。
+  const mid = edge.midpoint;
+  return { lon: session.start.lon + shortestLonDeltaDeg(session.start.lon, mid.lon), lat: mid.lat };
 }

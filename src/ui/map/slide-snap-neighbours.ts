@@ -725,14 +725,18 @@ export function createNeighboursQuery(
     // regression of this fix): `newVertexId` names a vertex no COMMITTED ring references
     // yet, so this set filters nothing for an edge-add. Pulling a new vertex out of an
     // edge SHARED with a neighbour (FR-30) therefore leaves the neighbour's coincident
-    // edge a static obstacle — geometrically defensible (the new vertex is inserted only
-    // into the dragged feature's own ring, so the neighbour genuinely does stay put), but
-    // it does mean an edge-add always begins ON an obstacle edge and so always takes the
-    // t=0 existing-contact path. Deforming the neighbour instead would require inserting
-    // the reserved id into the NEIGHBOUR's ring too — a share decision owned by the
-    // confirm path, not by this per-frame query. When FR-80 widens this Set, widen it
-    // with COMMITTED vertex ids; edge-add needs its own explicit decision rather than
-    // falling out of this one.
+    // edge a static obstacle, so an edge-add always begins ON an obstacle edge and takes
+    // the t=0 existing-contact path.
+    //
+    // 増分 8A の手直し（反証 重 2）以降、確定の経路は足した頂点を **共有辺の隣の輪にも入れる**
+    // （`applyEditProposal` の `edgeInsert`）。つまり隣は確定でちゃんと一緒に曲がるので、
+    // 「隣はその場に留まる」はもう成り立たない。それでもこの問い合わせは隣の重なる辺を
+    // 動かない壁として残している ―― 隣の側へ引き出す向きは壁に沿って滑らされ、ドラッグ中の
+    // 下書きでは隣の境界が曲がって見えない。データは壊れない（両側に同じ頂点が入る）が、
+    // 隣の側へは引き出しにくい。直すなら「EdgeAdd の両端の辺を引いている隣は曲がる」を
+    // ここで明示的に扱う（docs/現状.md に記録。8A では入れていない）。When FR-80 widens
+    // this Set, widen it with COMMITTED vertex ids; edge-add needs its own explicit decision
+    // rather than falling out of this one.
     //
     // FR-80 (now): the widening is `movingVertexIdsOf`, and it honours that scope note —
     // companions come from the U22 selection set, which holds only DRAWN, COMMITTED

@@ -1630,7 +1630,86 @@ export function applyEditProposal(
       ? h // 対象の履歴は上で引き継ぎ済み。
       : carryVertexForwardIn(h, anchorTime, vertexCarries, calendar),
   );
+  // **辺に足した頂点を、その辺を共有するすべての地物にも入れる**（増分 8A の手直し・反証 重 2）。
+  // 上の 2 本は「既に引かれている頂点の体」を配るだけなので、まだ誰も引いていない新しい
+  // 頂点は届かない。対象の履歴も含めて全履歴を見る ―― まとめ役の子どうしのように、隣が
+  // 同じ錨の写しの中に居ることがあるため（押した地物そのものは既に引いているので飛ばす）。
+  // T より後ろの錨には入れない: 押した地物の後ろの錨にも新しい頂点は無いので、両側とも
+  // 「その辺に頂点が無い」まま揃っている。
+  if (snapshot.edgeInsert !== undefined) {
+    histories = applyEdgeInsertToHistories(
+      histories,
+      featureId,
+      snapshot.edgeInsert,
+      snapshot.sharePair,
+      movedVertices,
+      anchorTime,
+      calendar,
+    );
+  }
   return withHistories(root, histories);
+}
+
+/**
+ * 辺に足した頂点を、**同じ辺（両端の id が続けて並ぶ辺。向きは問わない）を引いている
+ * ほかの地物**の輪・線にも入れる（増分 8A の手直し・反証 重 2）。並べ方の規則は分割の
+ * 「共有辺の途中を切る」（FR-95。{@link insertSeamsIntoFeature}）と同じ 1 本を使う。
+ *
+ * - 入れる id は、確定で吸着が共有に変わったなら **共有先の id**（`applySharePair` が押した
+ *   地物の中で付け替えるのと同じ id）、そうでなければ足した頂点の id。
+ * - その id を既にどこかで引いている地物には入れない（同じ頂点を 2 度引かせない）。
+ * - 頂点の体は、その写しに同じ id の体が無いときだけ足す（共有先の体は正しい座標を持つ）。
+ *
+ * 純関数。変化の無い履歴は同じ値を返す。
+ */
+function applyEdgeInsertToHistories(
+  histories: readonly FeatureHistory[],
+  editedFeatureId: FeatureId,
+  insert: { readonly startVertexId: VertexId; readonly endVertexId: VertexId; readonly vertexId: VertexId },
+  sharePair: { readonly dragged: VertexId; readonly target: VertexId } | undefined,
+  movedVertices: readonly Vertex[],
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): FeatureHistory[] {
+  const added = movedVertices.find((v) => v.id === insert.vertexId);
+  if (added === undefined) return [...histories];
+  const insertedId =
+    sharePair !== undefined && sharePair.dragged === insert.vertexId ? sharePair.target : insert.vertexId;
+  const body = insertedId === added.id ? added : createVertex(insertedId, added.coordinate);
+  const seam: SeamInsertion = { vertex: body, coordinate: body.coordinate };
+  const startIds: ReadonlySet<VertexId> = new Set([insert.startVertexId]);
+  const endIds: ReadonlySet<VertexId> = new Set([insert.endVertexId]);
+  const seamIds: ReadonlySet<VertexId> = new Set([insertedId]);
+  const takes = (f: Feature): boolean =>
+    f.id !== editedFeatureId &&
+    !featureReferences(f, insertedId) &&
+    featureHasSharedEdge(f, startIds, endIds, seamIds);
+
+  return histories.map((history) => {
+    const resolution = resolveAt(history.series, anchorTime, calendar);
+    if (resolution.kind !== 'present') return history;
+    if (!resolution.entry.anchor.snapshot.features.some(takes)) return history;
+    const series = applyPastEdit(
+      history.series,
+      anchorTime,
+      (effective): Anchor => {
+        const effBase =
+          effective.kind === 'present'
+            ? effective.entry.anchor.snapshot
+            : createAnchorSnapshot([], createVertexStore([]));
+        const store =
+          getVertex(effBase.vertices, insertedId) === undefined
+            ? createVertexStore([...effBase.vertices.byId.values(), body])
+            : effBase.vertices;
+        const features = effBase.features.map((f) =>
+          takes(f) ? insertSeamsIntoFeature(f, startIds, endIds, [seam], store) : f,
+        );
+        return anchorFor(features, store, history.featureId, anchorTime);
+      },
+      calendar,
+    );
+    return { featureId: history.featureId, series };
+  });
 }
 
 /** 1 つの履歴に頂点の引き継ぎを掛ける（変化が無ければ同じ値を返す）。 */
