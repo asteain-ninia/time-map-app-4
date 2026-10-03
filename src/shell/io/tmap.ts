@@ -27,6 +27,7 @@ import {
   BASEMAP_ENTRY,
   MANIFEST_ENTRY,
 } from './entry-paths';
+import { SHELL_IO_STRINGS } from './strings';
 
 /** Inputs to {@link buildTmap}: the manifest value plus the binary assets. */
 export interface TmapContents {
@@ -112,19 +113,19 @@ export function readTmap(bytes: Uint8Array, caps: ReadTmapCaps = {}): ReadTmapRe
     return {
       ok: false,
       reason: 'corrupt',
-      message: `ファイルが大きすぎます（上限 ${Math.floor(maxContainer / (1024 * 1024))} MB）。`,
+      message: SHELL_IO_STRINGS.fileTooLarge(Math.floor(maxContainer / (1024 * 1024))),
     };
   }
   const maxTotal = caps.maxTotalBytes ?? MAX_TMAP_TOTAL_BYTES;
   const entryTooLarge = (name: string): ReadTmapResult => ({
     ok: false,
     reason: 'corrupt',
-    message: `エントリ ${name} が大きすぎます（上限 ${Math.floor(maxEntry / (1024 * 1024))} MB）。`,
+    message: SHELL_IO_STRINGS.entryTooLarge(name, Math.floor(maxEntry / (1024 * 1024))),
   });
   const totalTooLarge: ReadTmapResult = {
     ok: false,
     reason: 'corrupt',
-    message: `展開後の合計サイズが大きすぎます（上限 ${Math.floor(maxTotal / (1024 * 1024))} MB）。`,
+    message: SHELL_IO_STRINGS.totalTooLarge(Math.floor(maxTotal / (1024 * 1024))),
   };
   let entries: Record<string, Uint8Array>;
   // Zip-bomb guard, first line: fflate's filter sees each entry's DECLARED expanded
@@ -187,7 +188,7 @@ export function readTmap(bytes: Uint8Array, caps: ReadTmapCaps = {}): ReadTmapRe
       ok: false,
       reason: 'missing-entry',
       entry: MANIFEST_ENTRY,
-      message: `必須エントリ ${MANIFEST_ENTRY} が見つかりません。`,
+      message: SHELL_IO_STRINGS.missingEntry(MANIFEST_ENTRY),
     };
   }
 
@@ -197,7 +198,7 @@ export function readTmap(bytes: Uint8Array, caps: ReadTmapCaps = {}): ReadTmapRe
       ok: false,
       reason: 'missing-entry',
       entry: BASEMAP_ENTRY,
-      message: `必須エントリ ${BASEMAP_ENTRY} が見つかりません。`,
+      message: SHELL_IO_STRINGS.missingEntry(BASEMAP_ENTRY),
     };
   }
 

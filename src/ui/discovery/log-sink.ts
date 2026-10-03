@@ -16,9 +16,10 @@
 
 import { DiagnosticLogger, LOG_LEVEL, type LogEntry, type LogSink } from './log';
 import type { TimeMapApi } from '../../shell/ipc/contract';
+import { DIAGNOSTICS_TEXT } from './strings';
 
 /** The single diagnostic-log message recorded at session start (バージョン・日時 マーカー). */
-export const SESSION_START_MESSAGE = 'セッション開始';
+export const SESSION_START_MESSAGE = DIAGNOSTICS_TEXT.sessionStart;
 
 /** The minimal window-API surface the file sink needs (the U15 typed IPC method). */
 export type DiagnosticLogAppendApi = Pick<TimeMapApi, 'appendLog'>;

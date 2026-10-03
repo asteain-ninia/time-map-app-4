@@ -35,9 +35,9 @@ import {
 } from './ymd-draft';
 
 const UNIT_LABELS: Readonly<Record<StepUnit, string>> = {
-  [STEP_UNIT.Year]: '年',
-  [STEP_UNIT.Month]: '月',
-  [STEP_UNIT.Day]: '日',
+  [STEP_UNIT.Year]: RAIL_STRINGS.unitYear,
+  [STEP_UNIT.Month]: RAIL_STRINGS.unitMonth,
+  [STEP_UNIT.Day]: RAIL_STRINGS.unitDay,
 };
 
 export interface RailControlsProps {
@@ -203,10 +203,10 @@ export function RailControls(props: RailControlsProps): JSX.Element {
 
   const unitGroup = (
     <label className="rail__group rail__unit" data-testid="rail-unit" key="unit">
-      <span className="rail__unit-caption">ステップ単位</span>
+      <span className="rail__unit-caption">{RAIL_STRINGS.unitCaption}</span>
       <select
-        aria-label="ステップ単位"
-        title="前へ/次へ で動かす時間の単位"
+        aria-label={RAIL_STRINGS.unitAriaLabel}
+        title={RAIL_STRINGS.unitTitle}
         value={unit}
         onChange={(e) => { onUnitChange(e.target.value as StepUnit); }}
       >
@@ -227,22 +227,22 @@ export function RailControls(props: RailControlsProps): JSX.Element {
   const ymdGroup = (
     <div className="rail__group rail__ymd" data-testid="rail-ymd" key="ymd">
       <OptionPopover
-        label="月日"
+        label={RAIL_STRINGS.ymdLabel}
         buttonTestId="rail-ymd-button"
         panelTestId="rail-ymd-panel"
         buttonClassName="rail__button rail__button--icon"
         panelClassName="rail__popover"
-        ariaLabel="直接ジャンプの月日"
+        ariaLabel={RAIL_STRINGS.ymdAriaLabel}
         closeKey={closeKey}
         {...(onPopoverOpenChange ? { onOpenChange: onPopoverOpenChange } : {})}
       >
         {() => (
           <div className="rail__popover-row">
             <label className="rail__ymd-field">
-              <span>月</span>
+              <span>{RAIL_STRINGS.ymdMonthCaption}</span>
               <input
                 type="number"
-                aria-label={`${RAIL_STRINGS.jumpFieldTitle} 月`}
+                aria-label={RAIL_STRINGS.jumpFieldMonthLabel(RAIL_STRINGS.jumpFieldTitle)}
                 value={draft.monthText}
                 disabled={!draft.monthSpecified}
                 onChange={(e) => patch({ monthText: e.target.value }, { ymd: true })}
@@ -250,7 +250,7 @@ export function RailControls(props: RailControlsProps): JSX.Element {
               <button
                 type="button"
                 aria-pressed={!draft.monthSpecified}
-                aria-label={`${RAIL_STRINGS.jumpFieldTitle} 月 未指定`}
+                aria-label={RAIL_STRINGS.jumpFieldMonthUnsetLabel(RAIL_STRINGS.jumpFieldTitle)}
                 onClick={() =>
                   patch(
                     draft.monthSpecified
@@ -260,14 +260,14 @@ export function RailControls(props: RailControlsProps): JSX.Element {
                   )
                 }
               >
-                {draft.monthSpecified ? '指定' : '未指定'}
+                {draft.monthSpecified ? RAIL_STRINGS.ymdSpecified : RAIL_STRINGS.ymdUnspecified}
               </button>
             </label>
             <label className="rail__ymd-field">
-              <span>日</span>
+              <span>{RAIL_STRINGS.ymdDayCaption}</span>
               <input
                 type="number"
-                aria-label={`${RAIL_STRINGS.jumpFieldTitle} 日`}
+                aria-label={RAIL_STRINGS.jumpFieldDayLabel(RAIL_STRINGS.jumpFieldTitle)}
                 value={draft.dayText}
                 disabled={!draft.monthSpecified || !draft.daySpecified}
                 onChange={(e) => patch({ dayText: e.target.value }, { ymd: true })}
@@ -275,7 +275,7 @@ export function RailControls(props: RailControlsProps): JSX.Element {
               <button
                 type="button"
                 aria-pressed={!draft.daySpecified}
-                aria-label={`${RAIL_STRINGS.jumpFieldTitle} 日 未指定`}
+                aria-label={RAIL_STRINGS.jumpFieldDayUnsetLabel(RAIL_STRINGS.jumpFieldTitle)}
                 disabled={!draft.monthSpecified}
                 onClick={() =>
                   patch(
@@ -284,7 +284,7 @@ export function RailControls(props: RailControlsProps): JSX.Element {
                   )
                 }
               >
-                {draft.daySpecified ? '指定' : '未指定'}
+                {draft.daySpecified ? RAIL_STRINGS.ymdSpecified : RAIL_STRINGS.ymdUnspecified}
               </button>
             </label>
           </div>
@@ -299,16 +299,16 @@ export function RailControls(props: RailControlsProps): JSX.Element {
    */
   const speedGroup = (
     <label className="timeline-playback__speed" data-testid="rail-speed" key="speed">
-      <span className="timeline-playback__speed-caption">再生速度</span>
+      <span className="timeline-playback__speed-caption">{RAIL_STRINGS.speedCaption}</span>
       <select
-        aria-label="再生速度"
-        title="自動進行の速さ(1倍 = 1年/秒)"
+        aria-label={RAIL_STRINGS.speedAriaLabel}
+        title={RAIL_STRINGS.speedTitle}
         value={playback.speed}
         onChange={(e) => playback.setSpeed(Number(e.target.value) as PlaybackSpeed)}
       >
         {PLAYBACK_SPEEDS.map((s) => (
           <option key={s} value={s}>
-            {s}倍
+            {s}{RAIL_STRINGS.speedTimesSuffix}
           </option>
         ))}
       </select>
@@ -329,20 +329,20 @@ export function RailControls(props: RailControlsProps): JSX.Element {
         className="rail__button"
         data-testid="rail-prev-anchor"
         aria-label={RAIL_STRINGS.prevAnchorLabel}
-        title={`${RAIL_STRINGS.prevAnchorLabel}（[）`}
+        title={RAIL_STRINGS.prevAnchorTitle(RAIL_STRINGS.prevAnchorLabel)}
         onClick={onPrevAnchor}
       >
-        ◀錨
+        {RAIL_STRINGS.prevAnchorButton}
       </button>
       <button
         type="button"
         className="rail__button"
         data-testid="rail-next-anchor"
         aria-label={RAIL_STRINGS.nextAnchorLabel}
-        title={`${RAIL_STRINGS.nextAnchorLabel}（]）`}
+        title={RAIL_STRINGS.nextAnchorTitle(RAIL_STRINGS.nextAnchorLabel)}
         onClick={onNextAnchor}
       >
-        錨▶
+        {RAIL_STRINGS.nextAnchorButton}
       </button>
     </div>
   );
@@ -385,14 +385,14 @@ export function RailControls(props: RailControlsProps): JSX.Element {
           ariaLabel={RAIL_STRINGS.stepBackLabel(1, unitLabel)}
           onStep={() => onStep(unit, -1, 1)}
           icon="◀"
-          label="前へ"
+          label={RAIL_STRINGS.stepBackText}
           labelClassName="timeline-step__label"
         />
         <StepButton
           className="timeline-step__button"
           ariaLabel={RAIL_STRINGS.stepForwardLabel(1, unitLabel)}
           onStep={() => onStep(unit, 1, 1)}
-          label="次へ"
+          label={RAIL_STRINGS.stepForwardText}
           iconAfter="▶"
           labelClassName="timeline-step__label"
         />
@@ -412,7 +412,7 @@ export function RailControls(props: RailControlsProps): JSX.Element {
           type="text"
           inputMode="numeric"
           className="rail__year-input"
-          aria-label={`${RAIL_STRINGS.jumpFieldTitle} 年`}
+          aria-label={RAIL_STRINGS.jumpFieldYearLabel(RAIL_STRINGS.jumpFieldTitle)}
           aria-invalid={refusal !== null}
           title={refusal ?? RAIL_STRINGS.jumpFieldTitle}
           data-pristine={dirty ? 'false' : 'true'}
@@ -434,7 +434,7 @@ export function RailControls(props: RailControlsProps): JSX.Element {
           }}
         />
         <span className="rail__year-unit" aria-hidden="true">
-          年
+          {RAIL_STRINGS.yearUnit}
         </span>
         <button
           type="button"
@@ -464,15 +464,15 @@ export function RailControls(props: RailControlsProps): JSX.Element {
         <button
           type="button"
           className="timeline-playback__button"
-          aria-label={playback.isPlaying ? '一時停止' : '再生'}
+          aria-label={playback.isPlaying ? RAIL_STRINGS.pauseLabel : RAIL_STRINGS.playLabel}
           aria-pressed={playback.isPlaying}
-          title={playback.isPlaying ? '自動進行を一時停止します（Space）' : '時間を自動で進めます（Space）'}
+          title={playback.isPlaying ? RAIL_STRINGS.pauseTitle : RAIL_STRINGS.playTitle}
           onClick={playback.toggle}
         >
           <span aria-hidden="true">{playback.isPlaying ? '⏸' : '▶'}</span>
           {fold !== RAIL_FOLD.KeysOnly && (
             <span className="timeline-playback__label">
-              {playback.isPlaying ? '一時停止' : '再生'}
+              {playback.isPlaying ? RAIL_STRINGS.pauseLabel : RAIL_STRINGS.playLabel}
             </span>
           )}
         </button>
@@ -545,7 +545,7 @@ function ZoomButtons(props: {
         title={RAIL_STRINGS.zoomOutLabel}
         onClick={props.onZoomOut}
       >
-        −
+        {RAIL_STRINGS.zoomOutButton}
       </button>
       <button
         type="button"
@@ -555,7 +555,7 @@ function ZoomButtons(props: {
         title={RAIL_STRINGS.zoomInLabel}
         onClick={props.onZoomIn}
       >
-        ＋
+        {RAIL_STRINGS.zoomInButton}
       </button>
       <button
         type="button"
@@ -565,7 +565,7 @@ function ZoomButtons(props: {
         title={RAIL_STRINGS.zoomFitLabel}
         onClick={props.onZoomFit}
       >
-        全体
+        {RAIL_STRINGS.zoomFitButton}
       </button>
     </>
   );

@@ -76,6 +76,7 @@ import {
   type Inconsistency,
 } from './consistency';
 import type { DomainProject, FeatureHistory } from './serialize';
+import { PERSISTENCE_MESSAGES } from './messages';
 
 // --- repair option descriptors ----------------------------------------------
 
@@ -151,37 +152,35 @@ export interface RepairOption {
 
 const LABELS: Readonly<Record<RepairOptionId, string>> = {
   [REPAIR_OPTION.DropFeatureWithMissingVertex]:
-    '存在しない頂点を参照している地物を読み込みから除外します。',
-  [REPAIR_OPTION.DetachToTopLevel]: '親参照を解除して、この地物を最上位に変更します（全部の年で）。',
+    PERSISTENCE_MESSAGES.repairDropFeatureWithMissingVertex,
+  [REPAIR_OPTION.DetachToTopLevel]: PERSISTENCE_MESSAGES.repairDetachToTopLevel,
   [REPAIR_OPTION.DetachToTopLevelWithin]:
-    '上位領域が居ない年の間だけ、この地物を最上位にします（ほかの年の所属と記録はそのまま残ります）。',
+    PERSISTENCE_MESSAGES.repairDetachToTopLevelWithin,
   [REPAIR_OPTION.RemoveEmptyAggregateIntervals]:
-    '下位領域が 1 件も居ない年の間だけ、このまとめ役を無くします（下位領域の居る年の記録はそのまま残ります）。',
-  [REPAIR_OPTION.DropTopologyFeature]: '階層が壊れている地物を読み込みから除外します。',
+    PERSISTENCE_MESSAGES.repairRemoveEmptyAggregateIntervals,
+  [REPAIR_OPTION.DropTopologyFeature]: PERSISTENCE_MESSAGES.repairDropTopologyFeature,
   [REPAIR_OPTION.ReconcileChildIds]:
-    '集約地物の下位領域一覧（childIds）を、各地物の親参照（parentId）に合わせて再構築します。',
-  [REPAIR_OPTION.DropShapeRoleFeature]: '形状の規則に違反している地物を読み込みから除外します。',
+    PERSISTENCE_MESSAGES.repairReconcileChildIds,
+  [REPAIR_OPTION.DropShapeRoleFeature]: PERSISTENCE_MESSAGES.repairDropShapeRoleFeature,
   [REPAIR_OPTION.MaterializeDirectDomain]:
-    '直轄領（元の形状から下位領域を除いた領域）を生成して集約化し、元の領域を保持したまま修復します（地物は削除しません）。',
-  [REPAIR_OPTION.KeepLeafWithChildren]:
-    'この地物をそのまま残して読み込みます（記録は何も変えません。下位領域と重なって見えるので、あとで整えてください）。',
-  [REPAIR_OPTION.KeepOverlap]:
-    'そのまま残して読み込みます（重なりは残ります。記録は何も変えません）。',
+    PERSISTENCE_MESSAGES.repairMaterializeDirectDomain,
+  [REPAIR_OPTION.KeepLeafWithChildren]: PERSISTENCE_MESSAGES.repairKeepLeafWithChildren,
+  [REPAIR_OPTION.KeepOverlap]: PERSISTENCE_MESSAGES.repairKeepOverlap,
   [REPAIR_OPTION.DropRingHierarchyFeature]:
-    'リング階層（領土と穴の入れ子関係・包含）が壊れている地物を読み込みから除外します。',
-  [REPAIR_OPTION.DropOverlappingFeature]: '重なっている地物の一方を読み込みから除外します。',
-  [REPAIR_OPTION.DropAggregateFeature]: '下位領域と一致しない集約地物を除外し、下位を最上位化します。',
-  [REPAIR_OPTION.NormalizeSeries]: '錨を時間順に整列し、重複・矛盾を解消します。',
+    PERSISTENCE_MESSAGES.repairDropRingHierarchyFeature,
+  [REPAIR_OPTION.DropOverlappingFeature]: PERSISTENCE_MESSAGES.repairDropOverlappingFeature,
+  [REPAIR_OPTION.DropAggregateFeature]: PERSISTENCE_MESSAGES.repairDropAggregateFeature,
+  [REPAIR_OPTION.NormalizeSeries]: PERSISTENCE_MESSAGES.repairNormalizeSeries,
   [REPAIR_OPTION.DropOrphanHistory]:
     // 「空のタイムライン」と呼んでいたが、持ち主が居ないだけで中には地物の記録が残っている
     // （中身のある歴史を「空」と言うのは事実と違う）。本体の取り込みで言い直した。
-    '持ち主の居ない歴史を、中に残っている地物の記録ごと読み込みから除外します（中の地物も消えます）。',
+    PERSISTENCE_MESSAGES.repairDropOrphanHistory,
   [REPAIR_OPTION.MaterializeOrphanHistory]:
-    '持ち主の居ない歴史の中に残っている地物を、全部の年ぶん地物ごとの歴史へ移します（地物は削除しません）。',
+    PERSISTENCE_MESSAGES.repairMaterializeOrphanHistory,
   [REPAIR_OPTION.DropDuplicateOwnerHistories]:
-    '同一地物を所有する歴史が複数あるとき、先頭の歴史のみを残して重複分を読み込みから除外します。',
+    PERSISTENCE_MESSAGES.repairDropDuplicateOwnerHistories,
   [REPAIR_OPTION.ReconcileVertexCoordinate]:
-    '同一の頂点が歴史間で異なる座標を持つとき、最初に現れた座標へすべて揃えます。',
+    PERSISTENCE_MESSAGES.repairReconcileVertexCoordinate,
 };
 
 /**
@@ -1186,8 +1185,8 @@ export interface RepairOptionsInContext {
   readonly note?: string;
 }
 
-/** 子を持つ末端の行で、既定を「そのまま残す」にしたときの 1 行の理由。 */
-export const KEEP_LEAF_WITH_CHILDREN_NOTE = 'この形は自動では整わないので、そのまま開きます。';
+/** 子を持つ末端の行で、既定を「そのまま残す」にしたときの 1 行の理由（文は表から引く）。 */
+export const KEEP_LEAF_WITH_CHILDREN_NOTE = PERSISTENCE_MESSAGES.repairKeepLeafWithChildrenNote;
 
 /**
  * 読み込んだプロジェクトを見て選択肢を並べる（2026-10-04、B39 の戻しの再検証のガード B）。

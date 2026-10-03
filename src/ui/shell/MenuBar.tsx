@@ -15,7 +15,7 @@ import { resolveCommandEnabled } from './permissions';
 import type { EditMode } from '../state/session';
 import { STANDARD_MENUS } from './menu';
 import { Tooltip } from './Tooltip';
-import { TOOLTIPS } from './strings';
+import { APP_STRINGS, TOOLTIPS } from './strings';
 import { detectPlatform, formatShortcut, type Platform } from './shortcuts';
 
 export interface MenuBarProps {
@@ -100,7 +100,7 @@ export function MenuBar(props: MenuBarProps): JSX.Element {
       ref={rootRef}
       className="menubar"
       role="menubar"
-      aria-label="メニューバー"
+      aria-label={APP_STRINGS.menubarAriaLabel}
       data-testid="menubar"
       data-platform={platform}
     >

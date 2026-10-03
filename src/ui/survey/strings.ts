@@ -128,3 +128,9 @@ export function formatDistanceKm(km: number): string {
   });
   return `${rounded} ${SURVEY_STRINGS.unitKm}`;
 }
+
+/** ［測量結果をクリア］のうしろの件数の括弧（`SurveyControls.tsx`）。 */
+export const SURVEY_TEXT = {
+  countOpen: '（',
+  countClose: '）',
+} as const;

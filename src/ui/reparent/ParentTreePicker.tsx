@@ -26,7 +26,7 @@ import {
 } from '../discovery/index';
 import type { DomainFeatureKind } from '../discovery/index';
 
-import { REPARENT_STRINGS } from './strings';
+import { REPARENT_STRINGS, REPARENT_TEXT } from './strings';
 
 /** 候補の木に見せる行数（高さは CSS の `.parent-tree__scroller` と同じ数にする）。 */
 export const PARENT_TREE_VISIBLE_ROWS = 8;
@@ -162,7 +162,7 @@ export function ParentTreePicker(props: ParentTreePickerProps): JSX.Element {
                         type="button"
                         className="parent-tree__expand"
                         data-testid={`${testIdPrefix}-expand-${row.featureId}`}
-                        aria-label={isOpen ? '畳む' : '開く'}
+                        aria-label={isOpen ? REPARENT_TEXT.collapseAriaLabel : REPARENT_TEXT.expandAriaLabel}
                         onClick={() => toggle(row.featureId, isOpen)}
                       >
                         {isOpen ? '▾' : '▸'}

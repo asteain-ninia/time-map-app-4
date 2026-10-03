@@ -40,6 +40,7 @@ import {
   type BasemapAspectChoice,
   type BasemapAspectQuestion,
 } from './basemap-aspect';
+import { BASEMAP_REPLACE_TEXT } from './strings';
 
 /**
  * The base-map `source` marker stamped when a PRESET / empty project adopts a user
@@ -101,7 +102,7 @@ export type BasemapReplaceOutcome =
  * honest no-op, so the user learns WHY nothing changed (拒否理由は通知でも, 教訓 5.26).
  */
 export const BASEMAP_REPLACE_REJECT_NOTICE =
-  '選択した画像をベースマップとして読み込めませんでした（対応形式は PNG / JPEG、寸法・容量の上限内）。差し替えを中止しました。';
+  BASEMAP_REPLACE_TEXT.rejectNotice;
 
 /** The injected ports for {@link runBasemapReplace} (all effects are the caller's). */
 export interface BasemapReplacePorts {

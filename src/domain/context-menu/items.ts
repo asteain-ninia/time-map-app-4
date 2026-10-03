@@ -12,6 +12,7 @@
 // (single source of truth for labels).
 
 import { FLOW_KIND, type FlowKind } from './contracts';
+import { CONTEXT_MENU_ITEM_MESSAGES } from './item-messages';
 
 export const MENU_ITEM_KIND = {
   /** 共通: 削除 (地物全体) → U31. Offered only when NO vertex is selected. */
@@ -99,25 +100,25 @@ export const ITEM_FLOW: Readonly<Record<MenuItemKind, FlowKind>> = {
 export const MENU_ITEM_LABEL: Readonly<Record<MenuItemKind, string>> = {
   // 素性欄のボタン（「この地物を全部の年から消す」）と **同じことを言う**（用語の統一）。
   // 右クリックの「削除」だけが何をどこまで消すのか言っていなかった。
-  [MENU_ITEM_KIND.Delete]: '全部の年から消す',
-  [MENU_ITEM_KIND.DeleteVertex]: '頂点を削除',
-  [MENU_ITEM_KIND.EditProperties]: 'プロパティ編集',
-  [MENU_ITEM_KIND.CreateAnchorHere]: 'この年に錨を作る',
-  [MENU_ITEM_KIND.Unshare]: '共有解除',
-  [MENU_ITEM_KIND.Split]: '分割',
+  [MENU_ITEM_KIND.Delete]: CONTEXT_MENU_ITEM_MESSAGES.delete,
+  [MENU_ITEM_KIND.DeleteVertex]: CONTEXT_MENU_ITEM_MESSAGES.deleteVertex,
+  [MENU_ITEM_KIND.EditProperties]: CONTEXT_MENU_ITEM_MESSAGES.editProperties,
+  [MENU_ITEM_KIND.CreateAnchorHere]: CONTEXT_MENU_ITEM_MESSAGES.createAnchorHere,
+  [MENU_ITEM_KIND.Unshare]: CONTEXT_MENU_ITEM_MESSAGES.unshare,
+  [MENU_ITEM_KIND.Split]: CONTEXT_MENU_ITEM_MESSAGES.split,
   // 用語集 §H.1 の第一表記は「所属を変える」。画面の文言はそちらへ揃える
   // （「所属変更」は説明文の中の名詞としてだけ使う）。
-  [MENU_ITEM_KIND.ChangeAffiliation]: '所属を変える',
-  [MENU_ITEM_KIND.Merge]: '結合',
-  [MENU_ITEM_KIND.HideFeature]: 'この地物を非表示',
-  [MENU_ITEM_KIND.EmphasizeFeature]: 'この地物を強調',
-  [MENU_ITEM_KIND.UnemphasizeFeature]: '強調を解除',
-  [MENU_ITEM_KIND.MarkTarget]: '対象に加える',
-  [MENU_ITEM_KIND.UnmarkTarget]: '対象から外す',
-  [MENU_ITEM_KIND.MarkSubtree]: 'その全下位領域を対象にする',
-  [MENU_ITEM_KIND.ReparentMarked]: '選んだものの所属をまとめて変える',
-  [MENU_ITEM_KIND.BulkKindLabel]: 'まとめて種別を付ける',
-  [MENU_ITEM_KIND.EndHere]: 'この年に終わったことにする',
+  [MENU_ITEM_KIND.ChangeAffiliation]: CONTEXT_MENU_ITEM_MESSAGES.changeAffiliation,
+  [MENU_ITEM_KIND.Merge]: CONTEXT_MENU_ITEM_MESSAGES.merge,
+  [MENU_ITEM_KIND.HideFeature]: CONTEXT_MENU_ITEM_MESSAGES.hideFeature,
+  [MENU_ITEM_KIND.EmphasizeFeature]: CONTEXT_MENU_ITEM_MESSAGES.emphasizeFeature,
+  [MENU_ITEM_KIND.UnemphasizeFeature]: CONTEXT_MENU_ITEM_MESSAGES.unemphasizeFeature,
+  [MENU_ITEM_KIND.MarkTarget]: CONTEXT_MENU_ITEM_MESSAGES.markTarget,
+  [MENU_ITEM_KIND.UnmarkTarget]: CONTEXT_MENU_ITEM_MESSAGES.unmarkTarget,
+  [MENU_ITEM_KIND.MarkSubtree]: CONTEXT_MENU_ITEM_MESSAGES.markSubtree,
+  [MENU_ITEM_KIND.ReparentMarked]: CONTEXT_MENU_ITEM_MESSAGES.reparentMarked,
+  [MENU_ITEM_KIND.BulkKindLabel]: CONTEXT_MENU_ITEM_MESSAGES.bulkKindLabel,
+  [MENU_ITEM_KIND.EndHere]: CONTEXT_MENU_ITEM_MESSAGES.endHere,
 };
 
 // --- Disabled reasons (出るが無効=グレーアウト, spec §2.1 / §4.4) ------------
@@ -157,13 +158,13 @@ export type DisableReason =
 /** Japanese message per disable reason (FR-115). */
 export const DISABLE_REASON_MESSAGE: Readonly<Record<DisableReason, string>> = {
   [DISABLE_REASON.MergeNeedsMoreTargets]:
-    '結合には2つ以上の対象が必要です。結合する相手を追加してください。',
+    CONTEXT_MENU_ITEM_MESSAGES.disabledMergeNeedsMoreTargets,
   [DISABLE_REASON.EmphasisFromOtherAxis]:
-    'この地物は種別または深さの強調で既に目立たせているため、個別の強調/解除では見た目が変わりません。表示 ▾ の「強調をすべて解除」で解除してください。',
+    CONTEXT_MENU_ITEM_MESSAGES.disabledEmphasisFromOtherAxis,
   [DISABLE_REASON.AnchorAlreadyAtThisYear]:
-    'すでにこの年に錨があります。いまの年の姿はその錨が記録しているので、新しく作る必要はありません。',
+    CONTEXT_MENU_ITEM_MESSAGES.disabledAnchorAlreadyAtThisYear,
   [DISABLE_REASON.EndHereNoOwnSeries]:
-    'この地物の歴史は上位領域が持っているので、ここからは終わりを打てません。先に所属を変えるか、上位領域の側で記録してください。',
+    CONTEXT_MENU_ITEM_MESSAGES.disabledEndHereNoOwnSeries,
 };
 
 /**

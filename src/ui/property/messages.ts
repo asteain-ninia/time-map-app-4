@@ -447,3 +447,69 @@ export function formatAreaKm2(km2: number): string {
   });
   return `${rounded} ${PROPERTY_STRINGS.areaUnit}`;
 }
+
+/** U33 style-section Japanese UI strings (NFR 5.7), single-sourced here. */
+export const STYLE_STRINGS = {
+  sectionTitle: 'スタイル',
+  autoColorLabel: '自動配色を許可',
+  paletteLabel: '使用パレット',
+  fillColorLabel: '通常表示色',
+  selectedColorLabel: '選択表示色',
+  opacityLabel: '透過',
+  autoColorOnNotice: '自動配色 ON のため色は自動決定されます（閲覧のみ）。',
+} as const;
+
+/** 画面に出す言葉（1 か所に集める、NFR 5.7）。 */
+export const ANCHOR_DIFF_STRINGS = {
+  /**
+   * 前の錨と何も変わっていない行（最初の錨でも消滅でもない）。**比べる語彙が保存の対象と
+   * 同じ広さになった**（B1）ので、ここに残るのは本当に「値を変えずに作った錨」だけである
+   * （Ctrl+K で「この年から同じ姿が続く」を記録したときの行）。
+   */
+  noChange: 'この年から同じ姿が続くことを記録しました',
+  appeared: (name: string): string => `ここから記録が始まります: ${name}`,
+  disappeared: (name: string): string => `${name} がこの記録から外れました`,
+  name: (before: string, after: string): string => `名前が変わった: ${before} → ${after}`,
+  kindLabel: (before: string | null, after: string | null): string =>
+    `種別が変わった: ${before ?? '（なし）'} → ${after ?? '（なし）'}`,
+  parent: (before: string | null, after: string | null): string =>
+    `親が変わった: ${before ?? 'なし'} → ${after ?? 'なし'}`,
+  shape: '形が変わった',
+  style: '見た目が変わった',
+  detailDocument: '詳細文書が変わった',
+  /** 複数の変化を 1 行に並べるときの区切り。 */
+  separator: '／',
+} as const;
+
+/**
+ * 素性欄・削除の確認・詳細の板・存続期間の断りの、2026-10 に部品の中の直書きを集めたもの
+ * （文言の表、開発ガイド §5.99）。`App.tsx` の状態行の名前の並べ方もここを引く。
+ */
+export const PROPERTY_TEXT = {
+  /** 名前を並べるときの区切り（「A・B」）。 */
+  nameSeparator: '・',
+  /** 削除の確認（`DeleteConfirmDialog.tsx`）。 */
+  deleteConfirmTargetPrefix: '対象: ',
+  deleteConfirmAriaLabel: '削除を確定',
+  deleteConfirmButton: '削除',
+  deleteCancelAriaLabel: '削除をキャンセル',
+  deleteCancelButton: 'キャンセル',
+  /** 詳細の板（`DetailPanel.tsx`）。 */
+  detailKindLabel: '種別',
+  detailYes: 'はい',
+  detailNo: 'いいえ',
+  /** 保存できなかったとき（`PropertyPanel.tsx`。`saveFailedPrefix` のうしろ）。 */
+  saveFailedTargetUnresolved: '編集対象が解決できません。',
+  saveFailedNotThisYear: 'この年には保存できません。',
+  /** 影響の一覧を出す口が無いとき（`PropertyPanel.tsx`。開発の取り違えでしか起きない）。 */
+  deleteImpactPortMissing: '影響の一覧を組み立てる口が繋がっていません。',
+  /** 素性の保存を当てられなかったとき（`App.tsx` の `dispatchEdit`）。 */
+  editTargetMissingAtTime: '編集対象が現在の時刻に存在しません。',
+  attributeEditFailed: '属性の編集を適用できませんでした。',
+  /** 存続期間を直せないとき（`interval-edit.ts` の `intervalRejectionMessage`）。 */
+  intervalWouldBeEmpty: '地物には少なくとも 1 つの錨が必要です（最後の錨は削除できません）。',
+  intervalAnchorNotFound: '対象の錨が見つかりません。',
+  intervalEndNotAfterStart: '終了は開始より後にしてください。',
+  intervalEndBeyondNextEnd: '終了は次の錨の開始より前にしてください。',
+  intervalStartNotBeforeEnd: '開始はこの錨の終了より前にしてください。',
+} as const;

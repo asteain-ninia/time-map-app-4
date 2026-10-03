@@ -48,6 +48,8 @@ import type { LeafPointHit } from '../live-lookup';
 
 import type { AddProximityCandidate, AddTerminalHit } from './useAddTool';
 
+import { ADD_TEXT } from './strings';
+
 /** 供給元が 1 回の問い合わせで要る「いまの世界」。呼び出しのたびに読み直す（教訓 5.3）。 */
 export interface AddSnapContext {
   readonly root: DomainProject;
@@ -208,8 +210,8 @@ export function createAddSnapPorts(deps: AddSnapPortsDeps): AddSnapPorts {
     const kind = feature?.kindLabel ?? '';
     const parentId = feature?.parentId;
     const parentName = parentId === undefined ? null : featureNameOf(parentId);
-    if (parentName === null) return kind === '' ? `「${name}」` : `${kind}「${name}」`;
-    return kind === '' ? `${parentName}の「${name}」` : `${parentName}の${kind}「${name}」`;
+    if (parentName === null) return kind === '' ? ADD_TEXT.quotedName(name) : ADD_TEXT.kindQuotedName(kind, name);
+    return kind === '' ? ADD_TEXT.parentQuotedName(parentName, name) : ADD_TEXT.parentKindQuotedName(parentName, kind, name);
   };
 
   /** その id の面と、その先祖を根まで（自分を含む）。 */

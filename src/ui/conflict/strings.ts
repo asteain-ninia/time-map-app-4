@@ -151,3 +151,31 @@ export const REPORT_HINT = 'お手数ですが開発者へ報告してくださ�
 export function withReportHint(message: string): string {
   return message.includes('開発者へ報告') ? message : `${message}\n${REPORT_HINT}`;
 }
+
+/** 画面に出す言葉（教訓 5.19: 文言は定数を経由する）。 */
+export const PARTICIPANT_NAME_STRINGS = {
+  /** 「名前のない面（1500年に作成）」。 */
+  unnamedWithYear: (kindWord: string, createdLabel: string): string =>
+    `名前のない${kindWord}（${createdLabel}に作成）`,
+  /** 作成の年が分からないとき（履歴に見つからない＝通常は起きない）。 */
+  unnamed: (kindWord: string): string => `名前のない${kindWord}`,
+  /** 同じ名前の地物を見分けるために作成の年を添える「州（900年に作成）」。 */
+  namedWithYear: (name: string, createdLabel: string): string => `${name}（${createdLabel}に作成）`,
+} as const;
+
+/** 名前の無い地物を呼ぶ「何であるか」の語（`participant-name.ts` の `UNNAMED_KIND_WORD` / `UNKNOWN_KIND_WORD`）。 */
+export const PARTICIPANT_KIND_TEXT = {
+  kindPoint: '点',
+  kindLine: '線',
+  kindLeaf: '面',
+  kindAggregate: '面',
+  /** 種類の分からない地物（どこにも見つからない）を呼ぶ語。 */
+  unknownKind: '地物',
+} as const;
+
+/** 重なりの一覧の 1 行（`model.ts` / `ConflictResolutionModal.tsx`）。 */
+export const CONFLICT_ROW_TEXT = {
+  timeRange: (from: string, to: string): string => `${from}〜${to}`,
+  /** 2 件の名前のあいだ（前の空白も値に含む。後ろの空白は部品の側の {' '}）。 */
+  participantSeparator: ' ／',
+} as const;

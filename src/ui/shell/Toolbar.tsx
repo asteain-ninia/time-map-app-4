@@ -40,7 +40,7 @@ import { SurveyControls } from '../survey/SurveyControls';
 import { Tooltip } from './Tooltip';
 import { TOOL_GROUPS, TOOL_ID } from './tools';
 import { useShell } from './useShell';
-import { TOOL_LABELS, TOOLTIPS } from './strings';
+import { APP_STRINGS, SHELL_TEXT, TOOL_LABELS, TOOLTIPS } from './strings';
 
 export interface ToolbarProps<S> {
   readonly store: StoreApi<SessionStore<S>>;
@@ -50,8 +50,8 @@ export function Toolbar<S>(props: ToolbarProps<S>): JSX.Element {
   const shell = useShell(props.store);
 
   return (
-    <nav className="toolbar" aria-label="ツールバー" data-testid="toolbar">
-      <div className="toolbar__tools" role="group" aria-label="ツール選択" data-testid="toolbar-tools">
+    <nav className="toolbar" aria-label={APP_STRINGS.toolbarAriaLabel} data-testid="toolbar">
+      <div className="toolbar__tools" role="group" aria-label={SHELL_TEXT.toolSelectAriaLabel} data-testid="toolbar-tools">
         {TOOL_GROUPS.map((group) => (
           <div
             key={group.id}
@@ -101,7 +101,7 @@ export function Toolbar<S>(props: ToolbarProps<S>): JSX.Element {
         <div
           className="toolbar__group"
           role="group"
-          aria-label="調べる"
+          aria-label={SHELL_TEXT.inspectGroupAriaLabel}
           data-testid="toolbar-group-inspect"
         >
           <SurveyControls store={props.store} />

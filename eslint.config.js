@@ -3,6 +3,12 @@ import tseslint from 'typescript-eslint';
 import importPlugin from 'eslint-plugin-import';
 import globals from 'globals';
 
+import {
+  UI_TEXT_EXEMPT_FILES,
+  UI_TEXT_TABLE_FILES,
+  uiTextRestrictedSyntax,
+} from './scripts/ui-text-rule.mjs';
+
 // Layer dependency direction is fixed inward toward `domain`.
 //   domain  -> (no internal layer)
 //   render  -> domain
@@ -124,6 +130,16 @@ export default tseslint.config(
     ...layerBoundaries,
   },
   persistenceBoundary,
+  {
+    // 利用者に見える文字列は文言の表から引く（開発ガイド §5.99 / 案/文言総点検-やり方の提案.md §5.2 (a)）。
+    // 文字の範囲・表のファイル・除外の一覧は scripts/ui-text-rule.mjs の 1 か所にだけ書き、
+    // 単体の走査（src/ui/shell/ui-text-tables.test.ts）も同じものを読む。
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: [...UI_TEXT_TABLE_FILES, ...UI_TEXT_EXEMPT_FILES],
+    rules: {
+      'no-restricted-syntax': ['error', ...uiTextRestrictedSyntax()],
+    },
+  },
   {
     files: ['*.config.{js,ts}', 'eslint.config.js'],
     languageOptions: {

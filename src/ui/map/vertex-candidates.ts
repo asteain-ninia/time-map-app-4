@@ -30,6 +30,7 @@ import { exceedsDragThreshold } from './dispatch';
 import type { DisplayResolution } from './display-resolution-cache';
 import type { NearVertexCandidate } from './live-hit-test';
 import { containersOf } from './shared-vertex-derivation';
+import { VERTEX_CANDIDATE_ROW_STRINGS, VERTEX_CANDIDATE_ROW_TEXT } from './strings';
 
 /** 一覧に出す候補 1 つ。 */
 export interface VertexCandidateRow {
@@ -202,12 +203,7 @@ export function describeNearVertices(
 // ---------------------------------------------------------------------------
 
 /** 画面に出る言葉（教訓 5.64: 検査に直書きさせない）。 */
-export const VERTEX_CANDIDATE_ROW_STRINGS = {
-  vertex: (number: string): string => `頂点 #${number}`,
-  sharedWith: (names: string): string => `${names}と共有`,
-  othersSuffix: (count: number): string => `ほか ${String(count)} 件`,
-  unknownFeature: '（名前なし）',
-} as const;
+export { VERTEX_CANDIDATE_ROW_STRINGS };
 
 /** 共有の相手を名前で並べる上限（それより多ければ「ほか N 件」）。 */
 const SHARED_NAMES_MAX = 2;
@@ -254,7 +250,7 @@ export function buildCandidateRow(
   if (main !== activeFeature) parts.push(named(main));
   const others = c.citers.filter((id) => id !== main);
   if (others.length > 0) {
-    const shown = others.slice(0, SHARED_NAMES_MAX).map(named).join('・');
+    const shown = others.slice(0, SHARED_NAMES_MAX).map(named).join(VERTEX_CANDIDATE_ROW_TEXT.separator);
     const rest = others.length - SHARED_NAMES_MAX;
     parts.push(
       VERTEX_CANDIDATE_ROW_STRINGS.sharedWith(
@@ -266,7 +262,7 @@ export function buildCandidateRow(
     featureId: main,
     vertexId: c.vertexId,
     featureName: nameOf(main),
-    label: `${VERTEX_CANDIDATE_ROW_STRINGS.vertex(vertexNumberOf(c.vertexId))}（${parts.join('・')}）`,
+    label: VERTEX_CANDIDATE_ROW_TEXT.label(VERTEX_CANDIDATE_ROW_STRINGS.vertex(vertexNumberOf(c.vertexId)), parts.join(VERTEX_CANDIDATE_ROW_TEXT.separator)),
     distancePx: c.distancePx,
     coordinate: c.coordinate,
   };

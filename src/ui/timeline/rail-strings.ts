@@ -88,6 +88,53 @@ export const RAIL_STRINGS = {
   nextAnchorLabel: '次の歴史の錨へ',
   overflowLabel: '≫',
   overflowAriaLabel: '入りきらない時間の操作',
+  /** 錨ジャンプのボタンの `title`（読み上げ名に、押すキーを添える）。 */
+  prevAnchorTitle: (label: string): string => `${label}（[）`,
+  nextAnchorTitle: (label: string): string => `${label}（]）`,
+  /** 錨ジャンプのボタンの文字。 */
+  prevAnchorButton: '◀錨',
+  nextAnchorButton: '錨▶',
+  /** 拡大 3 ボタンの文字。 */
+  zoomOutButton: '−',
+  zoomInButton: '＋',
+  zoomFitButton: '全体',
+
+  /** ステップ単位（年・月・日）の選択肢の文字。 */
+  unitYear: '年',
+  unitMonth: '月',
+  unitDay: '日',
+  unitCaption: 'ステップ単位',
+  unitAriaLabel: 'ステップ単位',
+  unitTitle: '前へ/次へ で動かす時間の単位',
+  /** ±1 の送りの文字。**現行のまま**（HB-13 が固定している）。 */
+  stepBackText: '前へ',
+  stepForwardText: '次へ',
+  /** 年の欄の読み上げ名（「直接ジャンプ 年」）と、欄の右の単位。 */
+  jumpFieldYearLabel: (title: string): string => `${title} 年`,
+  yearUnit: '年',
+
+  /** 月日 ▾（直接ジャンプの月日）。**読み上げ名は現行のまま**。 */
+  ymdLabel: '月日',
+  ymdAriaLabel: '直接ジャンプの月日',
+  ymdMonthCaption: '月',
+  ymdDayCaption: '日',
+  jumpFieldMonthLabel: (title: string): string => `${title} 月`,
+  jumpFieldMonthUnsetLabel: (title: string): string => `${title} 月 未指定`,
+  jumpFieldDayLabel: (title: string): string => `${title} 日`,
+  jumpFieldDayUnsetLabel: (title: string): string => `${title} 日 未指定`,
+  ymdSpecified: '指定',
+  ymdUnspecified: '未指定',
+
+  /** 再生。**可視テキスト「再生」と読み上げ名「再生」を残す**（HB-13）。 */
+  playLabel: '再生',
+  pauseLabel: '一時停止',
+  playTitle: '時間を自動で進めます（Space）',
+  pauseTitle: '自動進行を一時停止します（Space）',
+  speedCaption: '再生速度',
+  speedAriaLabel: '再生速度',
+  speedTitle: '自動進行の速さ(1倍 = 1年/秒)',
+  /** 速度の選択肢の数のうしろ（「2倍」の「倍」）。 */
+  speedTimesSuffix: '倍',
 
   // --- 状態行へ出す断り（中身 6・7。§H.5「何が起きたか → なぜか → 次に何をするか」） ---
   /** 範囲外の年を打ったとき（**丸めない**）。 */

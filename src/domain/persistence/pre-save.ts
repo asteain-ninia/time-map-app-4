@@ -34,6 +34,7 @@ import { emptyAggregateIntervals } from '../affiliation/interval-edit';
 
 import { INCONSISTENCY, checkHierarchyOverTime } from './consistency';
 import type { DomainProject } from './serialize';
+import { PERSISTENCE_MESSAGES } from './messages';
 
 /** 保存前に見つかった問題の種類。 */
 export const PRE_SAVE_PROBLEM = {
@@ -194,19 +195,19 @@ export function preSaveBlockMessage(
     const head = orphans[0];
     heads.push(
       orphans.length === 1
-        ? `持ち主の居ない歴史が 1 件あります（${label(head!.featureId)}）`
-        : `持ち主の居ない歴史が ${orphans.length} 件あります（${label(head!.featureId)} ほか）`,
+        ? PERSISTENCE_MESSAGES.preSaveOrphanOne(label(head!.featureId))
+        : PERSISTENCE_MESSAGES.preSaveOrphanMany(orphans.length, label(head!.featureId)),
     );
   }
   if (dangling.length > 0) {
     const head = dangling[0];
     heads.push(
       dangling.length === 1
-        ? `消えた上位領域を指している地物が 1 件あります（${label(head!.featureId)}）`
-        : `消えた上位領域を指している地物が ${dangling.length} 件あります（${label(head!.featureId)} ほか）`,
+        ? PERSISTENCE_MESSAGES.preSaveDanglingOne(label(head!.featureId))
+        : PERSISTENCE_MESSAGES.preSaveDanglingMany(dangling.length, label(head!.featureId)),
     );
   }
-  return `保存を中止しました: ${heads.join('。')}。このまま保存すると、開き直したときに地物が失われます。直前の操作を Ctrl+Z で取り消してから保存してください。`;
+  return PERSISTENCE_MESSAGES.preSaveBlocked(heads.join(PERSISTENCE_MESSAGES.preSaveHeadSeparator));
 }
 
 /** 聞く板に並べる 1 行ごとの理由（止めない問題だけ）。名前で言う。 */
@@ -225,29 +226,29 @@ export function preSaveConfirmLines(
     // 既定の修復はどれも区間の単位で、ほかの年の記録には触らない（`repair.ts` の先頭の方法）。
     if (p.kind === PRE_SAVE_PROBLEM.ParentAbsentThatYear && p.parentId !== undefined) {
       lines.push(
-        `「${name(p.featureId)}」は${year}に、その年には居ない上位領域「${name(p.parentId)}」を指しています` +
-          ` → 次に開くと、上位領域が居ない年の間だけ最上位にします`,
+        PERSISTENCE_MESSAGES.preSaveParentAbsent(name(p.featureId), year, name(p.parentId)) +
+          PERSISTENCE_MESSAGES.preSaveParentAbsentRepair,
       );
     } else if (p.kind === PRE_SAVE_PROBLEM.ChildListMismatch) {
-      const related = (p.relatedIds ?? []).map(name).join('・');
+      const related = (p.relatedIds ?? []).map(name).join(PERSISTENCE_MESSAGES.preSaveRelatedSeparator);
       lines.push(
         (related === ''
-          ? `「${name(p.featureId)}」の下位領域の一覧が、${year}の実際の所属と食い違っています`
-          : `「${name(p.featureId)}」の下位領域の一覧が、${year}の実際の所属と食い違っています（${related}）`) +
-          ` → 次に開くと、一覧を各年の実際の所属に合わせます`,
+          ? PERSISTENCE_MESSAGES.preSaveChildListMismatch(name(p.featureId), year)
+          : PERSISTENCE_MESSAGES.preSaveChildListMismatchWithRelated(name(p.featureId), year, related)) +
+          PERSISTENCE_MESSAGES.preSaveChildListMismatchRepair,
       );
     } else if (p.kind === PRE_SAVE_PROBLEM.EmptyAggregate) {
       // 既定の修復が効く形のときだけ「無くします」と言う。効かない形（どの年にも下位領域が無い・
       // 自分の年表を持たない）は、開くと聞かれることを正直に言う（4 回目 #1 (ii)）。
       lines.push(
-        `まとめ役「${name(p.featureId)}」には、${year}に下位領域が 1 件もありません` +
+        PERSISTENCE_MESSAGES.preSaveEmptyAggregate(name(p.featureId), year) +
           (p.intervalRepairable === true
-            ? ` → 次に開くと、下位領域の居ない年の間だけ「${name(p.featureId)}」を無くします（ほかの年の記録は残ります）`
-            : ` → 次に開くと、どうするかを聞かれます（このまとめ役には下位領域の居る年が無いため、読み込みから外すことになります）`),
+            ? PERSISTENCE_MESSAGES.preSaveEmptyAggregateRepairable(name(p.featureId))
+            : PERSISTENCE_MESSAGES.preSaveEmptyAggregateAsk),
       );
     } else {
       lines.push(
-        `「${name(p.featureId)}」の上位領域のつながりが、${year}に食い違っています → 次に開くと直し方を聞かれます`,
+        PERSISTENCE_MESSAGES.preSaveTopologyOther(name(p.featureId), year),
       );
     }
   }

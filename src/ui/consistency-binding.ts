@@ -110,6 +110,7 @@ import {
   participantDisplayName,
 } from './conflict/participant-name';
 import { ringHierarchyViolationsIntroduced } from './ring-hierarchy-gate';
+import { CONSISTENCY_BINDING_TEXT } from './strings';
 
 /** The live domain truth root the binding threads through every port (U14). */
 export type DomainRoot = DomainProject;
@@ -274,7 +275,7 @@ function checkTimeOverExisting<Snapshot>(
 }
 
 /** その時刻に見つからない地物を呼ぶ語（「名前のない地物」）。 */
-const UNKNOWN_FEATURE_WORD = '地物';
+const UNKNOWN_FEATURE_WORD = CONSISTENCY_BINDING_TEXT.unknownFeatureWord;
 
 /**
  * A display-name lookup over the trial state at the anchor time (FR-62).

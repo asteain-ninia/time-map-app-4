@@ -17,7 +17,7 @@ import type {
 } from '../../domain/consistency/index';
 import { formatTimePoint } from '../timeline/time-display';
 
-import { CONFLICT_STRINGS } from './strings';
+import { CONFLICT_ROW_TEXT, CONFLICT_STRINGS } from './strings';
 
 // --- Time display (FR-65 / FR-72) -------------------------------------------
 
@@ -32,7 +32,7 @@ export function formatConflictTime(time: ConflictTime): string {
     case 'point':
       return formatTimePoint(time.at);
     case 'range':
-      return `${formatTimePoint(time.from)}〜${formatTimePoint(time.to)}`;
+      return CONFLICT_ROW_TEXT.timeRange(formatTimePoint(time.from), formatTimePoint(time.to));
   }
 }
 

@@ -59,7 +59,7 @@ import {
   type SplitSnapshot,
 } from '../../domain/knife/index';
 
-import { KNIFE_TARGET_GONE_MESSAGE, withReportHint } from './strings';
+import { KNIFE_TARGET_GONE_MESSAGE, KNIFE_TOOL_TEXT, withReportHint } from './strings';
 
 // --- Layer-crossing ports (the contracts; 教訓 5.33 / 5.34) ------------------
 
@@ -257,7 +257,7 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
       // so the geometry path never sees an aggregate.
       const feature = resolveFeature(featureId);
       if (feature === undefined || feature.kind !== FEATURE_KIND.Leaf) {
-        setMessage('集約地物は分割できません。末端地物を選んでください。');
+        setMessage(KNIFE_TOOL_TEXT.notTerminal);
         return;
       }
       setMessage(null);
@@ -292,7 +292,7 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
       const feature = resolveFeature(s.targetId);
       const store = resolveStore();
       if (feature === undefined) {
-        setMessage('対象面の形状を取得できませんでした。');
+        setMessage(KNIFE_TOOL_TEXT.shapeUnresolvable);
         return s;
       }
       const check = checkSplittable(feature, store, s.line);
@@ -332,7 +332,7 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
         const feature = resolveFeature(s.targetId);
         const store = resolveStore();
         if (feature === undefined || feature.kind !== FEATURE_KIND.Leaf) {
-          setMessage('対象面の形状を取得できませんでした。');
+          setMessage(KNIFE_TOOL_TEXT.shapeUnresolvable);
           return s;
         }
         const leaf: LeafFeature = feature;

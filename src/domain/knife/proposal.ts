@@ -545,6 +545,7 @@ export function assembleSplitProposal(input: AssembleSplitInput): SplitEditPropo
     !everyRingHasMinVertices(inheritorShape) ||
     builtNews.some((b) => !everyRingHasMinVertices(b.shape))
   ) {
+    // eslint-disable-next-line no-restricted-syntax -- 内部の不変条件が破れたときの開発者向けの例外（英語。画面の文言ではない）
     throw new Error('split produced a degenerate ring (FR-44 最低3頂点)');
   }
 

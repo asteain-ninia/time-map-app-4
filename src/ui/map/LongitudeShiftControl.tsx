@@ -18,6 +18,8 @@ import {
   parseAbsoluteCenterLon,
 } from '../../domain/basemap/index';
 
+import { LONGITUDE_SHIFT_TEXT } from './strings';
+
 export interface LongitudeShiftControlProps {
   /** Current continuous-scalar center longitude (from U16). */
   readonly centerLon: number;
@@ -41,16 +43,16 @@ const SHIFT_SLIDER_RANGE = 10;
 
 // Compact preset labels for the上部バー (short visible text keeps the bar one row).
 const PRESET_LABELS: Readonly<Record<CenterLonPreset, string>> = {
-  [CENTER_LON_PRESET.PrimeMeridian]: '0度中心',
-  [CENTER_LON_PRESET.Pacific]: '180度中心',
+  [CENTER_LON_PRESET.PrimeMeridian]: LONGITUDE_SHIFT_TEXT.presetPrimeMeridian,
+  [CENTER_LON_PRESET.Pacific]: LONGITUDE_SHIFT_TEXT.presetPacific,
 };
 
 // HB3-2→2026-07-12 実機FB: labels are the longitude values themselves (デーレ世界に
 // 地球の地名は存在しないため、基準経線は経度値で呼ぶ)。The action phrasing is kept
 // as the button's `title` tooltip so the 上部バー stays compact.
 const PRESET_TITLES: Readonly<Record<CenterLonPreset, string>> = {
-  [CENTER_LON_PRESET.PrimeMeridian]: '中心経度を0°にする',
-  [CENTER_LON_PRESET.Pacific]: '中心経度を180°にする',
+  [CENTER_LON_PRESET.PrimeMeridian]: LONGITUDE_SHIFT_TEXT.presetPrimeMeridianTitle,
+  [CENTER_LON_PRESET.Pacific]: LONGITUDE_SHIFT_TEXT.presetPacificTitle,
 };
 
 // HB3-1: the slider is a RELATIVE jog (momentary; snaps back to center on release), NOT
@@ -58,13 +60,13 @@ const PRESET_TITLES: Readonly<Record<CenterLonPreset, string>> = {
 // paragraph (a11y / regression) AND the slider's `title` tooltip so the compact上部バー
 // keeps the clarification without spending a row on it.
 const SHIFT_HINT =
-  'スライダーは相対シフト（離すと中央へ戻ります）。現在の中心経度は上の数値が真値です。';
+  LONGITUDE_SHIFT_TEXT.shiftHint;
 
 // HB3-1 (裁定 2026-08-06): absolute center-longitude input. Kept as ONE hint string
 // shared by the input and the commit button (`title` tooltips) so the compact上部バー
 // spends no visible row on the explanation.
 const ABSOLUTE_HINT =
-  '中心経度を度数で直接指定（東経が正・±180°の範囲外は折り返し）。Enter または「移動」で反映します。';
+  LONGITUDE_SHIFT_TEXT.absoluteHint;
 
 export function LongitudeShiftControl(props: LongitudeShiftControlProps): JSX.Element {
   const { centerLon, onShift, onPreset, onSetCenter } = props;
@@ -99,7 +101,7 @@ export function LongitudeShiftControl(props: LongitudeShiftControlProps): JSX.El
   return (
     <div className="longitude-shift" data-testid="longitude-shift">
       <div className="longitude-shift__readout" data-testid="center-lon-readout">
-        中心経度: {formatCenterLonDisplay(centerLon)}
+        {LONGITUDE_SHIFT_TEXT.readoutPrefix}{formatCenterLonDisplay(centerLon)}
       </div>
 
       {/* HB3-1: the slider is a RELATIVE jog (momentary; snaps back to center on
@@ -113,7 +115,7 @@ export function LongitudeShiftControl(props: LongitudeShiftControlProps): JSX.El
 
       <input
         type="range"
-        aria-label="経度シフト"
+        aria-label={LONGITUDE_SHIFT_TEXT.sliderAriaLabel}
         title={SHIFT_HINT}
         min={-SHIFT_SLIDER_RANGE}
         max={SHIFT_SLIDER_RANGE}
@@ -133,10 +135,10 @@ export function LongitudeShiftControl(props: LongitudeShiftControlProps): JSX.El
       />
 
       <div className="longitude-shift__buttons">
-        <button type="button" aria-label="左へシフト" onClick={() => onShift(-1)}>
+        <button type="button" aria-label={LONGITUDE_SHIFT_TEXT.shiftLeftAriaLabel} onClick={() => onShift(-1)}>
           ◀
         </button>
-        <button type="button" aria-label="右へシフト" onClick={() => onShift(1)}>
+        <button type="button" aria-label={LONGITUDE_SHIFT_TEXT.shiftRightAriaLabel} onClick={() => onShift(1)}>
           ▶
         </button>
       </div>
@@ -160,9 +162,9 @@ export function LongitudeShiftControl(props: LongitudeShiftControlProps): JSX.El
       <div className="longitude-shift__absolute">
         <input
           type="number"
-          aria-label="中心経度を指定"
+          aria-label={LONGITUDE_SHIFT_TEXT.absoluteAriaLabel}
           title={ABSOLUTE_HINT}
-          placeholder="経度"
+          placeholder={LONGITUDE_SHIFT_TEXT.absolutePlaceholder}
           step={0.1}
           value={absoluteDraft}
           data-testid="center-lon-absolute-input"
@@ -173,12 +175,12 @@ export function LongitudeShiftControl(props: LongitudeShiftControlProps): JSX.El
         />
         <button
           type="button"
-          aria-label="指定経度へ移動"
+          aria-label={LONGITUDE_SHIFT_TEXT.absoluteCommitAriaLabel}
           title={ABSOLUTE_HINT}
           disabled={parsedAbsolute === null}
           onClick={commitAbsolute}
         >
-          移動
+          {LONGITUDE_SHIFT_TEXT.absoluteCommitButton}
         </button>
       </div>
     </div>

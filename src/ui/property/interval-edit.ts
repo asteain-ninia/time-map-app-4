@@ -19,7 +19,7 @@ import {
   ANCHOR_INTERVAL_OP,
   type AnchorIntervalEditIntent,
 } from './contracts';
-import { PROPERTY_STRINGS } from './messages';
+import { PROPERTY_STRINGS, PROPERTY_TEXT } from './messages';
 
 /** Assemble a changeStart存続期間 intent (move when the feature appears). */
 export function buildChangeStartIntent(
@@ -74,15 +74,15 @@ export function intervalRejectionMessage(reason: RejectReason): string {
   const body = ((): string => {
     switch (reason.code) {
       case 'wouldBeEmpty':
-        return '地物には少なくとも 1 つの錨が必要です（最後の錨は削除できません）。';
+        return PROPERTY_TEXT.intervalWouldBeEmpty;
       case 'anchorNotFound':
-        return '対象の錨が見つかりません。';
+        return PROPERTY_TEXT.intervalAnchorNotFound;
       case 'endNotAfterStart':
-        return '終了は開始より後にしてください。';
+        return PROPERTY_TEXT.intervalEndNotAfterStart;
       case 'endBeyondNextEnd':
-        return '終了は次の錨の開始より前にしてください。';
+        return PROPERTY_TEXT.intervalEndBeyondNextEnd;
       case 'startNotBeforeEnd':
-        return '開始はこの錨の終了より前にしてください。';
+        return PROPERTY_TEXT.intervalStartNotBeforeEnd;
       case 'invalidTime':
         return ymdErrorMessage(reason.error);
     }

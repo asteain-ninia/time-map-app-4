@@ -16,6 +16,7 @@ import type { Feature } from '../feature';
 import { asFeatureId, type DomainId, type FeatureId } from '../ids';
 import type { VertexStore } from '../vertex';
 import type { MergeProposal } from './proposal';
+import { MSG_MERGE_COMMAND_LABEL } from './messages';
 
 /** 結合コマンドの状態: 面情報集合 + 頂点ストアのスナップショット。 */
 export interface MergeState {
@@ -24,7 +25,7 @@ export interface MergeState {
 }
 
 export const MERGE_COMMAND_KIND = defineCommandKind('merge');
-export const MERGE_COMMAND_LABEL = '結合';
+export const MERGE_COMMAND_LABEL = MSG_MERGE_COMMAND_LABEL;
 
 function toDomainIds(ids: readonly FeatureId[]): DomainId[] {
   return ids.map((id) => asFeatureId(id));

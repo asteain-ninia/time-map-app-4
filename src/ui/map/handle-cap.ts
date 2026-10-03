@@ -32,22 +32,10 @@ import type { DisplayControlInput } from '../../render/display-pipeline';
 
 import { resolveDisplayFor } from './display-resolution-cache';
 import { keyboardZoomFactor, viewportCentre } from './keyboard-zoom';
+import { HANDLE_CAP_STRINGS } from './strings';
 
 /** 画面に出る言葉（教訓 5.64）。文は設計書 §E.1 V9 のとおり。 */
-export const HANDLE_CAP_STRINGS = {
-  reason: (counted: string, cap: string): string =>
-    `頂点が ${counted} あり、上限 ${cap} のため印を出していません。拡大すると出ます`,
-  /** 上限が 0（印を出さない設定）のときは拡大しても出ないので、［拡大］を出さない。 */
-  reasonCapZero: (counted: string): string =>
-    `頂点が ${counted} あり、上限 0 のため印を出していません。`,
-  /**
-   * ズームの上限まで寄っていて、これ以上は拡大できないとき（増分 8A の手直し・設計適合 2-4）。
-   * 「拡大すると出ます」を言うと、押しても何も起きない［拡大］を勧めることになる（無言の失敗）。
-   */
-  reasonAtMaxZoom: (counted: string, cap: string): string =>
-    `頂点が ${counted} あり、上限 ${cap} のため印を出していません。これ以上は拡大できません。`,
-  zoom: '拡大',
-} as const;
+export { HANDLE_CAP_STRINGS };
 
 /** 「2,230」の形（桁区切り）。 */
 const NUMBER_FORMAT = new Intl.NumberFormat('ja-JP');

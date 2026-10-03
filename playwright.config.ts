@@ -87,12 +87,21 @@ export default defineConfig({
     {
       // 毎回の検査。探索用を除いた全部。
       name: 'main',
-      testIgnore: ['**/__bughunt__/**', '**/__visual__/**'],
+      testIgnore: ['**/__bughunt__/**', '**/__visual__/**', '**/__tour__/**'],
     },
     {
       // 探索的なバグ狩り・見た目の記録。別コマンド (npm run e2e:explore) で回す。
       name: 'explore',
       testMatch: ['**/__bughunt__/**/*.spec.ts', '**/__visual__/**/*.spec.ts'],
+    },
+    {
+      // 画面の文言の巡回（案/文言総点検-やり方の提案.md §2.3）。**毎回の検査ではない** ――
+      // 場面ごとに写真と画面の文字を書き出す道具で、`npm run e2e:tour` だけが走らせる。
+      // 1 本の test が 20 場面以上を巡るので時間の上限を広げ、やり直しはしない（書き出しが混ざる）。
+      name: 'tour',
+      testMatch: ['**/__tour__/**/*.spec.ts'],
+      timeout: 600_000,
+      retries: 0,
     },
   ],
 });

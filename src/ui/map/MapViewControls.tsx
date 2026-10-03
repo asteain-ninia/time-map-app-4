@@ -21,14 +21,10 @@ import { COMMAND_ID, type CommandRegistry } from '../shell/commands';
 import type { SessionStore } from '../state/store';
 
 import { chooseScaleBar } from './scale-bar';
+import { MAP_VIEW_CONTROL_STRINGS, MAP_VIEW_CONTROL_TEXT } from './strings';
 
 /** 画面に出る言葉（教訓 5.64: 検査に直書きさせない）。 */
-export const MAP_VIEW_CONTROL_STRINGS = {
-  zoomIn: '地図を拡大',
-  zoomOut: '地図を縮小',
-  fitAll: '全体表示',
-  scaleLabel: '縮尺',
-} as const;
+export { MAP_VIEW_CONTROL_STRINGS };
 
 export interface MapViewControlsProps<S> {
   readonly store: StoreApi<SessionStore<S>>;
@@ -55,7 +51,7 @@ export function MapViewControls<S>(props: MapViewControlsProps<S>): JSX.Element 
           title={MAP_VIEW_CONTROL_STRINGS.zoomIn}
           onClick={() => registry.dispatch(COMMAND_ID.ViewZoomIn)}
         >
-          ＋
+          {MAP_VIEW_CONTROL_TEXT.zoomInButton}
         </button>
         <button
           type="button"
@@ -65,7 +61,7 @@ export function MapViewControls<S>(props: MapViewControlsProps<S>): JSX.Element 
           title={MAP_VIEW_CONTROL_STRINGS.zoomOut}
           onClick={() => registry.dispatch(COMMAND_ID.ViewZoomOut)}
         >
-          −
+          {MAP_VIEW_CONTROL_TEXT.zoomOutButton}
         </button>
         <button
           type="button"
@@ -75,7 +71,7 @@ export function MapViewControls<S>(props: MapViewControlsProps<S>): JSX.Element 
           title={MAP_VIEW_CONTROL_STRINGS.fitAll}
           onClick={() => registry.dispatch(COMMAND_ID.ViewFitAll)}
         >
-          全体
+          {MAP_VIEW_CONTROL_TEXT.fitAllButton}
         </button>
       </div>
 

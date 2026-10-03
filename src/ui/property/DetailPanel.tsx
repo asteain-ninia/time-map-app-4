@@ -17,7 +17,7 @@ import { formatYear } from '../timeline/time-display';
 
 import type { AssetResolver } from './contracts';
 import { MarkdownView } from './MarkdownView';
-import { PROPERTY_STRINGS, featureKindJaLabel } from './messages';
+import { PROPERTY_STRINGS, PROPERTY_TEXT, featureKindJaLabel } from './messages';
 
 export interface DetailPanelProps {
   readonly id: string;
@@ -61,7 +61,7 @@ export function DetailPanel(props: DetailPanelProps): JSX.Element {
           <dl>
             <dt>{PROPERTY_STRINGS.nameLabel}</dt>
             <dd>{feature.attributes.name}</dd>
-            <dt>種別</dt>
+            <dt>{PROPERTY_TEXT.detailKindLabel}</dt>
             <dd>{featureKindJaLabel(feature.kind)}</dd>
             <dt>{PROPERTY_STRINGS.startYearLabel}</dt>
             <dd>{formatYear(feature.attributes.startYear)}</dd>
@@ -74,7 +74,7 @@ export function DetailPanel(props: DetailPanelProps): JSX.Element {
             <dt>{PROPERTY_STRINGS.borderColorLabel}</dt>
             <dd>{feature.color.borderColor}</dd>
             <dt>{PROPERTY_STRINGS.autoColorLabel}</dt>
-            <dd>{feature.color.autoColorEnabled ? 'はい' : 'いいえ'}</dd>
+            <dd>{feature.color.autoColorEnabled ? PROPERTY_TEXT.detailYes : PROPERTY_TEXT.detailNo}</dd>
           </dl>
         </section>
 

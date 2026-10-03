@@ -24,12 +24,13 @@ import type { DomainId, FeatureId } from '../ids';
 
 import { sweepDeletionState } from './sweep-state';
 import { createDeletionState, type DeletionState } from './state';
+import { MSG_DELETE_FEATURE_COMMAND_LABEL } from './messages';
 
 /** The kind discriminator for the面情報削除 command (教訓 5.19). */
 export const DELETE_FEATURE_COMMAND_KIND = defineCommandKind('deletion/delete-feature');
 
 /** Default label for the command (menus / history UI; never used for branching). */
-export const DELETE_FEATURE_COMMAND_LABEL = '地物の削除';
+export const DELETE_FEATURE_COMMAND_LABEL = MSG_DELETE_FEATURE_COMMAND_LABEL;
 
 /** The pre-computed deletion PLAN: the after-state plus the change-set summary. */
 interface DeletionPlan {

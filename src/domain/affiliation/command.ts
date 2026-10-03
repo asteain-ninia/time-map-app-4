@@ -23,12 +23,13 @@ import { createCommandResult, type CommandResult } from '../command/result';
 import type { Feature } from '../feature';
 import { asFeatureId, type DomainId, type FeatureId } from '../ids';
 import type { AffiliationProposal } from './proposal';
+import { MSG_AFFILIATION_COMMAND_LABEL } from './messages';
 
 /** 所属変更コマンドの状態: 面情報集合のスナップショット。 */
 export type AffiliationState = readonly Feature[];
 
 export const AFFILIATION_COMMAND_KIND = defineCommandKind('affiliation-change');
-export const AFFILIATION_COMMAND_LABEL = '所属変更';
+export const AFFILIATION_COMMAND_LABEL = MSG_AFFILIATION_COMMAND_LABEL;
 
 function toDomainIds(ids: readonly FeatureId[]): DomainId[] {
   // FeatureId は DomainId の構成要素。明示変換でブランドを保つ。

@@ -8,7 +8,7 @@
 // (spec スコープ「やらないこと」).
 
 import { EDIT_MODE, asToolId, type EditMode, type ToolId } from '../state/session';
-import { EDIT_TOOL_STRINGS } from './strings';
+import { EDIT_TOOL_STRINGS, SHELL_TEXT } from './strings';
 
 /** The canonical tool-id vocabulary. */
 export const TOOL_ID = {
@@ -77,22 +77,22 @@ export interface ToolGroup {
 export const TOOL_GROUPS: readonly ToolGroup[] = [
   {
     id: 'select',
-    label: '選ぶ',
+    label: SHELL_TEXT.toolGroupSelect,
     tools: [TOOL_ID.EditSelect, TOOL_ID.EditVertex, TOOL_ID.EditMove],
   },
   {
     id: 'draw',
-    label: '描く',
+    label: SHELL_TEXT.toolGroupDraw,
     tools: [TOOL_ID.AddArea, TOOL_ID.AddLine, TOOL_ID.AddPoint],
   },
   {
     id: 'shape',
-    label: '形を変える',
+    label: SHELL_TEXT.toolGroupShape,
     tools: [TOOL_ID.EditRing, TOOL_ID.EditKnife, TOOL_ID.EditDrill],
   },
   {
     id: 'relate',
-    label: '関係を変える',
+    label: SHELL_TEXT.toolGroupRelate,
     tools: [TOOL_ID.EditReparent, TOOL_ID.EditMerge],
   },
 ];

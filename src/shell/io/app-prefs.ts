@@ -17,6 +17,7 @@ import { mkdir as fsMkdir, readFile as fsReadFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { atomicWrite, nodeFsOps, type FsOps } from './atomic';
+import { SHELL_IO_STRINGS } from './strings';
 
 import {
   AUTO_SAVE_INTERVAL_MINUTES_RANGE,
@@ -197,6 +198,6 @@ export async function writeAppPrefs(
 
 /** 設定を書けなかったときの理由（画面に出す）。 */
 export function appPrefsWriteFailedMessage(error: unknown): string {
-  const detail = error instanceof Error && error.message.length > 0 ? `（${error.message}）` : '';
-  return `設定をファイルに書き込めませんでした${detail}。値は変えていません。`;
+  const detail = error instanceof Error && error.message.length > 0 ? SHELL_IO_STRINGS.prefsWriteFailedDetail(error.message) : '';
+  return SHELL_IO_STRINGS.prefsWriteFailed(detail);
 }

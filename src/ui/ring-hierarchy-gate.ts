@@ -44,6 +44,7 @@ import type { TimePoint } from '../domain/time/time-point';
 import { createdAtOf, participantDisplayName } from './conflict/participant-name';
 import { featuresAt, verticesAt } from './live-lookup';
 import { formatTimePoint } from './timeline/time-display';
+import { RING_BREAK_PHRASE_TEXT, RING_HIERARCHY_GATE_STRINGS } from './strings';
 
 /** 違反の印（確定の手続きの `detail` に入る。画面の文を選ぶのに使う）。 */
 export const RING_HIERARCHY_GATE_KIND = 'ring-hierarchy' as const;
@@ -94,27 +95,15 @@ export interface RingHierarchyGateViolation {
 
 /** 壊れ方ごとの言い方（「〜形になるためです」「〜ので」の〜の部分）。 */
 const BREAK_PHRASE: Readonly<Record<RingBreak, string>> = {
-  [RING_BREAK.HolesCross]: '穴と穴が交わる',
-  [RING_BREAK.EnclavesCross]: '飛び地と飛び地が交わる',
-  [RING_BREAK.HoleLeavesOuter]: '穴が外周からはみ出す',
-  [RING_BREAK.EnclaveLeavesHole]: '穴の中の飛び地が穴からはみ出す',
-  [RING_BREAK.Other]: '穴・飛び地が外周や別の穴・飛び地と交わる',
+  [RING_BREAK.HolesCross]: RING_BREAK_PHRASE_TEXT.holesCross,
+  [RING_BREAK.EnclavesCross]: RING_BREAK_PHRASE_TEXT.enclavesCross,
+  [RING_BREAK.HoleLeavesOuter]: RING_BREAK_PHRASE_TEXT.holeLeavesOuter,
+  [RING_BREAK.EnclaveLeavesHole]: RING_BREAK_PHRASE_TEXT.enclaveLeavesHole,
+  [RING_BREAK.Other]: RING_BREAK_PHRASE_TEXT.other,
 };
 
 /** 画面に出す文（何が起きたか → なぜか → 次に何をするか。設計書 §H.5）。 */
-export const RING_HIERARCHY_GATE_STRINGS = {
-  /** 記録の中身が読めないとき（通常は起きない）の文。 */
-  refused:
-    '動かした形を確定しませんでした。穴・飛び地が外周や別の穴・飛び地と交わる形になるためです。交わらない位置まで動かしてください。',
-  /** どの面のどの年の形か（「（「アルラーク国」の1500年の形）」）。 */
-  where: (featureName: string, atLabel: string): string => `（「${featureName}」の${atLabel}の形）`,
-  refusedMove: (phrase: string, where: string): string =>
-    `動かした形を確定しませんでした。${phrase}形になるためです${where}。交わらない位置まで動かしてください。`,
-  refusedDeleteOne: (phrase: string, where: string): string =>
-    `この頂点を消すと${phrase}ので消せません${where}。頂点は消していません。`,
-  refusedDeleteMany: (phrase: string, where: string): string =>
-    `選んだ頂点を消すと${phrase}ので消せません${where}。頂点は消していません。`,
-} as const;
+export { RING_HIERARCHY_GATE_STRINGS };
 
 function isLeaf(feature: { readonly kind: string }): feature is LeafFeature {
   return feature.kind === FEATURE_KIND.Leaf;

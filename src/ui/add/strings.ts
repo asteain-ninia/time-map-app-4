@@ -160,3 +160,13 @@ export function shapeRejectionMessage(rejection: ShapeRejection): string {
       return ADD_STRINGS.longEdgeRefused;
   }
 }
+
+/** 地物の呼び方（`snap-ports.ts` / `useAddTool.ts`）と、吸着の範囲の案内（`SnapOptions.tsx`）。 */
+export const ADD_TEXT = {
+  quotedName: (name: string): string => `「${name}」`,
+  kindQuotedName: (kind: string, name: string): string => `${kind}「${name}」`,
+  parentQuotedName: (parent: string, name: string): string => `${parent}の「${name}」`,
+  parentKindQuotedName: (parent: string, kind: string, name: string): string =>
+    `${parent}の${kind}「${name}」`,
+  snapToleranceRange: (min: number, max: number): string => `${min}〜${max}px`,
+} as const;

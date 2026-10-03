@@ -20,17 +20,10 @@ import {
   autoColorToggleable,
 } from '../../domain/coloring';
 import type { PaletteThemeId } from '../../domain/coloring';
+import { STYLE_STRINGS } from './messages';
 
 /** U33 style-section Japanese UI strings (NFR 5.7), single-sourced here. */
-export const STYLE_STRINGS = {
-  sectionTitle: 'スタイル',
-  autoColorLabel: '自動配色を許可',
-  paletteLabel: '使用パレット',
-  fillColorLabel: '通常表示色',
-  selectedColorLabel: '選択表示色',
-  opacityLabel: '透過',
-  autoColorOnNotice: '自動配色 ON のため色は自動決定されます（閲覧のみ）。',
-} as const;
+export { STYLE_STRINGS };
 
 /**
  * The resolved edit-permission for every style control, derived from ONE input

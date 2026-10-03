@@ -43,6 +43,7 @@ import { MinimapPreview } from './MinimapPreview';
 import { ROW_STATE } from './model';
 import {
   ACTION_STRINGS,
+  CONFLICT_ROW_TEXT,
   CONFLICT_STRINGS,
   GUIDE_STRINGS,
   POLICY_STRINGS,
@@ -262,7 +263,7 @@ export function ConflictResolutionModal<S>(
                         {/* 色見本（増分 8E / V13 ③）。地図で塗られている色で 2 件を見分ける。 */}
                         <ParticipantSwatch color={colorA} />
                         <ParticipantTag tag={tagOf(conflict.a.featureId)} />
-                        {row.featureNames[0]} ／{' '}
+                        {row.featureNames[0]}{CONFLICT_ROW_TEXT.participantSeparator}{' '}
                         <ParticipantSwatch color={colorB} />
                         <ParticipantTag tag={tagOf(conflict.b.featureId)} />
                         {row.featureNames[1]}

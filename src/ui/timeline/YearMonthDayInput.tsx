@@ -22,6 +22,8 @@ import {
   type YmdDraft,
 } from './ymd-draft';
 
+import { YMD_INPUT_TEXT } from './strings';
+
 export interface YearMonthDayInputProps {
   /** Title shown above the field (per-use, e.g. 「直接ジャンプ」「開始時刻」). */
   readonly title: string;
@@ -172,10 +174,10 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
       <div className="ymd-input__title">{title}</div>
       <div className="ymd-input__fields">
         <label className="ymd-input__field">
-          <span>年</span>
+          <span>{YMD_INPUT_TEXT.yearCaption}</span>
           <input
             type="number"
-            aria-label={`${title} 年`}
+            aria-label={YMD_INPUT_TEXT.yearLabel(title)}
             data-testid={tid('year')}
             value={draft.yearText}
             disabled={!specifying}
@@ -184,10 +186,10 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
         </label>
 
         <label className="ymd-input__field">
-          <span>月</span>
+          <span>{YMD_INPUT_TEXT.monthCaption}</span>
           <input
             type="number"
-            aria-label={`${title} 月`}
+            aria-label={YMD_INPUT_TEXT.monthLabel(title)}
             data-testid={tid('month')}
             value={draft.monthText}
             disabled={!specifying || !draft.monthSpecified}
@@ -196,7 +198,7 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
           <button
             type="button"
             aria-pressed={!draft.monthSpecified}
-            aria-label={`${title} 月 未指定`}
+            aria-label={YMD_INPUT_TEXT.monthUnsetLabel(title)}
             data-testid={tid('month-toggle')}
             disabled={!specifying}
             onClick={() =>
@@ -207,15 +209,15 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
               )
             }
           >
-            {draft.monthSpecified ? '指定' : '未指定'}
+            {draft.monthSpecified ? YMD_INPUT_TEXT.specified : YMD_INPUT_TEXT.unspecified}
           </button>
         </label>
 
         <label className="ymd-input__field">
-          <span>日</span>
+          <span>{YMD_INPUT_TEXT.dayCaption}</span>
           <input
             type="number"
-            aria-label={`${title} 日`}
+            aria-label={YMD_INPUT_TEXT.dayLabel(title)}
             data-testid={tid('day')}
             value={draft.dayText}
             disabled={!specifying || !draft.monthSpecified || !draft.daySpecified}
@@ -224,14 +226,14 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
           <button
             type="button"
             aria-pressed={!draft.daySpecified}
-            aria-label={`${title} 日 未指定`}
+            aria-label={YMD_INPUT_TEXT.dayUnsetLabel(title)}
             data-testid={tid('day-toggle')}
             disabled={!specifying || !draft.monthSpecified}
             onClick={() =>
               patch(draft.daySpecified ? { daySpecified: false } : { daySpecified: true })
             }
           >
-            {draft.daySpecified ? '指定' : '未指定'}
+            {draft.daySpecified ? YMD_INPUT_TEXT.specified : YMD_INPUT_TEXT.unspecified}
           </button>
         </label>
       </div>
@@ -241,7 +243,7 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
           fabricated concrete date. */}
       {!specifying && (
         <div className="ymd-input__open" data-testid={tid('open')}>
-          {openStateLabel ?? '継続中'}
+          {openStateLabel ?? YMD_INPUT_TEXT.openStateDefault}
         </div>
       )}
 
@@ -260,18 +262,18 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
           disabled={!specifying}
           onClick={handleConfirm}
         >
-          {confirmLabel ?? '反映'}
+          {confirmLabel ?? YMD_INPUT_TEXT.confirmDefault}
         </button>
         {/* The deliberate「終了を指定」step reveals empty date fields — a concrete end is
             emitted ONLY after the user chooses to give the open interval one (F2). */}
         {!specifying && (
           <button type="button" data-testid={tid('specify')} onClick={handleSpecify}>
-            {specifyLabel ?? '終了を指定'}
+            {specifyLabel ?? YMD_INPUT_TEXT.specifyDefault}
           </button>
         )}
         {onClear !== undefined && (
           <button type="button" data-testid={tid('clear')} onClick={handleClear}>
-            {clearLabel ?? '未設定'}
+            {clearLabel ?? YMD_INPUT_TEXT.clearDefault}
           </button>
         )}
       </div>

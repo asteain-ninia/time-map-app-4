@@ -13,6 +13,8 @@
 
 import { DISPLAY_CONTROL_STRINGS } from '../shell/index';
 
+import { GLOBAL_DEPTH_TEXT } from './strings';
+
 export interface GlobalDepthControlProps {
   /** The global hierarchy-depth threshold N (FR-42). */
   readonly globalDepth: number;
@@ -113,7 +115,7 @@ export function GlobalDepthControl(props: GlobalDepthControlProps): JSX.Element 
           disabled={globalDepth <= 0}
           onClick={() => setN(globalDepth - 1)}
         >
-          −
+          {GLOBAL_DEPTH_TEXT.depthDownButton}
         </button>
         <button
           type="button"
@@ -121,7 +123,7 @@ export function GlobalDepthControl(props: GlobalDepthControlProps): JSX.Element 
           disabled={globalDepth >= sliderMax}
           onClick={() => setN(globalDepth + 1)}
         >
-          ＋
+          {GLOBAL_DEPTH_TEXT.depthUpButton}
         </button>
       </div>
 
@@ -142,8 +144,8 @@ export function GlobalDepthControl(props: GlobalDepthControlProps): JSX.Element 
           {activeFeatureLabel === null
             ? DISPLAY_CONTROL_STRINGS.focusNoTargetLabel
             : focusActive
-              ? `${activeFeatureLabel} に切替`
-              : `${activeFeatureLabel} を深掘り`}
+              ? GLOBAL_DEPTH_TEXT.focusSwitchTo(activeFeatureLabel)
+              : GLOBAL_DEPTH_TEXT.focusDrill(activeFeatureLabel)}
         </button>
 
         {/* The per-focus depth M + emphasis + clear enable only while a focus is

@@ -24,6 +24,8 @@ import {
   type TimePoint,
 } from '../../domain/time/time-point';
 
+import { TIME_DISPLAY_TEXT } from './strings';
+
 // --- 紀元前 (BC) display convention -----------------------------------------
 //
 // U02 uses an astronomical continuous year count where year 0 exists and
@@ -52,7 +54,7 @@ export function toYearLabel(year: number): YearLabel {
 /** Renders an astronomical year as a Japanese label (紀元前 N 年 / N 年). */
 export function formatYear(year: number): string {
   const label = toYearLabel(year);
-  return label.isBce ? `紀元前${label.magnitude}年` : `${label.magnitude}年`;
+  return label.isBce ? TIME_DISPLAY_TEXT.bceYear(label.magnitude) : TIME_DISPLAY_TEXT.ceYear(label.magnitude);
 }
 
 /**
@@ -68,7 +70,7 @@ export function fromYearLabel(label: YearLabel): number {
 
 /** Renders a CompleteTimePoint as a full Japanese label (… 年 M 月 D 日). */
 export function formatCompleteTimePoint(point: CompleteTimePoint): string {
-  return `${formatYear(point.year)}${point.month}月${point.day}日`;
+  return TIME_DISPLAY_TEXT.yearMonthDay(formatYear(point.year), point.month, point.day);
 }
 
 /**
@@ -80,9 +82,9 @@ export function formatTimePoint(point: TimePoint): string {
     case 'year':
       return formatYear(point.year);
     case 'yearMonth':
-      return `${formatYear(point.year)}${point.month}月`;
+      return TIME_DISPLAY_TEXT.yearMonth(formatYear(point.year), point.month);
     case 'yearMonthDay':
-      return `${formatYear(point.year)}${point.month}月${point.day}日`;
+      return TIME_DISPLAY_TEXT.yearMonthDay(formatYear(point.year), point.month, point.day);
   }
 }
 
@@ -97,9 +99,9 @@ export function formatTimePoint(point: TimePoint): string {
 export function granularityNote(point: TimePoint): string {
   switch (point.granularity) {
     case 'year':
-      return '月日は未指定です（指定された年のみ表示しています）';
+      return TIME_DISPLAY_TEXT.granularityYearNote;
     case 'yearMonth':
-      return '日は未指定です（指定された年月のみ表示しています）';
+      return TIME_DISPLAY_TEXT.granularityYearMonthNote;
     case 'yearMonthDay':
       return '';
   }

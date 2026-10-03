@@ -42,6 +42,7 @@ import {
 import { acquireSingleInstanceLock, revealWindow } from './single-instance';
 import { IPC_CHANNEL, type AutoSaveConfig } from '../ipc/contract';
 import { e2eHarnessAdditionalArguments } from '../ipc/e2e-harness';
+import { SHELL_MAIN_STRINGS } from './strings';
 
 // Electron main process. Shell layer may import domain only (never ui/render).
 
@@ -314,13 +315,13 @@ function createWindow(): void {
       if (E2E_TEST || SMOKE_TEST) return true;
       const { response } = await dialog.showMessageBox(window, {
         type: 'warning',
-        buttons: ['キャンセル', '終了する'],
+        buttons: [SHELL_MAIN_STRINGS.unresponsiveCancel, SHELL_MAIN_STRINGS.unresponsiveQuit],
         defaultId: 0,
         cancelId: 0,
         noLink: true,
-        title: 'アプリが応答していません',
-        message: 'アプリが応答していません。',
-        detail: '未保存の変更があれば失われる可能性があります。終了しますか？',
+        title: SHELL_MAIN_STRINGS.unresponsiveTitle,
+        message: SHELL_MAIN_STRINGS.unresponsiveMessage,
+        detail: SHELL_MAIN_STRINGS.unresponsiveDetail,
       });
       // response は buttons のインデックス（0=キャンセル / 1=終了する）。
       return response === 1;

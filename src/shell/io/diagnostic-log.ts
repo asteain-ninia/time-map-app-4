@@ -59,6 +59,7 @@ export const MAX_LOG_LINE_BYTES = 16 * 1024;
 export const MAX_LOG_FILE_BYTES = 10 * 1024 * 1024;
 /** The message of the ONE marker line appended when a daily file reaches its cap. */
 export const DIAGNOSTIC_LOG_FILE_CAP_MESSAGE =
+  // eslint-disable-next-line no-restricted-syntax -- 診断ログのファイルにだけ書く印の行（画面には出さない）
   '診断ログが1日あたりの上限サイズに達したため、以降の記録を停止します';
 
 /**

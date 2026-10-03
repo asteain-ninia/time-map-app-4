@@ -7,6 +7,9 @@
 
 import { MERGE_REJECT, type MergeRejectKind } from './precondition';
 
+/** 結合コマンドの名前（`Command.label`。「元に戻せます」などに出る）。 */
+export const MSG_MERGE_COMMAND_LABEL = '結合';
+
 /** 結合対象が 2 件未満。 */
 export const MSG_MERGE_TOO_FEW =
   '結合するには面情報を 2 つ以上選択してください。';
