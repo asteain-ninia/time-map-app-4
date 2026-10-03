@@ -189,16 +189,80 @@ describe('applyEditProposal — 辺に足した頂点を、その辺を共有す
     expect(after.histories[1]).toBe(root.histories[1]);
   });
 
-  it('隣が後ろの年に錨を持っていても、そこには入れない（押した地物の後ろにも無いので揃う）', () => {
+  // 再検証 重 2-1: 隣どうしで錨の切れ目が違っても、後ろの年に T 字を残さない。
+  /** `id` の履歴を、0 年と `laterYear` 年の 2 つの錨（中身は同じ）で作る。 */
+  function twoAnchorHistory(
+    id: string,
+    features: readonly Feature[],
+    vertices: readonly Vertex[],
+    laterYear: number,
+  ): FeatureHistory {
+    const early = createAnchor(asAnchorId(`${id}-0`), createAnchorSnapshot(features, createVertexStore(vertices)));
     const later = createAnchor(
-      asAnchorId('B-50'),
-      createAnchorSnapshot([B], createVertexStore(B_V)),
+      asAnchorId(`${id}-${String(laterYear)}`),
+      createAnchorSnapshot(features, createVertexStore(vertices)),
     );
-    const early = createAnchor(asAnchorId('B-0'), createAnchorSnapshot([B], createVertexStore(B_V)));
+    return {
+      featureId: asFeatureId(id),
+      series: normalizeSeries(
+        [
+          createAnchorEntry(early, T0, timePointYear(laterYear)),
+          createAnchorEntry(later, timePointYear(laterYear), null),
+        ],
+        CAL,
+      ),
+    };
+  }
+
+  it('隣（B）だけが後ろの年に錨を持っていても、その錨にも同じ頂点が入る（後ろの年に T 字を残さない）', () => {
+    const root = project([
+      singleAnchorHistory('A', [A], createVertexStore(A_V), 0),
+      twoAnchorHistory('B', [B], B_V, 50),
+    ]);
+    const after = applyEditProposal(
+      root,
+      createEditProposal(asFeatureId('A'), T0, edgeAddSnapshot()),
+      CAL,
+    );
+    for (const year of [0, 60]) {
+      expect(idsOf(featureAt(after, 'A', year))).toEqual([['a0', 's1', 'new-1', 's2', 'a3']]);
+      expect(idsOf(featureAt(after, 'B', year))).toEqual([['s1', 'b1', 'b2', 's2', 'new-1']]);
+    }
+    expect(getVertex(storeOf(after, 'B', 60), vid('new-1'))?.coordinate).toEqual(
+      createCoordinate(10, 5),
+    );
+  });
+
+  it('押した地物（A）だけが後ろの年に錨を持っていても、A の後ろの錨にも入る（逆向きの T 字を残さない）', () => {
+    const root = project([
+      twoAnchorHistory('A', [A], A_V, 50),
+      singleAnchorHistory('B', [B], createVertexStore(B_V), 0),
+    ]);
+    const after = applyEditProposal(
+      root,
+      createEditProposal(asFeatureId('A'), T0, edgeAddSnapshot()),
+      CAL,
+    );
+    for (const year of [0, 60]) {
+      expect(idsOf(featureAt(after, 'A', year))).toEqual([['a0', 's1', 'new-1', 's2', 'a3']]);
+      expect(idsOf(featureAt(after, 'B', year))).toEqual([['s1', 'b1', 'b2', 's2', 'new-1']]);
+    }
+  });
+
+  it('a と b が続かなくなった錨から先へは入れない（記録された歴史でその辺が変わった）', () => {
+    // B は 50 年に共有辺の間へ自分の頂点 m を足し、80 年にはまた a–b が続く形に戻っている。
+    const m = v('m', 10, 7);
+    const bMid = leaf('B', ['s1', 'b1', 'b2', 's2', 'm']);
+    const mk = (anchorId: string, f: Feature, vs: readonly Vertex[]) =>
+      createAnchor(asAnchorId(anchorId), createAnchorSnapshot([f], createVertexStore(vs)));
     const bHistory: FeatureHistory = {
       featureId: asFeatureId('B'),
       series: normalizeSeries(
-        [createAnchorEntry(early, T0, timePointYear(50)), createAnchorEntry(later, timePointYear(50), null)],
+        [
+          createAnchorEntry(mk('B-0', B, B_V), T0, timePointYear(50)),
+          createAnchorEntry(mk('B-50', bMid, [...B_V, m]), timePointYear(50), timePointYear(80)),
+          createAnchorEntry(mk('B-80', B, B_V), timePointYear(80), null),
+        ],
         CAL,
       ),
     };
@@ -209,7 +273,69 @@ describe('applyEditProposal — 辺に足した頂点を、その辺を共有す
       CAL,
     );
     expect(idsOf(featureAt(after, 'B', 0))).toEqual([['s1', 'b1', 'b2', 's2', 'new-1']]);
-    expect(idsOf(featureAt(after, 'B', 60))).toEqual([['s1', 'b1', 'b2', 's2']]);
+    expect(idsOf(featureAt(after, 'B', 60))).toEqual([['s1', 'b1', 'b2', 's2', 'm']]);
+    expect(idsOf(featureAt(after, 'B', 90))).toEqual([['s1', 'b1', 'b2', 's2']]);
+  });
+
+  it('T より前の錨には入れない', () => {
+    const early = createAnchor(asAnchorId('B-m10'), createAnchorSnapshot([B], createVertexStore(B_V)));
+    const atZero = createAnchor(asAnchorId('B-0'), createAnchorSnapshot([B], createVertexStore(B_V)));
+    const bHistory: FeatureHistory = {
+      featureId: asFeatureId('B'),
+      series: normalizeSeries(
+        [
+          createAnchorEntry(early, timePointYear(-10), T0),
+          createAnchorEntry(atZero, T0, null),
+        ],
+        CAL,
+      ),
+    };
+    const root = project([singleAnchorHistory('A', [A], createVertexStore(A_V), 0), bHistory]);
+    const after = applyEditProposal(
+      root,
+      createEditProposal(asFeatureId('A'), T0, edgeAddSnapshot()),
+      CAL,
+    );
+    expect(idsOf(featureAt(after, 'B', -5))).toEqual([['s1', 'b1', 'b2', 's2']]);
+    expect(idsOf(featureAt(after, 'B', 0))).toEqual([['s1', 'b1', 'b2', 's2', 'new-1']]);
+  });
+
+  // 再検証 重 2-2: 押した地物が同じ辺を 2 つの輪で引いている（隣り合う穴どうし）。
+  it('押した地物の別の輪（隣り合う穴）が同じ辺を引いていれば、その輪にも入る', () => {
+    // 親 P の 2 つの穴 h0・h1 が辺 q1–q2 を共有している。h0 の辺に足す。
+    const pV = [v('p0', -50, -50), v('p1', 50, -50), v('p2', 50, 50), v('p3', -50, 50)];
+    const qV = [
+      v('q0', 0, 0),
+      v('q1', 10, 0),
+      v('q2', 10, 10),
+      v('q3', 0, 10),
+      v('r1', 20, 0),
+      v('r2', 20, 10),
+    ];
+    const P = leaf('P', ['p0', 'p1', 'p2', 'p3'], [
+      ['q0', 'q1', 'q2', 'q3'],
+      ['q1', 'r1', 'r2', 'q2'],
+    ]);
+    const root = project([singleAnchorHistory('P', [P], createVertexStore([...pV, ...qV]), 0)]);
+    const n = v('n', 10, 5);
+    const pAfter = leaf('P', ['p0', 'p1', 'p2', 'p3'], [
+      ['q0', 'q1', 'n', 'q2', 'q3'],
+      ['q1', 'r1', 'r2', 'q2'],
+    ]);
+    const after = applyEditProposal(
+      root,
+      createEditProposal(asFeatureId('P'), T0, {
+        feature: pAfter,
+        vertices: [n],
+        edgeInsert: { startVertexId: vid('q1'), endVertexId: vid('q2'), vertexId: vid('n') },
+      }),
+      CAL,
+    );
+    expect(idsOf(featureAt(after, 'P'))).toEqual([
+      ['p0', 'p1', 'p2', 'p3'],
+      ['q0', 'q1', 'n', 'q2', 'q3'],
+      ['q1', 'r1', 'r2', 'q2', 'n'],
+    ]);
   });
 
   it('確定で吸着が共有に変わったときは、隣にも共有先の id を入れる（同じ座標に別 id を作らない）', () => {
