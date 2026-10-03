@@ -64,7 +64,6 @@ import { buildEmptyProject } from './save-context';
 import { REPAIR_OUTCOME } from './repair-flow';
 import { REPAIR_STRINGS } from './strings';
 import { aggregate, anchorOf, fid, leafTile } from '../../domain/deletion/fixtures';
-import { timePointYear } from '../../domain/time/time-point';
 
 const CAL = getCalendar('gregorian');
 
