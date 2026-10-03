@@ -49,6 +49,13 @@
   margin: 0 0 12px;
 }
 
+/* 冒頭の文の言い換え（増分 8E）。冒頭の帯のすぐ下に、小さめの字で添える。 */
+.conflict-dialog__paraphrase {
+  margin: -6px 0 12px;
+  font-size: 12px;
+  color: #555;
+}
+
 .conflict-guide {
   background: #e7f1ff;
   border: 1px solid #b6d4fe;
@@ -169,6 +176,26 @@
   margin: 8px 0 0;
   padding: 0;
   font-size: 12px;
+}
+
+/* 増分 8E（N-17 / V13 ③）: 凡例と行の色見本。ミニマップと地図で塗っている色をそのまま
+ * 小さな四角で出す。枠線を付けるのは、白に近い色でも四角の輪郭が見えるようにするため。 */
+.conflict-preview__legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0;
+}
+
+.conflict-swatch {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  margin: 0 4px 0 2px;
+  vertical-align: -1px;
+  border: 1px solid #333;
+  border-radius: 2px;
 }
 
 .conflict-dialog__footer {

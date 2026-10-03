@@ -131,6 +131,10 @@ import {
   type ApplyResolutions,
 } from './conflict/index';
 import './conflict/conflict.css';
+// 増分 8E（V13）: 重なり解決の色見本と、解消したあとの状態行の文。
+import { participantFillColor } from './conflict/participant-color';
+import { conflictResolvedMessage } from './conflict/resolved-message';
+import { RESOLVED_STRINGS } from './conflict/strings';
 import './knife/knife.css';
 import type {
   Conflict,
@@ -3110,6 +3114,17 @@ export function App(): JSX.Element {
       if (clearOwner !== undefined && result.status === PROCESS_STATUS.Committed) {
         store.getState().replaceVertexSelection(clearOwner, []);
       }
+      // 増分 8E（設計書 §E.1 の V13 ⑦）: **どの重なりを片付けたのか**を状態行に残す。
+      // `recordCommit` が出した「◯◯を行いました」（止まっていた操作の名前）を、こちらの
+      // 文で上書きする ―― 利用者が最後に答えたのは重なりの解決だからである。年は止まって
+      // いた編集の錨の年（重なりを見つけた年）を言う。状態行は時間では消えない（K-7）。
+      if (result.status === PROCESS_STATUS.Committed && conflictState !== null) {
+        const resolvedText = conflictResolvedMessage(
+          conflictState.pending.conflicts,
+          conflictState.anchorTime ?? store.getState().currentTime,
+        );
+        if (resolvedText !== null) statusMessageStoreRef.current?.success(resolvedText);
+      }
       setConflictState(null);
       reArmActiveTool();
     },
@@ -3117,6 +3132,9 @@ export function App(): JSX.Element {
   );
 
   const onConflictCancel = useCallback(() => {
+    // 増分 8E: やめたことを状態行に言う（止まっていた頂点を追加の道具が「捨てました」と
+    // 言わなくなったので、その代わり。`AddToolController` の draftSizeRef の注記）。
+    statusMessageStoreRef.current?.notice(RESOLVED_STRINGS.cancelled);
     setConflictState(null);
     reArmActiveTool();
   }, [reArmActiveTool]);
@@ -4298,6 +4316,7 @@ export function App(): JSX.Element {
                 pending={conflictState.pending}
                 applyResolutions={conflictState.applyResolutions}
                 shapesFor={shapesFor}
+                colorFor={participantFillColor}
                 showGuide={store.getState().appSettings.showConflictGuide}
                 onSuppressGuide={() =>
                   store.getState().updateAppSetting('showConflictGuide', false)

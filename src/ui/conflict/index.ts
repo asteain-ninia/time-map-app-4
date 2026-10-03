@@ -67,4 +67,14 @@ export {
   GUIDE_STRINGS,
   REPORT_HINT,
   withReportHint,
+  RESOLVED_STRINGS,
 } from './strings';
+
+// 増分 8E（V13）: 呼び名（N-18）・色見本（③）・解消の知らせ（⑦）。
+export {
+  PARTICIPANT_NAME_STRINGS,
+  createdAtOf,
+  participantDisplayName,
+} from './participant-name';
+export { participantFillColor } from './participant-color';
+export { conflictResolvedMessage } from './resolved-message';

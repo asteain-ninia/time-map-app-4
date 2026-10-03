@@ -90,7 +90,6 @@ import { difference, isOk } from '../domain/geometry/index';
 import { isMultiPolygonEmpty, type GeoMultiPolygon } from '../domain/geometry/types';
 import { alignMultiPolygon, referenceLonForMultiPolygon } from '../domain/geo/index';
 import {
-  featureDisplayName,
   pruneVertexStore,
   referencedVertexIds,
   withKindLabel,
@@ -102,6 +101,11 @@ import { createHoleRing, createShape, createTerritoryRing, type Ring } from '../
 import { createVertexStore, getVertex, type Vertex, type VertexStore } from '../domain/vertex';
 import { buildWeldIndex, weldRingVertices, type WeldIndex } from '../domain/vertex-weld';
 import type { TimePoint } from '../domain/time/time-point';
+import {
+  PARTICIPANT_NAME_STRINGS,
+  createdAtOf,
+  participantDisplayName,
+} from './conflict/participant-name';
 
 /** The live domain truth root the binding threads through every port (U14). */
 export type DomainRoot = DomainProject;
@@ -265,22 +269,26 @@ function checkTimeOverExisting<Snapshot>(
   };
 }
 
+/** その時刻に見つからない地物を呼ぶ語（「名前のない地物」）。 */
+const UNKNOWN_FEATURE_WORD = '地物';
+
 /**
  * A display-name lookup over the trial state at the anchor time (FR-62).
  *
- * Falls back to the feature id whenever the name is missing OR blank
- * (unnamed faces are the default — the add form commits an empty name), so the
- * conflict modal's priority radios and overlap rows always carry an identifier
- * the user can disambiguate by. This mirrors the 地物一覧 label rule in
- * SidebarContent (name → id fallback): a `??` alone is insufficient because an
- * empty string is present-but-blank, not absent.
+ * 増分 8E（N-18）: 名前が空の面を **内部 ID で呼ばない**。以前は id へ落としていたので、
+ * 重なり解決の行とラジオに `f-5-4 ／ f-b-a` と出ていた（追加の板は名前を空のまま確定
+ * できるので、これが既定の見え方だった）。いまは「名前のない面（1500年に作成）」と呼ぶ
+ * （規則は `conflict/participant-name.ts` の 1 か所）。その時刻に見つからない id は種類も
+ * 分からないので「名前のない地物」と呼ぶ（ここでも id は出さない）。
  */
 function displayNamesAt(root: DomainRoot, time: TimePoint): (id: FeatureId) => string {
   const byId = new Map<FeatureId, Feature>();
   for (const f of featuresAt(root, time)) byId.set(f.id, f);
   return (id) => {
     const f = byId.get(id);
-    return f !== undefined ? featureDisplayName(f) : String(id);
+    return f !== undefined
+      ? participantDisplayName(f, createdAtOf(root.histories, id, calendar))
+      : PARTICIPANT_NAME_STRINGS.unnamed(UNKNOWN_FEATURE_WORD);
   };
 }
 
