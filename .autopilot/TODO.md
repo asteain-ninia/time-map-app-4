@@ -5,8 +5,8 @@
 **問題**: `fix(bughunt...)` / `fix(bughunt2...)` のコミット件名が、修正テンプレの `String(f.title).slice(0,~55)` で**単語途中で切断**され、詳細ボディも欠落。ログが辿りづらい。
 
 **復元可能性**: 各 fix エージェントの完全な finding / summary（＝本来の件名・詳細）は破棄されておらず、以下に残存:
-- workflow transcript: `C:\Users\tatuk\.claude\projects\c---WORKSPACE\87df7544-909d-4aad-b1cf-3eefcb5f77de\subagents\workflows\wf_*\*.jsonl`
-- task 出力: `C:\Users\tatuk\AppData\Local\Temp\claude\c---WORKSPACE\87df7544-909d-4aad-b1cf-3eefcb5f77de\tasks\*.output`
+- workflow transcript: `C:\Users\…\.claude\projects\c---WORKSPACE\87df7544-909d-4aad-b1cf-3eefcb5f77de\subagents\workflows\wf_*\*.jsonl`
+- task 出力: `C:\Users\…\AppData\Local\Temp\claude\c---WORKSPACE\87df7544-909d-4aad-b1cf-3eefcb5f77de\tasks\*.output`
 
 **計画（big effort 前提）**:
 1. 切れた `fix(bughunt...)` コミットを列挙（`git log`）。
