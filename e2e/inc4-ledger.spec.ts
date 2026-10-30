@@ -37,6 +37,7 @@ import {
   listedFeatureCount,
   loadSyntheticProject,
 } from './helpers';
+import { SYNTHETIC_LOAD_LIMIT_MS } from '../scripts/test-lesson-rules.mjs';
 
 /**
  * いまの視点（ズームと平行移動）を 1 本の文字列で読む（2026-09-06、2 回目の手直し）。
@@ -69,6 +70,25 @@ async function settledCamera(page: Page): Promise<string> {
     prev = now;
   }
   return prev;
+}
+
+/** 合成データを載せる手順が上限の時間で終わらなければ、そこで落とす。 */
+async function withinLoadLimit(load: () => Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        new Error(
+          `合成データの読み込みが ${String(SYNTHETIC_LOAD_LIMIT_MS)}ms を超えた。アプリが遅いと読む前に、まず合成データの形を疑う（開発ガイド §5.60）`,
+        ),
+      );
+    }, SYNTHETIC_LOAD_LIMIT_MS);
+  });
+  try {
+    await Promise.race([load(), limit]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** 台帳に **DOM として載っている** 行の数（仮想スクロールなので件数とは別物）。 */
@@ -274,9 +294,15 @@ test.describe('増分 4 — 右パネルの 2 区画・台帳・作業のまと�
     test.setTimeout(180_000);
     const { app, page } = await launchApp();
     try {
-      await loadSyntheticProject(page, 5000);
-      // 件数の真実源は表示（DOM の行数ではない）。
-      await expect(page.getByTestId('unified-list-count')).toHaveText('5000件');
+      // 載せる操作そのものに上限を置く（開発ガイド §5.60）。fixture の形を崩すと二乗の仕事に
+      // なり、テスト全体の時間切れまで何も言わないまま 3 分待つことになる。
+      await withinLoadLimit(async () => {
+        await loadSyntheticProject(page, 5000);
+        // 件数の真実源は表示（DOM の行数ではない）。
+        await expect(page.getByTestId('unified-list-count')).toHaveText('5000件', {
+          timeout: SYNTHETIC_LOAD_LIMIT_MS,
+        });
+      });
       expect(await listedFeatureCount(page)).toBe(5000);
 
       // **DOM に載るのは窓に入るぶんだけ。**
