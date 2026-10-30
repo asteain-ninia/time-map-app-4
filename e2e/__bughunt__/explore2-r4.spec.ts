@@ -49,11 +49,12 @@ import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 
 import {
   launchApp,
   enterEditMode,
+  leaveViewMode,
   returnToViewMode,
   armAddAreaTool,
   squareCorners,
@@ -274,14 +275,52 @@ async function commitFaceMaybeConflict(
     return 'rejected';
   }
   await page.getByTestId('add-save').click();
-  await page.waitForTimeout(200);
-  if ((await page.getByTestId('conflict-modal-root').count()) > 0) return 'conflict';
+  // 保存は 1 コマ遅れて走り、板も遅れて出る（教訓 §5.88）。時間切れつきで待ち、出なければ先へ。
+  const paused = await page
+    .getByTestId('conflict-modal-root')
+    .waitFor({ state: 'visible', timeout: 1500 })
+    .then(
+      () => true,
+      () => false,
+    );
+  if (paused) return 'conflict';
   try {
     await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/, { timeout: 6000 });
   } catch {
     record('add-no-selection', 'active-feature empty after add commit (no conflict modal)');
   }
   return 'committed';
+}
+
+/**
+ * 板の行を 1 行ずつ、本物のラジオ（先頭の選択肢）で解決する。旧版は `[data-testid^="policy-"]`
+ * を 2 つ飛びに押していたが、その前方一致は選択肢の入れ物（`policy-choice-option`）にも当たる
+ * ので、解決できずに「適用が押せない」を記録していた（2026-10-31 の走らせ直しで判明）。
+ */
+async function resolveEveryRow(page: Page): Promise<void> {
+  const rows = page.getByTestId('conflict-rows').locator('li');
+  const n = await rows.count();
+  for (let i = 0; i < n; i += 1) {
+    const radio = rows.nth(i).getByRole('radio').first();
+    if ((await radio.count()) > 0) {
+      await radio.check().catch(() => undefined);
+      await page.waitForTimeout(40);
+    }
+  }
+}
+
+/**
+ * 欄に値を入れて読み返す（教訓 §5.100）。入らなかったら所見にして偽を返す ―― 入らないまま
+ * 保存を押すと「何も変えない保存が閉じた」を「受け付けた」と読んでしまう。
+ */
+async function fillChecked(input: Locator, value: string, label: string): Promise<boolean> {
+  await input.fill(value).catch(() => undefined);
+  const got = await input.inputValue().catch(() => '');
+  if (got !== value) {
+    record('settings-fill-lost', `${label}: typed ${value}, field reads "${got}"`);
+    return false;
+  }
+  return true;
 }
 
 // Gate the conflict modal invariants and return row count.
@@ -367,12 +406,8 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
       await shot(page, 'two-faces');
       if (f2 === 'conflict') {
         // The 2nd already overlaps the 1st; resolve+apply to set a clean base.
-        const n = await gateConflictModal(page, 'pre-conflict');
-        for (let i = 0; i < n; i += 1) {
-          const radios = page.locator('[data-testid^="policy-"]');
-          const r = radios.nth(i * 2);
-          if ((await r.count()) > 0) await r.check({ force: true }).catch(() => undefined);
-        }
+        await gateConflictModal(page, 'pre-conflict');
+        await resolveEveryRow(page);
         const ap = page.getByTestId('conflict-apply');
         if (await ap.isEnabled().catch(() => false)) await ap.click();
         else await page.getByTestId('conflict-cancel').click().catch(() => undefined);
@@ -421,16 +456,9 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
         // 同じ重なりが再現しない。かたまりの解から取り直す。
         const f3b = await commitFaceMaybeConflict(page, ...clusterFaces[2]);
         if (f3b === 'conflict') {
-          const n2 = await gateConflictModal(page, 'apply-conflict');
-          // Resolve: choose the FIRST policy radio per row (2 radios/row a|b).
-          for (let i = 0; i < n2; i += 1) {
-            const radios = page.locator('[data-testid^="policy-"]');
-            const r = radios.nth(i * 2);
-            if ((await r.count()) > 0) {
-              await r.check({ force: true }).catch(() => undefined);
-              await page.waitForTimeout(40);
-            }
-          }
+          await gateConflictModal(page, 'apply-conflict');
+          // Resolve: choose the FIRST policy radio per row.
+          await resolveEveryRow(page);
           // Remaining should be finite and apply now enabled.
           const remText = ((await page.getByTestId('conflict-remaining').textContent()) ?? '').trim();
           if (/NaN|Infinity|undefined/.test(remText)) record('conflict-remaining-malformed', `apply-phase remaining="${remText}"`);
@@ -468,7 +496,21 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
       // 2. SETTINGS — invalid clamp REJECTED, then a valid clamp + APP tab poke.
       // =====================================================================
       let clamp = { min: 0.1, max: 10000 };
-      if (await clickMenuCommand(page, 'tools', 'tools.settings')) {
+      // **鍵を開けてから設定を開く**（教訓 §5.100）。旧版は `clickMenuCommand`（鍵を閉じる）で
+      // 開いていたので、プロジェクト設定の欄は「読むだけ」で無効のまま。`fill` は黙って落ち、
+      // 何も変えない保存が閉じたことを「最小 > 最大を受け付けた」「範囲を狭めた」と記録し、
+      // その後の倍率を上限違反と数えていた（B88 の正体。2026-10-31）。
+      await leaveViewMode(page);
+      await page.getByTestId('menu-tools').click();
+      const settingsItem = page
+        .getByTestId('menu-items-tools')
+        .locator('[data-command="tools.settings"]');
+      const settingsReachable = await settingsItem.isEnabled().catch(() => false);
+      if (!settingsReachable) {
+        record('menu-item-missing', 'tools.settings not reachable with the lock open');
+        await page.getByTestId('menu-tools').click().catch(() => undefined);
+      } else {
+        await settingsItem.click();
         await expect(page.getByTestId('settings-modal-root')).toBeVisible();
         await page.getByTestId('settings-tab-project').click().catch(() => undefined);
         await shot(page, 'settings-open');
@@ -476,20 +518,29 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
         const minInput = page.locator('input[aria-label*="最小"][aria-label*="ズーム"]').first();
         const maxInput = page.locator('input[aria-label*="最大"][aria-label*="ズーム"]').first();
         const haveInputs = (await minInput.count()) > 0 && (await maxInput.count()) > 0;
+        // 前提: 欄が押せる。押せないなら別の所見にして、その先の判定は出さない（§5.100）。
+        const inputsEnabled = haveInputs && (await minInput.isEnabled().catch(() => false));
+        if (haveInputs && !inputsEnabled) {
+          record('settings-inputs-disabled', 'zoom inputs are disabled (project settings read-only?)');
+          await page.getByTestId('settings-cancel').click().catch(() => undefined);
+        }
 
-        if (haveInputs) {
+        if (inputsEnabled) {
           // --- NEGATIVE: min > max must be REJECTED (settings-error surfaces).
-          await minInput.fill('8').catch(() => undefined);
-          await maxInput.fill('2').catch(() => undefined);
+          const typedInvalid =
+            (await fillChecked(minInput, '8', 'zoomMin')) &&
+            (await fillChecked(maxInput, '2', 'zoomMax'));
           await shot(page, 'settings-invalid');
           await page.getByTestId('settings-save').click();
           await page.waitForTimeout(200);
           if ((await page.getByTestId('settings-modal-root').count()) === 0) {
-            record('settings-invalid-accepted', 'min>max zoom clamp was ACCEPTED (should reject min<=max)');
-            // It applied; reopen to fix.
-            if (await clickMenuCommand(page, 'tools', 'tools.settings')) {
-              await page.getByTestId('settings-tab-project').click().catch(() => undefined);
+            if (typedInvalid) {
+              record('settings-invalid-accepted', 'min>max zoom clamp was ACCEPTED (should reject min<=max)');
             }
+            // It closed; reopen (with the lock still open) to continue.
+            await page.getByTestId('menu-tools').click();
+            await settingsItem.click().catch(() => undefined);
+            await page.getByTestId('settings-tab-project').click().catch(() => undefined);
           } else {
             const errs = await page.locator('[data-testid^="settings-error-"]').allTextContents().catch(() => []);
             if (errs.length === 0) {
@@ -502,8 +553,9 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
           const x2 = page.locator('input[aria-label*="最大"][aria-label*="ズーム"]').first();
           const TIGHT_MIN = 0.5;
           const TIGHT_MAX = 4;
-          await m2.fill(String(TIGHT_MIN)).catch(() => undefined);
-          await x2.fill(String(TIGHT_MAX)).catch(() => undefined);
+          const typedTight =
+            (await fillChecked(m2, String(TIGHT_MIN), 'zoomMin')) &&
+            (await fillChecked(x2, String(TIGHT_MAX), 'zoomMax'));
           // Narrow the timeline year range (poke a different field than r1).
           const minYear = page.locator('input[aria-label*="開始"], input[aria-label*="最小"][aria-label*="年"]').first();
           const maxYear = page.locator('input[aria-label*="終了"], input[aria-label*="最大"][aria-label*="年"]').first();
@@ -527,11 +579,12 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
             const errs = await page.locator('[data-testid^="settings-error-"]').allTextContents().catch(() => []);
             record('settings-valid-rejected', `valid settings save rejected: ${JSON.stringify(errs)}`);
             await page.getByTestId('settings-cancel').click().catch(() => undefined);
-          } else {
+          } else if (typedTight) {
+            // 狭めた範囲を名乗るのは、値が欄に入ったのを読み返せたときだけ（§5.100）。
             clamp = { min: TIGHT_MIN, max: TIGHT_MAX };
             record('settings-clamp-applied', `zoom clamp now [${TIGHT_MIN}, ${TIGHT_MAX}]`);
           }
-        } else {
+        } else if (!haveInputs) {
           record('settings-zoom-inputs-missing', 'could not find zoomMin/zoomMax inputs');
           await page.getByTestId('settings-cancel').click().catch(() => undefined);
         }
