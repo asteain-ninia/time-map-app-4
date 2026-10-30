@@ -5517,6 +5517,9 @@ function createRingEditBootstrap(
   const bindingFor = (
     snapshot: RingFeatureSnapshot,
   ): ReturnType<typeof createLiveShapeEditBinding> => {
+    // 最後の外周を消して面ごと消える写しには地物が無い。環の数では決まらないので、消した
+    // 印で削除へ送る（B99。以前は追加へ落ちて「穴・飛び地の追加を行いました」と言っていた）。
+    if (snapshot.deletedFeatureId !== undefined) return liveDelete;
     const after = snapshot.feature;
     if (after === undefined || after.kind !== FEATURE_KIND.Leaf) return liveAdd;
     return after.shape.rings.length >= ringCountOf(getRoot(), after.id) ? liveAdd : liveDelete;
