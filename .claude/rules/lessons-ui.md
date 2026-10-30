@@ -212,7 +212,7 @@ paths:
 ### 5.95 確定の手続きに渡した下書きを、まだ「打ちかけ」と数えない
 - 正しい道: 確定の手続き（U13）へ渡して止まっている局面（`ConflictPaused`）では「打ちかけがあるか」「何頂点あるか」を 0 と数える（`src/ui/add/AddToolController.tsx:298`）。止まっている頂点の行き先は重なり解決の板が決める。見張りが反応してよいのは利用者自身の遷移だけ。
 - 誤った道の兆候: 重なり解決の適用後、宿主の後始末（選択の昇格・道具の構え直し）を見張りが利用者の遷移と読む。確定直後に「捨てますか」の板が出て地図も道具も押せない、「描きかけの頂点 4 個を捨てました」が「重なりを解消しました」を上書きする。
-- 確かめ方: 止まりうる経路（重なり・継承先・素性入力）を E2E で最後まで通し、適用直後に別の道具を押せることと、状態行の結果が無関係の操作のあとも残ることを見る。`e2e/inc8e-conflict.spec.ts`。`useRingEditTool.ts` は止まった局面を持たないが、輪郭の確定はいま重なりを検出しない（現状.md の B97。2026-10-31 に実機で確認）ので止まらない。B97 で検出を通すときは、先にこの局面（`canConfirm` 偽・打ちかけ 0・鍵盤は板へ）を足す。
+- 確かめ方: 止まりうる経路（重なり・継承先・素性入力）を E2E で最後まで通し、適用直後に別の道具を押せることと、状態行の結果が無関係の操作のあとも残ることを見る。`e2e/inc8e-conflict.spec.ts`。輪郭の道具は `e2e/inc8e-ring-conflict.spec.ts`。
 
 ### 5.96 「消えたか」を id の有無で見る掃除は、同じ id のまま入れ替わったものを見逃す
 - 正しい道: 入れ替わり（読み込み・新規）には世代の印（`projectLoadNonce`）で反応し、id の有無は「同じプロジェクトの中で消えた」の判定にだけ使う。「在るか」は、その部品が描くときに引くのと同じ解決（`featuresAt`。`src/ui/property/detail-panels.ts` の `presentIds`）で見る。
@@ -233,3 +233,9 @@ paths:
 - 正しい道: 画面・OS のダイアログ・状態行の文字列は層ごとの表から引く（`src/ui/**/strings.ts` と `messages.ts`、`src/domain/**/messages.ts`、`src/shell/**/strings.ts`。中核は画面側を読めないので 1 本にしない）。`○○-strings.ts` / `○○-messages.ts` は何も読み込まない独立の表で、import が輪になる所に使う。名前や年を埋める文は表側を小さな関数にし、数の整形（`String(...)`・`toLocaleString`・`Math.floor`）は呼ぶ側に残す。
 - 誤った道の兆候: 部品・処理のファイルに、日本語を含む文字列・テンプレートの部品・JSX の本文、または `aria-label` / `title` / `placeholder` / `alt`（言語を問わず）を直書きする。表どうしの import の輪（型検査で見つからない「初期化前の参照」）。理由の無い `// eslint-disable-next-line no-restricted-syntax`（例外は `-- 理由` 付きで、正規表現の部品・内部の例外文・打たれた全角記号の判定など画面に出ない文字だけ）。
 - 確かめ方: `eslint.config.js` の `no-restricted-syntax`（エラー）と `src/ui/shell/ui-text-tables.test.ts`（ソース走査）。文字の範囲・表・除外の一覧は `scripts/ui-text-rule.mjs` の 1 か所だけに書く。用語集の「出さない語」は `FORBIDDEN_TERMS` に枠がある（いまは空）。
+
+### 5.101 束ねの `.ports` をそのまま渡すと、重なりの検出は空のまま通る
+- 正しい道: 確定は束ねの `startProcess`（`bindPortsToProposal` が提案の年へ検出を結び直す）と `applyResolutionsFor` を通す。前段の関門（`confirmRelease` の世界の外・半周の辺）を残すときは `runProcess` で渡す（`src/domain/editing/edit-flow.ts`、`src/ui/App.tsx` の `createRingEditBootstrap`）。検出の範囲を絞るなら、変わりうるものの単位で比べる（`src/ui/consistency-binding.ts` の `detectIntroducedOverlaps`。§5.97）。
+- 誤った道の兆候: `ports: binding.ports` を確定の入口へ渡す。束ねの `.ports` の `detectSpatial` は空を返す。単体も E2E も緑のまま、重なる形が記録される（輪郭の道具で 8E まで見逃し、閉じた B84 の根拠にもなった）。「重なりで止まったことが無い」を「止まらなくてよい」と読む。
+- 確かめ方: その確定で重なる形を実際に作り、板が出ることを E2E で見る。`e2e/inc8e-ring-conflict.spec.ts`。`.ports` を渡す残りは `src/ui/map/edit-session-adapter.ts`（現状.md の B98）。
+- 検査: 未整備。手で確かめる。
