@@ -15,7 +15,6 @@
 ## コマンド
 
 ```bash
-cd E:/WORKSPACE/time-map-app-4   # 大文字の E で移動してから実行する（下の注意点）
 npm run typecheck
 npm run lint
 npx vitest run <ファイル>         # 全件は npm run test
@@ -33,12 +32,10 @@ npm run e2e:explore              # 探索の E2E
 
 ## 注意点
 
-- 作業ディレクトリが小文字の `e:\` だと、vitest が DOM なしで走り `.test.tsx` が落ちる。締めの行の `environment` が `0ms` なら効いていない。
 - E2E とスモークではウィンドウを表示しない。所有者の作業中にフォーカスを奪う。
 
 ## サブエージェントへの依頼に必ず書くこと
 
-- テストの前に `cd E:/WORKSPACE/time-map-app-4` する。
 - 探針や一時ファイルは scratchpad に置く。自分以外の未追跡ファイルは消さず、報告する。
 - 短い Bash を連打して待たない。長い実行は `run_in_background` で起動して通知を待つ。
 
