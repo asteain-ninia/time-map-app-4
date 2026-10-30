@@ -141,7 +141,8 @@ describe('オプションバーの寸法契約（K-3, 設計書 §C.4 / §B.4）
 
   it('確定ボタンは U-8 の下限（高さ 30px・幅 60px）を満たす', () => {
     const button = ruleBody('.option-bar__commit-button');
-    expect(decl(button, 'min-height')).toBe('30px');
+    expect(decl(button, 'min-height')).toBe('var(--control-h-lg)');
+    expect(decl(ruleBody(':root'), '--control-h-lg')).toBe('32px');
     expect(decl(button, 'min-width')).toBe('60px');
   });
 });
@@ -452,7 +453,8 @@ describe('設定欄の畳み「≫」（手直し D3 / 設計書 §B.4）', () =
 
   it('「≫」ボタンは押せる大きさを持つ', () => {
     const button = ruleBody('.option-bar__overflow-button');
-    expect(px(decl(button, 'min-height'), '≫ の min-height')).toBeGreaterThanOrEqual(24);
+    expect(decl(button, 'min-height')).toBe('var(--control-h)');
+    expect(px(decl(ruleBody(':root'), '--control-h'), '--control-h')).toBeGreaterThanOrEqual(24);
     expect(px(decl(button, 'min-width'), '≫ の min-width')).toBeGreaterThanOrEqual(24);
     expect(decl(button, 'flex')).toBe('0 0 auto');
   });

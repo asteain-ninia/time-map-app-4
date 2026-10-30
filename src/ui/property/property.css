@@ -644,6 +644,7 @@
   padding: 0 2px;
   white-space: nowrap;
   overflow: hidden;
+  min-height: 0;
 }
 
 .anchor-timebar__bar--selected {
@@ -700,7 +701,7 @@
 }
 
 .detail-document__modes button[aria-pressed='true'] {
-  background: var(--c-chrome);
+  background: var(--c-accent);
   border-color: var(--c-accent);
 }
 
@@ -745,6 +746,7 @@
   flex-direction: row;
   gap: 4px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .basic-info__parent-buttons button {

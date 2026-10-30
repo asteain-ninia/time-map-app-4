@@ -80,7 +80,6 @@
 }
 .merge-options-dialog__title {
   margin: 0 0 8px;
-  font-size: 18px;
 }
 .merge-options-dialog__hint {
   margin: 0 0 12px;
@@ -121,21 +120,11 @@
   gap: 8px;
 }
 .merge-options-dialog__confirm {
-  padding: 8px 16px;
-  background: #1565c0;
+  background: var(--c-accent);
   color: #fff;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
+  border-color: var(--c-accent);
 }
 .merge-options-dialog__confirm:disabled {
   background: #b0bec5;
   cursor: not-allowed;
-}
-.merge-options-dialog__cancel {
-  padding: 8px 16px;
-  background: #eceff1;
-  border: 1px solid #cfd8dc;
-  border-radius: 6px;
-  cursor: pointer;
 }

@@ -123,6 +123,7 @@
   grid-template-columns: minmax(0, 11em) minmax(0, 6em) minmax(0, 1fr);
   gap: 12px;
   align-items: center;
+  min-height: var(--control-h-lg);
 }
 
 .backup-dialog__head {
@@ -145,6 +146,11 @@
   padding: 4px 6px;
   text-align: left;
   font-variant-numeric: tabular-nums;
+}
+
+.unsaved-dialog__choices button {
+  /* 保存の前の確認の長い確定の文だけは、最小の窓で板の幅の中に折り返す（文言は総点検で短くする）。 */
+  white-space: normal;
 }
 
 .backup-dialog__actions {

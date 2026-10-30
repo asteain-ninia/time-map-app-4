@@ -63,7 +63,6 @@
 }
 .reparent-dialog__title {
   margin: 0 0 8px;
-  font-size: 18px;
 }
 .reparent-dialog__body {
   margin: 0 0 16px;
@@ -109,7 +108,6 @@
 }
 .reparent-options-dialog__title {
   margin: 0 0 4px;
-  font-size: 16px;
 }
 .reparent-options-dialog__hint {
   margin: 0 0 12px;
@@ -228,6 +226,7 @@
   border: 0;
   background: transparent;
   cursor: pointer;
+  min-height: 0;
 }
 .parent-tree__expand--none {
   cursor: default;
@@ -244,6 +243,7 @@
   font-size: 12px;
   text-align: left;
   cursor: pointer;
+  min-height: 0;
 }
 .parent-tree__pick[aria-selected='true'] {
   background: #dceeff;

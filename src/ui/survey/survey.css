@@ -56,11 +56,6 @@
   min-width: 11em;
 }
 
-.survey-controls__toggle[aria-pressed='true'] {
-  background: #1565c0;
-  color: #fff;
-}
-
 /* 第6工程 (B2): the control labels never letter-wrap under flex pressure — their
    boxes are part of the topbar's fixed occupancy. */
 .survey-controls button {
@@ -133,7 +128,3 @@
   font-weight: 600;
 }
 
-.survey-controls__format button[aria-pressed='true'] {
-  background: #1565c0;
-  color: #fff;
-}

@@ -38,7 +38,6 @@
 
 .conflict-dialog__title {
   margin: 0 0 8px;
-  font-size: 18px;
 }
 
 .conflict-dialog__paused {
@@ -136,6 +135,8 @@
   border: none;
   cursor: pointer;
   padding: 4px;
+  color: var(--c-text);
+  white-space: normal;
 }
 
 .conflict-row__state {

@@ -27,6 +27,17 @@
   --c-accent: #2f6fb5;
   --c-accent-weak: #dceaf7;
   --radius: 4px;
+  /* クリック対象の高さは 3 段（増分 8E 後半 / N-26）。
+   * sm: 詰まった列（一覧の切替、ヘッダの中）/ 既定: パネルと帯の部品 / lg: 板の確定列・時刻の送り。
+   * 道具のレール（`.toolbar button`）と地図のズーム（40px）だけは設計書 §B.3 の別の寸法を持つ。 */
+  --control-h-sm: 24px;
+  --control-h: 28px;
+  --control-h-lg: 32px;
+  /* 文字の大きさは 4 段（N-25）。板の題 / 節の見出し / 本文とボタン / 補助。 */
+  --font-size-title: 16px;
+  --font-size-heading: 13px;
+  --font-size-body: 12px;
+  --font-size-small: 11px;
 }
 
 /* The renderer mounts inside an Electron BrowserWindow; the layout must fill it.
@@ -49,6 +60,126 @@ body {
 
 #app-shell {
   width: 100%;
+}
+
+/* --- 部品の土台（増分 8E 後半 / N-24・N-25・N-26・N-28） --------------------------
+ *
+ * 全部 `:where()` で包んで **詳細度を 0 にする**。部品ごとのクラスの規則は順序に関係なく必ず勝つので、
+ * 枠の無い一覧の行や道具のレールは自分の見た目を保ったまま、クラスを持たない 66 個の `<button>` と
+ * 枠線を書いていない部品だけがここへ落ちる（ブラウザ既定の `1.6px outset` の系統を無くす）。
+ * 高さの下限を持つので、細い行の中のボタンはクラスの側で `min-height: 0` を書く。 */
+:where(h1, h2) {
+  margin: 0 0 8px;
+  font-size: var(--font-size-title);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+:where(h3) {
+  margin: 0 0 6px;
+  font-size: var(--font-size-heading);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+:where(h4, h5, h6) {
+  margin: 0 0 4px;
+  font-size: var(--font-size-body);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+:where(button) {
+  box-sizing: border-box;
+  min-height: var(--control-h);
+  padding: 2px 8px;
+  font: inherit;
+  font-size: var(--font-size-body);
+  line-height: 1.3;
+  color: var(--c-text);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+:where(button:hover:not(:disabled)) {
+  border-color: var(--c-accent);
+}
+
+/* 「押されている」の青はこの 1 色（N-24。もう 1 色の `#1565c0` は消した）。 */
+:where(button[aria-pressed='true']) {
+  color: #fff;
+  background: var(--c-accent);
+  border-color: var(--c-accent);
+}
+
+:where(button:disabled) {
+  cursor: default;
+  opacity: 0.5;
+}
+
+:where(input:not([type='checkbox'], [type='radio'], [type='range'], [type='color']), select, textarea) {
+  box-sizing: border-box;
+  min-height: var(--control-h-sm);
+  padding: 1px 4px;
+  font: inherit;
+  font-size: var(--font-size-body);
+  color: var(--c-text);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+}
+
+:where(input:disabled, select:disabled, textarea:disabled) {
+  color: var(--c-text-muted);
+  background: var(--c-panel);
+}
+
+/* 板の確定の列: 文字を折り返さずに、入り切らなければボタンごと次の行へ送る（N-28）。 */
+:where(
+    .conflict-guide__actions,
+    .conflict-dialog__actions,
+    .basemap-aspect-dialog__actions,
+    .unsaved-dialog__choices,
+    .repair-dialog__actions,
+    .backup-dialog__actions,
+    .help-dialog__footer,
+    .settings-dialog__footer,
+    .knife-dialog__footer,
+    .merge-options-dialog__footer,
+    .reparent-dialog__footer,
+    .reparent-options-dialog__footer,
+    .draft-discard-dialog__footer,
+    .impact-confirm-dialog__footer,
+    .first-run-guide__panel__actions
+  ) {
+  flex-wrap: wrap;
+}
+
+:where(
+    .conflict-guide__actions,
+    .conflict-dialog__actions,
+    .basemap-aspect-dialog__actions,
+    .unsaved-dialog__choices,
+    .repair-dialog__actions,
+    .backup-dialog__actions,
+    .help-dialog__footer,
+    .settings-dialog__footer,
+    .knife-dialog__footer,
+    .merge-options-dialog__footer,
+    .reparent-dialog__footer,
+    .reparent-options-dialog__footer,
+    .draft-discard-dialog__footer,
+    .impact-confirm-dialog__footer,
+    .first-run-guide__panel__actions
+  )
+  :where(button) {
+  min-height: var(--control-h-lg);
+  padding: 2px 16px;
+  /* 1 行に入り切らない長いラベルだけは板の幅の中で折り返す（確定の文がいちばん長い保存の確認）。 */
+  max-width: 100%;
 }
 
 .app-shell {
@@ -352,7 +483,7 @@ body {
   display: block;
   width: 100%;
   box-sizing: border-box;
-  min-height: 24px;
+  min-height: var(--control-h-sm);
   padding: 3px 4px;
   font: inherit;
   font-size: 12px;
@@ -417,10 +548,12 @@ body {
 }
 
 /* The dropdown list: a floating surface under its menu button. */
+/* アプリバー（`.app-shell__menubar`）は `overflow: hidden` なので、`absolute` だと 1 枚も見えない
+ * （増分 5a 以降ずっと切れていて、E2E は Playwright がアプリバーを中でスクロールして押せていた。教訓 5.105）。
+ * `fixed` はそれを抜ける。左は書かない ―― 静的な位置のまま＝押したメニューの真下に出る。 */
 .menubar__items {
-  position: absolute;
-  top: 100%;
-  left: 0;
+  position: fixed;
+  top: var(--shell-appbar-h);
   list-style: none;
   margin: 0;
   padding: 4px 0;
@@ -430,6 +563,11 @@ body {
   border: 1px solid var(--c-border-strong);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
   z-index: 60;
+}
+
+/* 吹き出しの器は既定で inline-block。ここでは行いっぱいを押せるように、打鍵の表示を右端へ寄せる。 */
+.menubar__items .tooltip {
+  display: block;
 }
 
 .menubar__item {
@@ -443,7 +581,7 @@ body {
   font: inherit;
   color: inherit;
   text-align: left;
-  padding: 5px 12px;
+  padding: 4px 12px;
   cursor: pointer;
 }
 
@@ -669,7 +807,7 @@ body {
   min-width: 0;
   font: inherit;
   text-align: left;
-  padding: 5px 10px;
+  padding: 4px 10px;
   background: transparent;
   border: 0;
   border-left: 3px solid transparent;
@@ -962,6 +1100,7 @@ body {
   border: 1px solid var(--c-border);
   border-radius: var(--radius);
   cursor: pointer;
+  min-height: var(--control-h-sm);
 }
 
 /* まとまりの名札（増分 5 の手直し E3 / バグ狩り #19）。名前は長くなりうるので、
@@ -1013,12 +1152,13 @@ body {
   flex: 0 0 auto;
   font: inherit;
   font-size: 11px;
-  padding: 3px 8px;
+  padding: 2px 8px;
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border);
   border-radius: var(--radius);
   cursor: pointer;
+  min-height: var(--control-h-sm);
 }
 
 .ledger__mode[aria-pressed='true'] {
@@ -1097,6 +1237,7 @@ body {
   border: 0;
   color: var(--c-text-muted);
   cursor: pointer;
+  min-height: 0;
 }
 
 .ledger__expander--leaf {
@@ -1118,6 +1259,7 @@ body {
   cursor: pointer;
   overflow: hidden;
   white-space: nowrap;
+  min-height: 0;
 }
 
 .ledger__name-text {
@@ -1170,6 +1312,8 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-height: 0;
+  align-self: stretch;
 }
 
 .ledger__anchors {
@@ -1190,6 +1334,8 @@ body {
   background: transparent;
   border: 0;
   cursor: pointer;
+  min-height: 0;
+  align-self: stretch;
 }
 
 .ledger__inline-input {
@@ -1231,7 +1377,7 @@ body {
  * **`[hidden]` の打ち消しを必ず併記する**（教訓 5.56）―― 書かないと、閉じているはずの
  * パネルが `display: flex` の勝ちで画面左上に居座り、下のボタンのクリックを奪う。 */
 .option-popover__button {
-  min-height: 26px;
+  min-height: var(--control-h);
   padding: 3px 8px;
   background: var(--c-surface);
   color: var(--c-text);
@@ -1310,7 +1456,7 @@ body {
  * （`.display-filter`）をそのまま入れる**ので、その規則は下（1579 行付近）のものを
  * 共有する ―― 置き場所が一覧の下からここへ移っただけである。 */
 .display-options__button {
-  min-height: 26px;
+  min-height: var(--control-h);
   padding: 3px 8px;
   background: var(--c-surface);
   color: var(--c-text);
@@ -1498,6 +1644,7 @@ body {
   border: 1px solid var(--c-border);
   border-radius: var(--radius);
   cursor: pointer;
+  min-height: var(--control-h-sm);
 }
 
 .jump-palette__close:hover {
@@ -1632,6 +1779,7 @@ body {
   font-size: 12px;
   line-height: 1;
   padding: 2px 4px;
+  min-height: 0;
 }
 
 /* 結果の文に添えたボタン（増分 8C の手直し:「測量の線を消しました［戻す］」）。28px の行に
@@ -1647,6 +1795,7 @@ body {
   line-height: 1;
   padding: 1px 6px;
   margin-left: 6px;
+  min-height: 0;
 }
 
 /* Cursor 経緯度 readout (FR-111): tabular digits so the text does not jitter in width
@@ -1845,7 +1994,7 @@ body {
 }
 
 .option-bar__commit-button {
-  min-height: 30px;
+  min-height: var(--control-h-lg);
   min-width: 60px;
   padding: 4px 10px;
   background: var(--c-surface);
@@ -1886,7 +2035,7 @@ body {
 .option-bar__overflow-button {
   flex: 0 0 auto;
   min-width: 24px;
-  min-height: 26px;
+  min-height: var(--control-h);
   padding: 3px 5px;
   background: var(--c-surface);
   color: var(--c-text);
@@ -1943,7 +2092,7 @@ body {
  * **K-2**: 背面を覆う板は置かない。開いている間に入力を受けるのはこのパネルの矩形だけで、
  * その外側は地図の入力層にそのまま届く。閉じるのは document の pointerdown を捕まえる形。 */
 .snap-options__button {
-  min-height: 26px;
+  min-height: var(--control-h);
   padding: 3px 8px;
   background: var(--c-surface);
   color: var(--c-text);
@@ -2174,6 +2323,7 @@ body {
   padding: 2px 4px;
   cursor: pointer;
   color: var(--c-accent);
+  min-height: 0;
 }
 
 .rail__bundle-list button:hover {
@@ -2437,7 +2587,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: 4px;
-  min-height: 26px;
+  min-height: var(--control-h);
   min-width: 52px;
   padding: 2px 6px;
   font: inherit;
@@ -2654,7 +2804,7 @@ body {
 
 .first-run-guide__panel h3 {
   margin: 0 0 6px;
-  font-size: 13px;
+  font-size: var(--font-size-heading);
 }
 
 .first-run-guide__panel ol {
@@ -2998,7 +3148,7 @@ body {
 /* Fixed-width, ellipsized 深掘り button: the label varies per feature name, but the
  * occupied width must not (B2 invariant — no selection-driven topbar re-wrap). */
 .global-depth__focus-apply {
-  width: 11em;
+  width: 13em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3160,7 +3310,7 @@ body {
 
 .add-property-form__title {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--font-size-heading);
   font-weight: 600;
 }
 
@@ -3248,7 +3398,7 @@ body {
 
 .draft-discard-dialog__title {
   margin: 0 0 8px;
-  font-size: 18px;
+  font-size: var(--font-size-title);
 }
 
 .draft-discard-dialog__body {
@@ -3276,7 +3426,7 @@ body {
 
 .display-filter__title {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-body);
   font-weight: 600;
   color: var(--c-text);
 }
@@ -3450,7 +3600,7 @@ body {
 }
 .impact-confirm-dialog__title {
   margin: 0 0 10px;
-  font-size: 15px;
+  font-size: var(--font-size-title);
 }
 .impact-confirm-dialog__group {
   margin: 0 0 8px;
@@ -3458,7 +3608,7 @@ body {
 .impact-confirm-dialog__heading {
   margin: 0 0 2px;
   color: #444;
-  font-size: 12px;
+  font-size: var(--font-size-body);
   font-weight: 600;
 }
 .impact-confirm-dialog__lines {
@@ -3482,7 +3632,6 @@ body {
   color: #fff;
   background: #b3261e;
   border: 1px solid #8c1d18;
-  border-radius: 6px;
 }
 .impact-confirm-dialog__confirm:disabled {
   color: #666;

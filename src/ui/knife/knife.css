@@ -92,7 +92,6 @@
 }
 .knife-dialog__title {
   margin: 0 0 8px;
-  font-size: 18px;
 }
 .knife-dialog__hint {
   margin: 0 0 12px;
@@ -133,10 +132,11 @@
 .knife-choice {
   flex: 1 1 160px;
   padding: 10px;
-  border: 2px solid #cfd8dc;
-  border-radius: 8px;
-  background: #eceff1;
-  cursor: pointer;
+  border: 2px solid var(--c-border);
+  border-radius: var(--radius);
+  background: var(--c-panel);
+  white-space: normal;
+  color: var(--c-text);
 }
 .knife-choice--selected {
   border-color: #ffc107;
@@ -149,21 +149,10 @@
   gap: 8px;
 }
 .knife-dialog__confirm {
-  padding: 8px 16px;
-  background: #1565c0;
+  background: var(--c-accent);
   color: #fff;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
+  border-color: var(--c-accent);
 }
-.knife-dialog__cancel {
-  padding: 8px 16px;
-  background: #eceff1;
-  border: 1px solid #cfd8dc;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
 /* **非継承側の素性入力の板は地図から降ろした**（司令塔の決定 (5) / 設計書 §B.5 の
    台帳 #9）。素性は右パネルの「新規の姿」（`add-property-form`）で受けるので、地図の
    中央に `pointer-events: auto` の板を出す規則そのものが要らなくなった。`knife-props`
