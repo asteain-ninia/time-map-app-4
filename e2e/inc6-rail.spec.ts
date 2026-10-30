@@ -719,9 +719,10 @@ test.describe('増分 6 — 時刻を動かした 1 コマ（設計書 §F.2 の
        * 下の {@link measureWithin} が、混んでいる間の値で落とさないように測り直す。
        *
        * **設計書 §F.2 は「16ms 以内。超えるなら実測値を上限として明記する」**としている。
-       * 実測（1 台で静かに動かして）は **選んでいないとき 4.0ms / 5 万錨 34.8ms** で、
-       * 16ms を超える。**この値が唯一の記録である**（`docs/現状.md` の B59 と
-       * 進捗 §11.4 は同じ数を引く。旧版は 2 か所に別の数が書かれていた）。**残りの費用は増分 6 の外にある** ―― `resolveAt`（U09）は
+       * 5 万錨の実測は 16ms を超える。**絶対値は測った機械で 2 倍ほど違う**: 同じコミット
+       * `59ae206` が、2026-09-07 の機械で 4.0ms / 34.8ms、2026-10-31 の機械で 6.4ms / 64ms
+       * （選んでいないとき / 5 万錨。どちらも単独で。`docs/現状.md` の B59）。だから記録の数と
+       * 比べず、後退は同じ機械で測った値どうしで見る。**残りの費用は増分 6 の外にある** ―― `resolveAt`（U09）は
        * 「読み込み直後の未検証な系列でも正しく解ける」ことを理由に **意図的に線形走査**で
        * あり（同関数のコメント）、`featuresAt` / `verticesAt` / 表示解決が時刻ごとに
        * それを呼ぶ。5 万錨では 1 回の呼び出しが 5 万回の比較になる。**錨の意味論と
@@ -729,7 +730,7 @@ test.describe('増分 6 — 時刻を動かした 1 コマ（設計書 §F.2 の
        * （`docs/現状.md` の B59）。
        *
        * ここは **catastrophic な後退の見張り**として置く（**目標値ではない**）。6 つの
-       * Electron が同時に走るゲートの中では同じコードでも 34.8ms が 46ms 前後に伸びるので、
+       * Electron が同時に走るゲートの中では同じコードが単独の 1.3〜1.5 倍に伸びるので、
        * 絶対値の線は「人が明らかに待つ域」に置く。実測値は毎回 `console.log` に出すので、
        * **記録する数はその印字から引く**（司令塔の決定 (6)、2026-09-07）。
        */
@@ -782,12 +783,13 @@ test.describe('増分 6 — 時刻を動かした 1 コマ（設計書 §F.2 の
        * 本当に遅くなった後退で、それなら 3 回とも超える。上限の値は変えない。
        */
       const measureWithin = async (limit: number): Promise<number> => {
-        let best = await measure();
-        for (let retry = 0; retry < 2 && best > limit; retry += 1) {
+        const attempts = [await measure()];
+        while (attempts.length < 3 && Math.min(...attempts) > limit) {
           await page.waitForTimeout(3_000);
-          best = Math.min(best, await measure());
+          attempts.push(await measure());
         }
-        return best;
+        console.log(`[増分6] 測定（上限 ${limit}ms）: ${attempts.map((v) => v.toFixed(2)).join(' / ')}`);
+        return Math.min(...attempts);
       };
 
       // ①何も選んでいないとき（レーンは空）。
@@ -803,8 +805,8 @@ test.describe('増分 6 — 時刻を動かした 1 コマ（設計書 §F.2 の
       console.log(
         `[増分6] 1 コマ: 選んでいない ${idle.toFixed(2)}ms / 5 万錨 ${loaded.toFixed(2)}ms`,
       );
-      // 実測の上限（34.8ms）に、混んだゲートでの揺れぶん（46ms 前後）の余裕を足した線。
-      // ここを割るのは「1 コマが人の待ち時間になった」ときだけである。
+      // 「人が待ち始める域」の線。単独でも 72ms 前後ある（`docs/現状.md` の B59）ので余裕は薄く、
+      // 混んだゲートの揺れは {@link measureWithin} の測り直しで受ける。線そのものは緩めない。
       expect(
         loaded,
         `5 万錨の 1 コマ ${loaded.toFixed(2)}ms（選んでいないとき ${idle.toFixed(2)}ms）`,
