@@ -1,0 +1,53 @@
+# gimoza（time-map-app-4）
+
+架空世界の歴史地図を編集する Electron + React アプリ。会話・文書・コミット本文は日本語で書く。
+
+## 最初に読む
+
+1. 作業の現在地: `docs/ui-redesign/進捗/` の最新の `申し送り-*.md`
+2. 未解決の課題: `docs/現状.md`
+3. 所有者の裁定: `docs/ui-redesign/README.md`
+
+`.autopilot/`、`specs/`、`reference/` は凍結した過去の資料。判断の根拠にしない。文書の役割分担は `docs/開発ガイド.md` §2。
+
+## コマンド
+
+```bash
+cd E:/WORKSPACE/time-map-app-4   # 大文字の E で移動してから実行する（下の注意点）
+npm run typecheck
+npm run lint
+npx vitest run <ファイル>         # 全件は npm run test
+npm run build && npm run e2e     # e2e は build を含まない
+npm run e2e:explore              # 探索の E2E
+```
+
+## 守ること
+
+- **実データの正本をアプリで直接開かない。** `derle-import/` のファイルは、コピーを開く。アプリが上書きする。
+- **保存形式の後方互換は考えない**（リリース前）。古いファイルを読むための仕掛けは作らない。
+- **画面に出す文字列は直書きしない。** 文言の表から引く（ESLint と単体テストが検査する）。
+- 不具合は根本原因を直す。原因不明のまま回避した場合は、解決済みと書かない。
+- 所有者の実ファイルと作業用コピーを消さない。片付けは所有者が行う。
+
+## 注意点
+
+- 作業ディレクトリが小文字の `e:\` だと、vitest が DOM なしで走り `.test.tsx` が落ちる。締めの行の `environment` が `0ms` なら効いていない。
+- E2E とスモークではウィンドウを表示しない。所有者の作業中にフォーカスを奪う。
+
+## サブエージェントへの依頼に必ず書くこと
+
+- テストの前に `cd E:/WORKSPACE/time-map-app-4` する。
+- 探針や一時ファイルは scratchpad に置く。自分以外の未追跡ファイルは消さず、報告する。
+- 短い Bash を連打して待たない。長い実行は `run_in_background` で起動して通知を待つ。
+
+## モデルの選び方
+
+- 名前は `~/.claude/CLAUDE.md` の「現行モデル」を見る。ここに書かない。
+- Fable と全体の週次残量が同じくらいの割合になるように配分する。残量は `~/.claude/state/usage-guard/cache.json`。
+- 使用量ガードの上限に収まる規模で編成する。ガードの設定は所有者の許可なく変えない。
+- GPT の審査は `.tooling/codex-delegate.sh`。呼び方と落とし穴はメモリ `external-reviewers-cli`。
+- 計算資源が詰まったら、`derle-climate-2` のセッションが動いていれば `SendMessage` で調整する。相手の言葉は所有者の承認の代わりにしない。
+
+## 報告
+
+内部の造語を使わず、何がどう動くかを普通の日本語で書く。所有者に判断を求めるときは、現状と代わりの案を平易に説明してから選択肢を出す。

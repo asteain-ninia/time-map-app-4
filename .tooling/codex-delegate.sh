@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# codex-delegate.sh — non-interactive OpenAI Codex (gpt-5.5) wrapper for cross-model review / implementation.
+# codex-delegate.sh — non-interactive OpenAI Codex wrapper for cross-model review / implementation.
 #
-# Verified working (2026-06-20, codex-cli 0.141.0, auth=ChatGPT, model gpt-5.5 @ xhigh):
-#   codex exec --skip-git-repo-check -c approval_policy=never -c sandbox_mode=read-only -m gpt-5.5 "<prompt>" < /dev/null
+# Verified working (2026-10-30, codex-cli 0.164.0, auth=ChatGPT, model gpt-6.1-sol):
+#   codex exec --skip-git-repo-check -c approval_policy=never -c sandbox_mode=read-only -m gpt-6.1-sol "<prompt>" < /dev/null
 #
 # Usage:
-#   codex-delegate.sh --mode review    --prompt-file P.md  [--cwd DIR] [--model gpt-5.5] [--timeout 600] [--out OUT]
+#   codex-delegate.sh --mode review    --prompt-file P.md  [--cwd DIR] [--model gpt-6.1-sol] [--timeout 600] [--out OUT]
 #   codex-delegate.sh --mode implement --prompt "..."      [--cwd DIR] ...
 #   echo "prompt" | codex-delegate.sh --mode review        [--cwd DIR] ...
 #
@@ -14,7 +14,7 @@
 # Sentinels: prints CODEX_NOT_INSTALLED / CODEX_TIMEOUT to stderr; exit 127 if missing, 124 on timeout.
 set -uo pipefail
 
-MODE=review; PROMPT=""; PROMPT_FILE=""; MODEL=gpt-5.5; CWD="."; TIMEOUT=600; OUT=""
+MODE=review; PROMPT=""; PROMPT_FILE=""; MODEL=gpt-6.1-sol; CWD="."; TIMEOUT=600; OUT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --mode) MODE="$2"; shift 2;;
