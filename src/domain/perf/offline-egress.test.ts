@@ -10,9 +10,11 @@
 // trigger it.
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
+
+import { readSourceText } from '../../test-support/read-source-text';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const srcRoot = resolve(here, '..', '..'); // src/
@@ -53,7 +55,7 @@ describe('offline完結 — no network egress in shipped source (FR-02)', () => 
     const offenders: string[] = [];
     for (const dir of SCAN_DIRS) {
       for (const file of walk(dir)) {
-        const text = readFileSync(file, 'utf8');
+        const text = readSourceText(file);
         for (const pattern of FORBIDDEN) {
           if (pattern.test(text)) {
             offenders.push(`${file.replace(srcRoot, 'src')} matches ${pattern}`);

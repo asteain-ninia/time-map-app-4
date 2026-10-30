@@ -7,12 +7,13 @@
 //   2. **板を出しているすべての場所**が名乗る口を渡しているかを、ここで機械的に見る、
 // の 2 段にする。2 の走査は「新しい板を足したのに配線を忘れた」をその場で落とす。
 
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
 
+import { readSourceText } from '../../test-support/read-source-text';
 import { BulkKindLabelDialog } from '../property/BulkKindLabelDialog';
 import { BackupListDialog } from '../file-ops/BackupListDialog';
 import { PreSaveConfirmDialog } from '../file-ops/PreSaveConfirmDialog';
@@ -82,7 +83,7 @@ describe('板の登録 — 出している場所は必ず名乗る口を渡す�
   it.each(MODAL_COMPONENTS)('%s を出すすべての場所が onModalChange を渡す', (component) => {
     const offenders: string[] = [];
     for (const file of sourceFiles('src')) {
-      const source = readFileSync(file, 'utf8');
+      const source = readSourceText(file);
       for (const tag of openingTags(source, component)) {
         if (tag.includes('onModalChange') || tag.includes('onImpactModalChange')) continue;
         offenders.push(`${file}: ${tag.slice(0, 80)}`);
@@ -104,7 +105,7 @@ describe('一時部品の登録 — 出している場所は必ず名乗る口�
     const offenders: string[] = [];
     let found = 0;
     for (const file of sourceFiles('src')) {
-      const source = readFileSync(file, 'utf8');
+      const source = readSourceText(file);
       for (const tag of openingTags(source, component)) {
         found += 1;
         if (tag.includes('onOpenChange')) continue;

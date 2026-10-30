@@ -415,6 +415,7 @@ test.describe('画面の文言の巡回（project: tour）', () => {
 
   test('作れた場面の数', () => {
     const files = readdirSync(SCENE_DIR).filter((n) => n.endsWith('.json'));
+    // eslint-disable-next-line no-restricted-syntax -- この巡回が書き出した JSON を読む。ソースや CSS ではなく、改行に左右されない
     const ok = files.filter((n) => (JSON.parse(readFileSync(join(SCENE_DIR, n), 'utf8')) as { ok: boolean }).ok);
     writeFileSync(
       join(OUT, 'summary.json'),

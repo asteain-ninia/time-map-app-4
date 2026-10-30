@@ -8,6 +8,13 @@ import {
   UI_TEXT_TABLE_FILES,
   uiTextRestrictedSyntax,
 } from './scripts/ui-text-rule.mjs';
+import {
+  CORE_MODULES,
+  DEV_DEPENDENCY_FILES,
+  RAW_TEXT_READ_EXEMPT_FILES,
+  RAW_TEXT_READ_FILES,
+  rawTextReadRestrictedSyntax,
+} from './scripts/test-lesson-rules.mjs';
 
 // Layer dependency direction is fixed inward toward `domain`.
 //   domain  -> (no internal layer)
@@ -165,6 +172,42 @@ export default tseslint.config(
       ecmaVersion: 2022,
       sourceType: 'module',
       globals: { ...globals.node, ...globals.browser },
+    },
+  },
+  {
+    // 読み込むパッケージは package.json に直接書く（開発ガイド §5.40）。アプリの本体だけでなく、
+    // 検査・設定ファイル・スクリプト・E2E も見る。一覧は scripts/test-lesson-rules.mjs にある。
+    files: ['**/*.{js,mjs,ts,tsx}'],
+    plugins: {
+      import: importPlugin,
+    },
+    settings: {
+      'import/core-modules': CORE_MODULES,
+      'import/resolver': {
+        typescript: {
+          project: ['./tsconfig.node.json', './tsconfig.web.json', './tsconfig.e2e.json'],
+        },
+        node: true,
+      },
+    },
+    rules: {
+      'import/no-extraneous-dependencies': [
+        'error',
+        {
+          devDependencies: [...DEV_DEPENDENCY_FILES],
+          optionalDependencies: false,
+          peerDependencies: false,
+          includeTypes: true,
+        },
+      ],
+    },
+  },
+  {
+    // テストはソースや CSS を生のまま読まない（開発ガイド §5.57）。
+    files: [...RAW_TEXT_READ_FILES],
+    ignores: [...RAW_TEXT_READ_EXEMPT_FILES],
+    rules: {
+      'no-restricted-syntax': ['error', ...rawTextReadRestrictedSyntax()],
     },
   },
 );

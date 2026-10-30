@@ -12,7 +12,7 @@
 //   - ドメイン側 … 各コマンド module が公開している定数の全件
 // どちらも「値の集合」をそのまま流し込むので、片方が増えたらこの検査が自動で広がる。
 
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
@@ -23,6 +23,7 @@ import { DELETE_FEATURE_COMMAND_LABEL } from '../../domain/deletion/index';
 import { MERGE_COMMAND_LABEL } from '../../domain/merge/index';
 import { RECOLOR_COMMAND_LABEL } from '../../domain/coloring/index';
 
+import { readSourceText } from '../../test-support/read-source-text';
 import { commandLabelJa, RESULT_STRINGS, UI_COMMAND_LABEL } from './command-result';
 
 /** ドメイン側が `Command.label` に入れている日本語の定数（全件）。 */
@@ -109,7 +110,7 @@ describe('label の直書きが復活していない（ソース走査）', () =
     // （`label: ''`）は別物なので対象外 —— 「内部の識別子が紛れ込んだか」だけを見る。
     const offenders: string[] = [];
     for (const file of sourceFiles(uiRoot)) {
-      const text = readFileSync(file, 'utf8');
+      const text = readSourceText(file);
       for (const [index, line] of text.split('\n').entries()) {
         const isLabelProp = /(^|[^A-Za-z_.])label:\s*'[ -~]+'/.test(line);
         // `createCompositeCommand('edit', […])` の **第 1 引数も label** である。
