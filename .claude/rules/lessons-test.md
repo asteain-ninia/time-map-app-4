@@ -16,8 +16,7 @@ paths:
 ### 5.39 テスト fixture は実体クラスをインスタンス化する
 - 正しい道: 複合的なドメイン構造の fixture は実物のファクトリ関数で作る（`createVertex` などの生成関数、`src/domain/deletion/fixtures.ts`、`src/domain/editing/fixtures.ts`、`*.arbitraries.ts`）。ドメインの値はクラスでなく、ファクトリが返すプレーンな値である。
 - 誤った道の兆候: リテラルオブジェクトをキャストして型を満たしている。未参照プロパティの欠落が現状のテスト経路では沈黙通過し、後で別経路が参照したとき沈黙して失敗する。構造的型付けやキャストは欠落を検出しない。
-- 確かめ方: 現状は慣習で、検査は無い。fixture の差分でファクトリを通っているか見る。手本は `src/domain/ring-hierarchy.test.ts`、`src/domain/anchor-series.arbitraries.ts`。
-- 検査: 未整備。手で確かめる。
+- 確かめ方: `src/test-support/test-lesson-rules.test.ts` の「既存の件数を超えない（§5.39）」が、検査と見本の組み立ての中の `{...} as ドメイン型` を数える。既存の分は `scripts/test-lesson-rules.mjs` の `VIOLATION_LIMITS.domainLiteralCasts` を上限にし、増えると赤。減らしたらその数も下げる。壊れた入力をわざと渡す検査は、直前の行に `// キャストの例外: 理由` を書く。手本は `src/domain/ring-hierarchy.test.ts`、`src/domain/anchor-series.arbitraries.ts`。
 
 ### 5.49 レイアウトを持たないテスト環境で寸法を測ると、その検査は永久に緑になる
 - 正しい道: 寸法は二段で守る。(1) 寸法の真実源である CSS の宣言そのものを読む契約テスト、(2) 実際にレイアウトする E2E での実寸比較。測る対象は「守りたいものが動かないこと」で選ぶ（「帯が動かない」でなく「帯の中身が変わっても地図セルが動かない」）。
@@ -25,10 +24,9 @@ paths:
 - 確かめ方: `src/ui/shell/shell-layout.test.ts`（`--shell-optionbar-h: 40px`／`flex: 0 0 240px`／`flex-wrap: nowrap`／`overflow: hidden` を読む）、`src/ui/property/property-layout.test.ts`、`src/ui/add/add-input-layout.test.tsx`（入力層の `inset` の契約）、E2E は `e2e/option-bar.spec.ts`・`e2e/inc5-shell.spec.ts`。寸法の assertion を書いたらわざと壊して赤を確かめる。
 
 ### 5.52 作業ディレクトリのドライブ文字の大小で、テストの実行環境（jsdom / node）が静かに外れる
-- 正しい道: vitest の前に `node -e "console.log(process.cwd())"` で cwd を確かめ、小文字なら `cd "E:/WORKSPACE/time-map-app-4"` する（どのシェルでも明示の `cd` で大文字へ直る。サブエージェントのシェルは `e:\...` で始まる）。環境割り当てを持つ設定（`environmentMatchGlobs`・`poolMatchGlobs`・`include`）は、効いている観測値を先に押さえてから中身を疑う。
-- 誤った道の兆候: `document is not defined` が大量に出る（小文字の cwd では相対化に失敗してグロブが 1 つも当たらず、`.test.tsx` が node で走る。76 本中 62 本が失敗した）。締めくくりの行が `environment 0ms`（効いていれば数百 ms）。`--environment jsdom` で 1 本だけ通して済ませる（症状を隠すだけで全件には効かない）。
-- 確かめ方: vitest の出力の `environment` の時間を見る。`src/test-support/vitest-include.test.ts` は include の取りこぼしだけを見ていて、環境割り当ては見ない。`vitest.config.ts` の `environmentMatchGlobs: [['src/**/*.test.tsx', 'jsdom']]` は現存。
-- 検査: 未整備。手で確かめる。
+- 正しい道: `vitest.config.ts` の `test.dir` がドライブ文字を大文字に揃える。vitest は `environmentMatchGlobs` の glob のドライブ文字を必ず大文字にするが、集めたファイルのパスは cwd の綴りのまま持つので、起点を揃えると小文字の cwd でも当たる。環境割り当てを持つ設定（`environmentMatchGlobs`・`poolMatchGlobs`・`include`）は、効いている観測値を先に押さえてから中身を疑う。
+- 誤った道の兆候: `document is not defined` が大量に出る（`.test.tsx` が node で走る。76 本中 62 本が失敗した）。締めくくりの行が `environment 0ms`（効いていれば数百 ms）。`--environment jsdom` で 1 本だけ通して済ませる（症状を隠すだけで全件には効かない）。`root` を大文字にする（読み込み済みの vitest 本体が別物として読まれ、全部の検査が「Vitest failed to find the current suite」で落ちる）。
+- 確かめ方: `src/test-support/vitest-environment.test.tsx` が、`.test.tsx` で `document` が無いと原因を書いて赤くなる。小文字の cwd の再現は `spawnSync('npx vitest run', { cwd: 'e:\\…', shell: true })`（シェルの `cd` は大文字へ直るので再現にならない）。`src/test-support/vitest-include.test.ts` は include の取りこぼしを見る。
 
 ### 5.54 E2E で入力欄のフォーカスを外すために、選択を変える場所を押さない
 - 正しい道: 大域ショートカット（Ctrl+Z / Ctrl+K 等）を送る前は、押しても何も起きない場所（状態行の表示やパネルの見出し）を押してフォーカスを外す。送る直前と直後に `app-active-feature` を読んで同じであることを確かめる。
@@ -38,8 +36,7 @@ paths:
 ### 5.57 ファイルを書き換える道具の既定の改行で、生テキストを読む契約テストが落ちる
 - 正しい道: テストがソースや CSS を生テキストとして読むときは `src/test-support/read-source-text.ts` の `readSourceText` を通す（改行を LF に揃える唯一の入口）。スクリプトでファイルを書き戻すときは元の改行を読み取って同じもので書く（バイナリの読み書きが確実）。
 - 誤った道の兆候: Python の `open(path, 'w')` のようにプラットフォーム既定の改行で書き戻す。新しい検査が `readFileSync` で読み、改行をまたぐ正規表現で照合している。「CSS の規則が見つからない」「直書き走査が急に 0 件になる」（実装より先に改行を疑う。CR の有無は shell の `grep` でなくバイト列を数える）。
-- 確かめ方: `.gitattributes`（`* text=auto eol=lf`）がリポジトリ内を LF に固定する。作業ツリーの実態は `git ls-files --eol` で見る（`src` はいまも CRLF と LF が混在）。生の `readFileSync` が改行またぎの照合をしていないことを見る検査は無い。
-- 検査: 未整備。手で確かめる。
+- 確かめ方: `.gitattributes`（`* text=auto eol=lf`）がリポジトリ内を LF に固定する。作業ツリーの実態は `git ls-files --eol` で見る（`src` はいまも CRLF と LF が混在）。ESLint の `no-restricted-syntax`（条件は `scripts/test-lesson-rules.mjs` の `rawTextReadRestrictedSyntax`）が、テストと E2E で文字コードを渡す `readFileSync`／`readFile` と、読んだものの `toString()` を赤くする。バイト列のままの読み込みは通す。ソースや CSS でないものを読むなら `// eslint-disable-next-line no-restricted-syntax -- 理由` を書く。
 
 ### 5.59 一覧を仮想スクロールにすると、「行の DOM 数」を数えていた検査が静かに嘘になる
 - 正しい道: 件数の真実源を画面の 1 か所に決め（一覧の件数表示 `unified-list-count`）、数える口を共通ヘルパ 1 本へ寄せる（`e2e/helpers.ts` の `listedFeatureCount`）。写しがあれば全部寄せる（§5.44）。
@@ -49,8 +46,7 @@ paths:
 ### 5.60 大規模データの検査を「1 つのスナップショットに全部詰める」形で作ると、fixture の作り方を測ってしまう
 - 正しい道: 規模の検査の合成データは、実データの構造（1 件あたり何を持つか）を数えてから、その場で組む。実データの形は 1 履歴＝自分と自分の頂点だけのスナップショット。
 - 誤った道の兆候: 件数だけ真似て 1 本の錨に全部詰める（5,000 件を 1 本に詰めて 5,000 本の履歴から指すと、`featuresAt` が履歴数 × 地物数＝2,500 万回の走査になり、E2E が 10 分でも終わらなかった）。「検査が終わらない」を「アプリが遅い」と読む（まず fixture の形を疑う）。
-- 確かめ方: `src/ui/e2e/synthetic-project.ts`（1 件ごとに頂点 4 つと錨 1 本を作る）と `e2e/inc4-ledger.spec.ts`。載せる操作そのものに時間の上限を置く検査は無く、テスト全体の `test.setTimeout(180_000)` だけである。
-- 検査: 未整備。手で確かめる。
+- 確かめ方: `src/ui/e2e/synthetic-project.ts`（1 件ごとに頂点 4 つと錨 1 本を作る）と `e2e/inc4-ledger.spec.ts` の「5,000 行の合成データでも…」。載せて件数に出るまでを `withinLoadLimit` が上限（`scripts/test-lesson-rules.mjs` の `SYNTHETIC_LOAD_LIMIT_MS`）で打ち切り、原因を書いて赤くなる。
 
 ### 5.62 `toBeVisible()` は、先祖のスクロール範囲の外にある要素も「見えている」と判定する
 - 正しい道: 「画面に出ている」「読める」「押せる」は矩形の交差で見る。要素と器の両方の `getBoundingClientRect()` を取り、`min(bottom) - max(top) > 0` を数える。器と交差している行を数える小さな関数を spec に 1 つ置いて全部そこを通し、窓は 2 つ以上（既定・最小）で回す。
@@ -66,14 +62,12 @@ paths:
 ### 5.64 画面の言葉を直書きした検査は、言い換えのたびに置き去りになる
 - 正しい道: 検査も実装と同じ文言表を import して参照する（例: `DISPLAY_CONTROL_STRINGS`）。言い換えは 1 か所で済み、検査は「その言葉が何であれ、そのボタンを押す」という意図だけを固定する。「この日本語が出る」こと自体を固定する回帰ロックだけは直書きでよく、そうと分かるコメントを添える。
 - 誤った道の兆候: `getByRole('button', { name: '階層深度を上げる' })` のような直書き（実装と E2E は表を通していたのに単体だけ古い言葉で落ちた）。言い換えのあと旧語を実装だけで探して終える。もっと悪い形は「テストは通るのに画面が違う」。
-- 確かめ方: 言い換えたら旧語を `src/` と `e2e/` の両方へ grep する。`src/ui/map/GlobalDepthControl.test.tsx` が表を参照する形の見本、`e2e/inc8c-survey.spec.ts` が例外の書き方の見本。ESLint の `no-restricted-syntax`（`scripts/ui-text-rule.mjs`）と `src/ui/shell/ui-text-tables.test.ts` は実装側だけが対象で、テストは対象外。
-- 検査: 未整備。手で確かめる。
+- 確かめ方: 言い換えたら旧語を `src/` と `e2e/` の両方へ grep する。`src/ui/map/GlobalDepthControl.test.tsx` が表を参照する形の見本、`e2e/inc8c-survey.spec.ts` が例外の考え方の見本。`src/test-support/test-lesson-rules.test.ts` の「既存の件数を超えない（§5.64）」が、要素を探す言葉（`getByRole` の `name`、`getByText` など、`locator` の文字列、`hasText`）の日本語の直書きを数える。既存の分は `scripts/test-lesson-rules.mjs` の `VIOLATION_LIMITS.textQueryLiterals` を上限にし、増えると赤。減らしたらその数も下げる。「この日本語が出ること」の固定は、直前の行に `// 文言の固定: 理由` を書く。`toHaveText`／`toContainText` は表示の確かめなので数えない。`ui-text-rule.mjs` の規則は実装側だけが対象。
 
 ### 5.65 見た目のベースラインの置き場を組み立て直すときは、既定の書式から「消す部分」だけを消す
 - 正しい道: `snapshotPathTemplate` は既定の書式を丸ごと写し、要らない差し込み（`{-projectName}`）だけを削る。現在の値は `{snapshotDir}/{testFileDir}/{testFileName}-snapshots/{arg}{-snapshotSuffix}{ext}`。`projects` を足すときはベースラインの命名を既定のままにしない。
 - 誤った道の兆候: 書式をゼロから書く、先頭の `{snapshotDir}/` を落とす（`{testFileDir}` は testDir からの相対で直下の spec では空文字なので、ドライブの直下に `*-snapshots/` が生えた）。「A snapshot doesn't exist at …, writing actual」で落ちている（リポジトリの中は何も変わらない）。「新しいベースラインが増えた」を成功と読む（`sidebar-empty-win32.png` が `sidebar-empty-main-win32.png` を探す形になり、追認すると古いほうが死ぬ）。検査の入力を名前の規則で引き当てる仕組み全般が同じ型で、引き当て失敗が「無いので作る」に吸収される。
-- 確かめ方: `projects`／`snapshotPathTemplate` を触ったら走らせた後に (1) `e2e/*-snapshots/` のファイル名が 1 つも変わっていない、(2) 親ディレクトリ・ドライブ直下に `*-snapshots` が生えていない、の両方を見る。設定値を固定する検査は無い（`playwright.config.ts` に注記のみ）。
-- 検査: 未整備。手で確かめる。
+- 確かめ方: `src/test-support/test-lesson-rules.test.ts` の §5.65 が、`snapshotPathTemplate` の値、`e2e/` の下のベースラインの顔ぶれ、リポジトリ直下・親・ドライブ直下に `*.spec.ts-snapshots` が無いことを見る。あるべき値は `scripts/test-lesson-rules.mjs` の `SNAPSHOT_PATH_TEMPLATE`・`SNAPSHOT_FILES`。ベースラインを足すときはそこにも足す。
 
 ### 5.79 観測フックのグローバルを「誰かの mount/unmount で丸ごと差し替える」なら、他の部品は登録簿を経由させる
 - 正しい道: `window.__E2E__` の書き手は 1 つ（`src/ui/map/mount/observation.ts`）に保ち、他の部品は登録簿（`publish` / `read`。`src/ui/e2e/rail-observation.ts`、操作の口は `src/ui/e2e/harness.ts`）へ置く。部品が載っていなくても口は生やして既定値を返す（`ABSENT_LANE_STATS`）。

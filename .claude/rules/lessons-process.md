@@ -11,8 +11,7 @@
 ### 5.40 直接利用する依存は直接依存として宣言する
 - 正しい道: テスト/型チェック/ビルド/スクリプトが直接 import・実行する依存は `package.json` に直接依存として宣言する。設定ファイルのモジュール形式（拡張子とモジュール種別）は実行環境に揃え（現在 `"type": "module"`、tsconfig は `ESNext` / `Bundler`）、形式変更は型チェック・起動確認まで同じ変更単位に含める。
 - 誤った道の兆候: `package.json` に無いパッケージを import しているのに動く（推移依存に頼っている）。設定ファイルの拡張子だけを変えて起動を確かめていない。
-- 確かめ方: 検査は未整備。`eslint-plugin-import` は導入済みなので `import/no-extraneous-dependencies` を足せば捕まえられる。今は依存の差分を `package.json` と見比べ、`npm run typecheck` と起動で確かめる。
-- 検査: 未整備。手で確かめる。
+- 確かめ方: ESLint の `import/no-extraneous-dependencies`（`eslint.config.js`）が本体・テスト・設定ファイル・スクリプト・E2E の読み込みを見る。`devDependencies` を読み込んでよいファイルは `scripts/test-lesson-rules.mjs` の `DEV_DEPENDENCY_FILES`。`package.json` の `scripts` が実行するコマンドは lint の対象外なので、依存の差分と見比べる。設定ファイルの形式を変えたら `npm run typecheck` と起動で確かめる。
 
 ### 5.41 検証不能になった範囲は別手段で補う
 - 正しい道: E2E 等で一時的に検証できなくなった範囲（外部統合・ファイル I/O・終了確認等）は、純粋関数化・アダプタ分離・モックで単体テスト対象にして補う（`close-guard.ts` は Electron 抜きの状態機械、`atomic.ts` と `diagnostic-log.ts` は操作を注入）。
