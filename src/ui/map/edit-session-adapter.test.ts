@@ -119,7 +119,10 @@ const FEATURE = createLineFeature(
 // screen px → world: a trivial 1:1 mapping is enough; we only need a real move.
 const screenToWorld = (p: ScreenPoint): WorldCoordinate => ({ lon: p.x, lat: p.y });
 
-function setup(hit: HitResult, extra: Partial<EditSessionAdapterDeps<FakeState>> = {}) {
+/** 確定の手続きの呼び方（`ports` / `runProcess`）以外の deps の上書き。 */
+type ExtraDeps = Partial<Omit<EditSessionAdapterDeps<FakeState>, 'ports' | 'runProcess'>>;
+
+function setup(hit: HitResult, extra: ExtraDeps = {}) {
   const log: PortLog = { applyProposal: 0, checkTime: 0, detectSpatial: 0, makeCommand: 0 };
   const outcomes: ReleaseOutcome<FakeState>[] = [];
   const editSession = createEditSessionPort<FakeState>({
@@ -258,6 +261,79 @@ describe('edit-mode vertex drag drives U24 confirmRelease from the UI (受け入
     expect(dispatcher.isPanning).toBe(true);
     expect(dispatcher.cancelSelectEdit()).toBe(false);
     expect(dispatcher.isPanning).toBe(true);
+  });
+});
+
+// B98 / 教訓 5.101 — 本番は束ねの `.ports`（検出が空）ではなく、提案に結び直して走らせる
+// `runProcess` を渡す。解放のたびに組み上がった提案がそこへ届き、結果が onReleased に出る。
+describe('runProcess: 確定は束ねの startProcess へ流れる（教訓 5.101）', () => {
+  function setupWithRunProcess(hit: HitResult, extra: { featureMoveAllowed?: () => boolean } = {}) {
+    const proposals: { featureId: string; year: number }[] = [];
+    const outcomes: ReleaseOutcome<FakeState>[] = [];
+    const editSession = createEditSessionPort<FakeState>({
+      screenToWorld,
+      anchorTime: () => timePointYear(1200),
+      currentState: () => ({ applied: 0 }),
+      runProcess: (proposal) => {
+        proposals.push({ featureId: proposal.featureId, year: proposal.anchorTime.year });
+        return {
+          status: PROCESS_STATUS.ConflictsPending,
+          trialState: { applied: 1 },
+          conflicts: [],
+          unresolvedConflictIds: [],
+        };
+      },
+      buildSnapshot: () => buildSnapshot({ feature: FEATURE, vertices: [] }),
+      onReleased: (o) => outcomes.push(o),
+      ...extra,
+    });
+    const dispatcher = new PointerDispatcher({
+      getMode: () => EDIT_MODE.Edit,
+      camera: new FakeCamera(),
+      hitTester: { hitTest: () => hit },
+      selection: new FakeSelection(),
+      editSession,
+      add: { press: () => {} },
+      contextMenu: { request: () => {} },
+    });
+    return { dispatcher, proposals, outcomes };
+  }
+
+  it('頂点のドラッグ: 提案（地物・錨の年）が runProcess へ届き、その結果が onReleased に出る', () => {
+    const { dispatcher, proposals, outcomes } = setupWithRunProcess(
+      vertexHit(asFeatureId('L'), asVertexId('v0')),
+    );
+    dispatcher.pointerDown(ptr(1, 10, 10));
+    dispatcher.pointerMove(ptr(1, 40, 40));
+    dispatcher.pointerUp(ptr(1, 40, 40));
+    expect(proposals).toEqual([{ featureId: 'L', year: 1200 }]);
+    expect(outcomes).toHaveLength(1);
+    const outcome = outcomes[0]!;
+    expect(outcome.kind).toBe('processed');
+    if (outcome.kind === 'processed') {
+      expect(outcome.result.status).toBe(PROCESS_STATUS.ConflictsPending);
+      expect(outcome.proposal.featureId).toBe('L');
+    }
+  });
+
+  it('面の移動も同じ 1 本を通る', () => {
+    const { dispatcher, proposals } = setupWithRunProcess(featureBodyHit(asFeatureId('L')), {
+      featureMoveAllowed: () => true,
+    });
+    dispatcher.pointerDown(ptr(1, 10, 10));
+    dispatcher.pointerMove(ptr(1, 40, 40));
+    dispatcher.pointerUp(ptr(1, 40, 40));
+    expect(proposals).toHaveLength(1);
+  });
+
+  it('クリックは runProcess を呼ばない（幽霊の編集を作らない）', () => {
+    const { dispatcher, proposals, outcomes } = setupWithRunProcess(
+      vertexHit(asFeatureId('L'), asVertexId('v0')),
+    );
+    dispatcher.pointerDown(ptr(1, 10, 10));
+    dispatcher.pointerUp(ptr(1, 10, 10));
+    expect(proposals).toEqual([]);
+    expect(outcomes).toEqual([]);
   });
 });
 

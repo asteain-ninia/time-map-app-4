@@ -53,6 +53,7 @@ import {
   type MovingVertexConstraint,
   type ParentContainment,
   type ReleaseOutcome,
+  type ReleaseProcess,
   type SlideResult,
   type SnapCandidate,
   type SnapDecision,
@@ -64,7 +65,6 @@ import {
   type HitResult,
   type SelectionState,
 } from '../../domain/selection';
-import type { ConsistencyPorts } from '../../domain/consistency';
 import type { WorldCoordinate } from '../../domain/coordinate';
 import type { TimePoint } from '../../domain/time';
 import type { RingId, VertexId } from '../../domain/ids';
@@ -105,8 +105,11 @@ export interface SlideSnapNeighbours {
 /**
  * Everything the adapter needs from the rest of the app, injected so the wiring is
  * testable in plain Node and no domain rule is re-implemented here.
+ *
+ * 確定の手続きの呼び方は {@link ReleaseProcess}: 素の `ports` か、束ねが提案に結び直して走らせる
+ * `runProcess`。本番は `runProcess`（束ねの `.ports` は重なりの検出が空。教訓 5.101）。
  */
-export interface EditSessionAdapterDeps<S> {
+export type EditSessionAdapterDeps<S> = ReleaseProcess<S> & {
   /** Convert a screen point to a world coordinate (U17 inverse transform). */
   readonly screenToWorld: (point: ScreenPoint) => WorldCoordinate;
   /** The ring a leaf vertex belongs to (leaf vertex drag only); undefined otherwise. */
@@ -147,8 +150,6 @@ export interface EditSessionAdapterDeps<S> {
   readonly anchorTime: () => TimePoint;
   /** The current domain state to validate the release against. */
   readonly currentState: () => S;
-  /** The U13 consistency ports (fixed-order pipeline, FR-61). */
-  readonly ports: ConsistencyPorts<S, FeatureSnapshot>;
   /**
    * Build the complete after-state snapshot for the confirming release from the
    * live session (the moved vertex body / feature record). Owned by the host
@@ -211,6 +212,11 @@ export interface EditSessionAdapterDeps<S> {
    * single vertex (feature-move has no single dragged vertex to slide / snap).
    */
   readonly neighboursAt?: (preview: WorldCoordinate, session: DragSession) => SlideSnapNeighbours;
+};
+
+/** 確定の手続きの呼び方だけを deps から取り出す（`confirmRelease` の入力へそのまま広げる）。 */
+function releaseProcessOf<S>(deps: EditSessionAdapterDeps<S>): ReleaseProcess<S> {
+  return deps.runProcess !== undefined ? { runProcess: deps.runProcess } : { ports: deps.ports };
 }
 
 /**
@@ -308,8 +314,11 @@ export function createEditSessionPort<S>(deps: EditSessionAdapterDeps<S>): EditS
    * constrains one point, so in an N-vertex drag N−1 vertices passed through NO FR-28
    * collision and NO FR-89 containment check — a companion could be committed strictly
    * inside a neighbouring terminal (grab v0 of a 2-vertex selection, drag east, and the
-   * query never saw the terminal v1 lands in). FR-28/FR-89 are must 要件 and the live edit
-   * binding's `detectSpatial` is `() => []`, so nothing behind this caught it either.
+   * query never saw the terminal v1 lands in). FR-28/FR-89 are must 要件 and, at the time,
+   * the live edit binding's `detectSpatial` was `() => []`, so nothing behind this caught it
+   * either. (2026-10-31 / B98: the confirm now runs the binding's `startProcess`, so a
+   * shape that slips past the per-frame slide is stopped by the overlap detection at
+   * confirm time. The slide stays the per-frame preview; the confirm is the guard. 教訓 5.102)
    *
    * THE DECISION —「方向は主頂点、量は集合の交叉」: the primary still slides and snaps
    * alone (it owns the DIRECTION); every moving vertex may only SHRINK the resulting rigid
@@ -455,11 +464,11 @@ export function createEditSessionPort<S>(deps: EditSessionAdapterDeps<S>): EditS
           const placed = updateDrag(session, { preview: at });
           const rings = deps.movingRings?.(placed);
           const outcome = confirmRelease<S>({
+            ...releaseProcessOf(deps),
             session: placed,
             anchorTime: deps.anchorTime(),
             snapshot: deps.buildSnapshot(placed),
             current: deps.currentState(),
-            ports: deps.ports,
             // 押した点と中点がたまたま同じでも、頂点を足すのは変化である。
             forceChanged: true,
             ...(rings === undefined ? {} : { movingRings: rings }),
@@ -480,11 +489,11 @@ export function createEditSessionPort<S>(deps: EditSessionAdapterDeps<S>): EditS
       session = applyMove(session, deps.screenToWorld(point));
       const rings = deps.movingRings?.(session);
       const outcome = confirmRelease<S>({
+        ...releaseProcessOf(deps),
         session,
         anchorTime: deps.anchorTime(),
         snapshot: deps.buildSnapshot(session),
         current: deps.currentState(),
-        ports: deps.ports,
         ...(rings === undefined ? {} : { movingRings: rings }),
       });
       // HB3-4: clear the live preview BEFORE applying the committed outcome, so the

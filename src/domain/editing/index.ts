@@ -88,6 +88,7 @@ export {
   type EditRefusalKind,
   type MovingRing,
   type ReleaseInput,
+  type ReleaseProcess,
   decideSharePairAtRelease,
   isFeatureUnchanged,
   confirmRelease,

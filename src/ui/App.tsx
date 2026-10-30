@@ -911,6 +911,10 @@ export function App(): JSX.Element {
   // 増分 8E（G-14）: 確定の手続きが編集を断ったとき（穴・飛び地の形を壊す編集など）の理由を
   // 状態行へ出す口。上と同じく ref に置く（地図マウント時に 1 度だけ組み立てるため）。
   const announceEditRejectionRef = useRef<((rejected: RejectedResult) => void) | null>(null);
+  // B98: 頂点のドラッグ・面の移動・辺からの頂点の追加の確定が重なりで止まったとき、重なり解決の
+  // 板を開く口。束ね（`createLiveShapeEditBinding`）は地図のマウント側が持つので、止まった結果と
+  // その提案に結んだ適用の口をここへ渡してもらう。上と同じく ref に置く。
+  const openEditConflictRef = useRef<OpenEditConflict | null>(null);
 
   // 共有頂点の移動を「その年より後ろの記録へも反映した」ことを報せる口
   // （増分 3 の手直し 2 回目 / A1）。引き継ぎ自体は 1 回目で入れたが、**画面へ出す配線が
@@ -1030,6 +1034,7 @@ export function App(): JSX.Element {
       announceEditRefusalRef,
       announceCarryForwardRef,
       announceEditRejectionRef,
+      openEditConflictRef,
       contextMenuOpenerRef,
       focusOwnerRef,
       toolDraftRef,
@@ -1546,6 +1551,20 @@ export function App(): JSX.Element {
         ? APP_STRINGS.editRefusedLongDrag
         : APP_STRINGS.editRefusedOutsideWorld,
     );
+  };
+
+  // B98: ドラッグの確定が重なりで止まったら、ほかの道具と同じ板で止める（FR-29 / FR-62）。
+  // 適用の口は止まった提案に結んである（板を出した検出と適用が同じ検出を見る）。確定したら
+  // 動かした地物を選び直す（教訓 5.11。ほかの道具の onConflicts と同じ）。ドラッグには下書きが
+  // 無い（離した瞬間に一時状態は捨ててある）ので、止まっている局面の印は要らない。
+  openEditConflictRef.current = (pending, applyResolutions, proposal): void => {
+    const fid = proposal.snapshot.feature?.id;
+    setConflictState({
+      pending,
+      applyResolutions,
+      anchorTime: proposal.anchorTime,
+      ...(fid !== undefined ? { preference: { featureId: fid } } : {}),
+    });
   };
 
   // Register the U12 undo / redo commands on the SAME registry the menu + shortcuts
@@ -5049,6 +5068,16 @@ function GlobalDepthPanel(props: {
 }
 
 /**
+ * B98: 地図のマウント側（`createMountHitTest`）が、ドラッグの確定が重なりで止まったときに呼ぶ口。
+ * 止まった結果・その提案に結んだ適用の口・提案（錨の年と動かした地物を読む）を受け取る。
+ */
+type OpenEditConflict = (
+  pending: ConflictsPendingResult<DomainRoot>,
+  applyResolutions: ApplyResolutions<DomainRoot>,
+  proposal: EditProposal<RingFeatureSnapshot>,
+) => void;
+
+/**
  * The state the App holds while a confirmation is paused on conflicts (U35). The
  * `applyResolutions` adapter is already bound to the paused proposal, so the modal
  * is generic over the domain root only (it never sees the snapshot type).
@@ -5219,7 +5248,7 @@ import type { AnchorEntry } from '../domain/anchor-series';
 import {
   createLiveAddBinding,
   createLiveEditBinding,
-  createLiveRingEditBinding,
+  createLiveShapeEditBinding,
   createLiveKnifeBinding,
   createLiveMergeBinding,
   createLiveAffiliationBinding,
@@ -5478,8 +5507,8 @@ function createRingEditBootstrap(
   // 追加か削除かは **確定した形そのもの**から決める（環の数が増えたか減ったか）。
   // 道具の局面（`subMode`）を確定の入口まで運ぶ道を新設するより、結果から見るほうが
   // 経路が 1 本で済む（教訓 5.6: 経路ではなく結果状態で判定する）。
-  const liveAdd = createLiveRingEditBinding(access, UI_COMMAND_LABEL.RingAdd);
-  const liveDelete = createLiveRingEditBinding(access, UI_COMMAND_LABEL.RingDelete);
+  const liveAdd = createLiveShapeEditBinding(access, UI_COMMAND_LABEL.RingAdd);
+  const liveDelete = createLiveShapeEditBinding(access, UI_COMMAND_LABEL.RingDelete);
   /** その地物がいま持っている環の数（引けなければ 0）。 */
   const ringCountOf = (root: DomainRoot, featureId: FeatureId): number => {
     const f = featuresAt(root, getTime()).find((x) => x.id === featureId);
@@ -5487,7 +5516,7 @@ function createRingEditBootstrap(
   };
   const bindingFor = (
     snapshot: RingFeatureSnapshot,
-  ): ReturnType<typeof createLiveRingEditBinding> => {
+  ): ReturnType<typeof createLiveShapeEditBinding> => {
     const after = snapshot.feature;
     if (after === undefined || after.kind !== FEATURE_KIND.Leaf) return liveAdd;
     return after.shape.rings.length >= ringCountOf(getRoot(), after.id) ? liveAdd : liveDelete;

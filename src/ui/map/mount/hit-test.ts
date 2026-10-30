@@ -7,7 +7,7 @@
 import type { MutableRefObject } from 'react';
 
 import type { AddHostPorts } from '../../add/host-ports';
-import { createLiveEditBinding } from '../../consistency-binding';
+import { createLiveShapeEditBinding } from '../../consistency-binding';
 import {
   promotesOnContextMenu,
   suspendsContextMenu,
@@ -57,13 +57,20 @@ import {
   screenToWorld as unprojectScreenToWorld,
   type ScreenPoint,
 } from '../../../render';
+import type { ApplyResolutions } from '../../conflict/index';
 import {
   PROCESS_STATUS,
+  type ConflictsPendingResult,
+  type EditProposal,
   type ProcessResult,
   type RejectedResult,
 } from '../../../domain/consistency/index';
 import type { WorldCoordinate } from '../../../domain/coordinate';
-import { RELEASE_OUTCOME, type EditRefusalKind } from '../../../domain/editing/index';
+import {
+  RELEASE_OUTCOME,
+  type EditRefusalKind,
+  type FeatureSnapshot,
+} from '../../../domain/editing/index';
 import { reportVertexCarryForward } from '../../../domain/editing/apply-proposal';
 import { surveyLinesAt } from '../../../domain/survey/index';
 import { getCalendar } from '../../../domain/time/calendar';
@@ -127,6 +134,19 @@ export interface MountHitTestOptions {
    * 穴・飛び地の形を壊す編集はここで断られる。App.tsx が入れる。
    */
   readonly announceEditRejectionRef?: MutableRefObject<((rejected: RejectedResult) => void) | null>;
+  /**
+   * 確定の手続き（U13）がドラッグの編集を **重なりで止めた** ときに、重なり解決の板を開く口
+   * （B98 / FR-29 / FR-62）。止まった結果と、その提案に結んだ適用の口（板の［適用］が呼ぶ）と、
+   * 提案そのものを渡す。App.tsx が入れる。無ければ止まった編集は記録されずに終わる。
+   */
+  readonly openEditConflictRef?: MutableRefObject<
+    | ((
+        pending: ConflictsPendingResult<MountDomainRoot>,
+        applyResolutions: ApplyResolutions<MountDomainRoot>,
+        proposal: EditProposal<FeatureSnapshot>,
+      ) => void)
+    | null
+  >;
   /** 右クリックメニューの React 側の開く口。 */
   readonly contextMenuOpenerRef: MutableRefObject<ContextMenuOpener | null>;
   /**
@@ -347,7 +367,11 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
   // 単一真実源 5.29), and the live U16 snap distance (FR-110). With these present the
   // adapter runs the slide + snap light path every move and confirmRelease's share-pair
   // decision can collapse a surviving snap onto its target (受け入れ基準6/12).
-  const editBinding = createLiveEditBinding({
+  //
+  // B98: 束ねは **形を変える編集の束ね**（形の変わった面の、増えた重なりだけを止める。輪郭の道具と
+  // 同じ）。滑りの拘束は掴んだ頂点の通り道しか見ず、頂点が引きずる辺が隣を掃く形と面の移動
+  // （拘束が無い）は通してしまうので、確定で止める（教訓 5.102）。
+  const editBinding = createLiveShapeEditBinding({
     getRoot: () => store.getState().domain,
     // U4 study fix — the U06 difference write-back minters (shared project-wide
     // series via the lazy refs; assigned from sharedMint before any pointer event
@@ -421,7 +445,8 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
     vertexSelection: () => store.getState().selection,
     anchorTime: () => store.getState().currentTime,
     currentState: () => store.getState().domain,
-    ports: editBinding.ports,
+    // 束ねの `.ports` は検出が空なので渡さない。`startProcess` が提案に結び直す（B98 / 教訓 5.101）。
+    runProcess: (proposal) => editBinding.startProcess(proposal),
     // Assemble the complete after-state snapshot from the live session (moved vertex
     // bodies against the committed feature record / vertex store, 単一真実源). The snap
     // that survived to release is promoted to a share pair inside buildEditSnapshot via
@@ -447,9 +472,8 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
     neighboursAt: (preview, session) => neighboursQuery(preview, session),
     // On a processed release, record the committed edit as ONE U12 undo unit and
     // re-resolve selection to the edited feature (教訓5.11). A NoOp (zero-move / no
-    // change) records nothing; a rejection / conflict surfaces no commit here (the
-    // edit-session path has no conflict modal yet — detectSpatial returns none — so a
-    // rejection is simply not committed rather than silently corrupting state).
+    // change) records nothing. 断られたら理由を出し、重なりで止まったら板を開く（B98）。
+    // 止まった編集はここでは記録しない ―― 板の［適用］が記録し、［やめる］は何も残さない。
     onReleased: (outcome) => {
       // 断られたら理由を出す（A5 / A6）。何も記録されていないので、利用者から見ると
       // 「離したのに何も起きない」になる ―― 理由を出さないと原因が分からない。
@@ -462,6 +486,15 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
       // 以前はここで黙って戻っていたので、離したのに形が元へ戻るだけで原因が分からなかった。
       if (outcome.result.status === PROCESS_STATUS.Rejected) {
         options.announceEditRejectionRef?.current?.(outcome.result);
+        return;
+      }
+      // B98: 重なりで止まった。板を出した検出と同じ束ねの適用の口を、提案に結んで渡す。
+      if (outcome.result.status === PROCESS_STATUS.ConflictsPending) {
+        options.openEditConflictRef?.current?.(
+          outcome.result,
+          editBinding.applyResolutionsFor(outcome.proposal),
+          outcome.proposal,
+        );
         return;
       }
       if (outcome.result.status !== PROCESS_STATUS.Committed) return;

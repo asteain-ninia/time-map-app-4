@@ -334,40 +334,87 @@ const detectAllOverlaps: SpatialDetectorFor = (_access, proposal, cache) =>
   detectSpatialAt(proposal, cache);
 
 /**
- * 輪郭の道具（穴・飛び地の追加と削除）の検出。**その面の重なりが、確定済みの形より増えた組だけ**を
- * 競合にする。
+ * `time` に居る地物のうち、`before` と比べて **形が変わりうるもの** の id。地物の記録そのものか、
+ * 引いている頂点の本体のどれかが別のオブジェクトなら「変わった」と見る（末端の形の覚え
+ * `TerminalShapeCache` と同じ、参照の同一性による判定）。
  *
- * 輪郭の道具は 1 つの面の形しか変えないので、他の組は調べない（他の組の古い重なりで普通の穴あけを
- * 止めない）。増えたかどうかは組ごとに重なりの形を比べる: 前からあった組でも、新しい飛び地が
- * 同じ相手へ別の所で重なったら止める（教訓 5.97。1 ビットの例外にしない）。
- * 全部の組を調べないので、実データでも確定が固まらない。
+ * 経路（どの道具が何を掴んだか）ではなく結果の状態から決める（教訓 5.6）: 共有頂点を動かせば
+ * 掴んでいない隣の面も入り、面を消す提案なら何も入らない。
  */
-const detectIntroducedOverlaps: SpatialDetectorFor = (access, proposal, cache) => (resultState) => {
-  const time = proposal.anchorTime;
-  const overlapsOfFeature = (
-    root: DomainRoot,
-    terminalCache?: TerminalShapeCache,
-  ): readonly OverlapPair[] =>
-    detectTerminalOverlaps(
-      extractTerminalShapes(buildForest(featuresAt(root, time)), verticesAt(root, time), terminalCache),
-      { onlyInvolving: proposal.featureId },
-    );
-  const pairs = overlapsOfFeature(resultState, cache);
-  // ふつうは重なりが無い。そのときは確定済みの形を調べない。
-  if (pairs.length === 0) return [];
-  const before = overlapsOfFeature(access.getRoot());
-  const introduced = pairs.filter((pair) => {
-    const prior = before.find((p) => p.a === pair.a && p.b === pair.b);
-    if (prior === undefined) return true;
-    const grown = difference(pair.overlap, prior.overlap);
-    // 比べられないなら止める側へ倒す（重なりを黙って通さない）。
-    return !isOk(grown) || !isMultiPolygonEmpty(grown.result);
-  });
-  return conflictsFromOverlapPairs(introduced, displayNamesAt(resultState, time), () => ({
-    kind: 'point',
-    at: time,
-  }));
-};
+function changedFeatureIdsAt(
+  before: DomainRoot,
+  after: DomainRoot,
+  time: TimePoint,
+): ReadonlySet<FeatureId> {
+  const beforeById = new Map<FeatureId, Feature>();
+  for (const f of featuresAt(before, time)) beforeById.set(f.id, f);
+  const beforeStore = verticesAt(before, time);
+  const afterStore = verticesAt(after, time);
+  const changed = new Set<FeatureId>();
+  for (const feature of featuresAt(after, time)) {
+    if (beforeById.get(feature.id) !== feature) {
+      changed.add(feature.id);
+      continue;
+    }
+    for (const vid of referencedVertexIds(feature)) {
+      if (getVertex(beforeStore, vid) !== getVertex(afterStore, vid)) {
+        changed.add(feature.id);
+        break;
+      }
+    }
+  }
+  return changed;
+}
+
+/**
+ * 形を変える編集（輪郭の道具・頂点のドラッグ・面の移動・辺からの頂点の追加）の検出。
+ * **形の変わった面の重なりが、確定済みの形より増えた組だけ** を競合にする（B97 / B98）。
+ *
+ * 形の変わらない面どうしの組は調べない（他の組の古い重なりで普通の穴あけやドラッグを止めない）。
+ * 「形の変わった面」は結果の状態から決める（{@link changedFeatureIdsAt}）ので、共有頂点を動かして
+ * 掴んでいない隣の面の辺が第三の面を横切る形も見る。増えたかどうかは組ごとに重なりの形を比べる:
+ * 前からあった組でも、同じ相手へ別の所で重なったら止める（教訓 5.97。1 ビットの例外にしない）。
+ * 全部の組を調べないので、実データでも確定が固まらない。
+ *
+ * `committedCache` は確定済みの形の覚え。試しの状態の覚え（`cache`）と分けるのは、1 つの覚えを
+ * 交互に使うと毎回入れ替わって効かないため。確定済みの根はドラッグのあいだ変わらないので、
+ * 2 回目からは全部当たる。
+ */
+function introducedOverlapsDetector(committedCache: TerminalShapeCache): SpatialDetectorFor {
+  return (access, proposal, cache) => (resultState) => {
+    const time = proposal.anchorTime;
+    const committed = access.getRoot();
+    const involved = changedFeatureIdsAt(committed, resultState, time);
+    if (involved.size === 0) return [];
+    const overlapsInvolving = (
+      root: DomainRoot,
+      terminalCache: TerminalShapeCache | undefined,
+    ): readonly OverlapPair[] =>
+      detectTerminalOverlaps(
+        extractTerminalShapes(
+          buildForest(featuresAt(root, time)),
+          verticesAt(root, time),
+          terminalCache,
+        ),
+        { onlyInvolving: involved },
+      );
+    const pairs = overlapsInvolving(resultState, cache);
+    // ふつうは重なりが無い。そのときは確定済みの形を調べない。
+    if (pairs.length === 0) return [];
+    const before = overlapsInvolving(committed, committedCache);
+    const introduced = pairs.filter((pair) => {
+      const prior = before.find((p) => p.a === pair.a && p.b === pair.b);
+      if (prior === undefined) return true;
+      const grown = difference(pair.overlap, prior.overlap);
+      // 比べられないなら止める側へ倒す（重なりを黙って通さない）。
+      return !isOk(grown) || !isMultiPolygonEmpty(grown.result);
+    });
+    return conflictsFromOverlapPairs(introduced, displayNamesAt(resultState, time), () => ({
+      kind: 'point',
+      at: time,
+    }));
+  };
+}
 
 /**
  * 確定経路ごとの `makeCommand` を作る。ポートの形（baseline / finalState / touched）は
@@ -951,22 +998,24 @@ export const createLiveEditBinding: CreateLiveEditBinding = (access, label) => {
 };
 
 /**
- * 輪郭の道具の束ね（B97）。編集の束ねと同じ手順で、検出だけ {@link detectIntroducedOverlaps}。
- * 板を出す確定と板の適用が同じ検出を見る（FR-29 / FR-62）。
+ * 形を変える編集の束ね（B97 の輪郭の道具、B98 の頂点のドラッグ・面の移動・辺からの頂点の追加）。
+ * 編集の束ねと同じ手順で、検出だけ {@link introducedOverlapsDetector}（形の変わった面の、増えた
+ * 重なりだけ）。板を出す確定と板の適用が同じ検出を見る（FR-29 / FR-62）。
  */
-export const createLiveRingEditBinding: CreateLiveEditBinding = (access, label) => {
+export const createLiveShapeEditBinding: CreateLiveEditBinding = (access, label) => {
   const ports = editPorts(access, label);
   const spatialCache = createTerminalShapeCache();
+  const detector = introducedOverlapsDetector(createTerminalShapeCache());
   return {
     ports,
     startProcess: (proposal) =>
       runGuarded(
         access.getRoot(),
         proposal,
-        bindPortsToProposal(access, ports, proposal, spatialCache, detectIntroducedOverlaps),
+        bindPortsToProposal(access, ports, proposal, spatialCache, detector),
       ),
     applyResolutionsFor: (proposal) =>
-      createAccumulatingApply(access, ports, proposal, spatialCache, detectIntroducedOverlaps),
+      createAccumulatingApply(access, ports, proposal, spatialCache, detector),
   };
 };
 

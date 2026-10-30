@@ -10,7 +10,7 @@ import {
   createLiveAddBinding,
   createLiveKnifeBinding,
   createLiveEditBinding,
-  createLiveRingEditBinding,
+  createLiveShapeEditBinding,
   createLiveMergeBinding,
   createDeleteFeatureCommandForRoot,
   createAnchorIntervalCommandForRoot,
@@ -2457,7 +2457,7 @@ describe('applyResolutionsFor — 多成分 adjust のシーム跨ぎ片も解�
 });
 
 // B97 — 輪郭の道具の束ね。その面の重なりが確定済みの形より増えたときだけ止める。
-describe('createLiveRingEditBinding — 増えた重なりだけを止める (B97)', () => {
+describe('createLiveShapeEditBinding — 形の変わった面の、増えた重なりだけを止める (B97 / B98)', () => {
   const T = timePointYear(1000);
 
   /** f-a [0,2]² と f-b [1,3]×[0,2] は前から重なっている。f-c [5,7]×[0,2] は離れている。 */
@@ -2481,9 +2481,9 @@ describe('createLiveRingEditBinding — 増えた重なりだけを止める (B9
     return { root, a, b, c };
   }
 
-  function bindingOver(root: DomainRoot): ReturnType<typeof createLiveRingEditBinding> {
+  function bindingOver(root: DomainRoot): ReturnType<typeof createLiveShapeEditBinding> {
     let n = 0;
-    return createLiveRingEditBinding({
+    return createLiveShapeEditBinding({
       getRoot: () => root,
       nextVertexId: () => asVertexId(`rv-${(n += 1)}`),
       nextRingId: () => asRingId(`rr-${(n += 1)}`),
@@ -2553,5 +2553,36 @@ describe('createLiveRingEditBinding — 増えた重なりだけを止める (B9
       deletedFeatureId: a.feature.id,
     });
     expect(bindingOver(root).startProcess(proposal).status).toBe(PROCESS_STATUS.Committed);
+  });
+
+  // B98: 形の変わった面は結果の状態から決める。共有頂点を動かすと、掴んでいない隣の面の形も
+  // 変わるので、その面と第三の面の重なりも止める（提案の地物だけを見ていると見逃す）。
+  it('共有頂点を動かして、提案の地物でない隣の面が第三の面に重なっても止める', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    // f-b は f-a の右辺の 2 頂点（va-1 (2,0) と va-2 (2,2)）を共有する [2,4]×[0,2]。
+    const bOwn = [createVertex(asVertexId('vb-2'), { lon: 4, lat: 0 }), createVertex(asVertexId('vb-3'), { lon: 4, lat: 2 })];
+    const bRing = createTerritoryRing(asRingId('r-f-b'), [
+      asVertexId('va-1'),
+      bOwn[0]!.id,
+      bOwn[1]!.id,
+      asVertexId('va-2'),
+    ]);
+    const b = createLeafFeature(asFeatureId('f-b'), createBasicAttributes('f-b', 0, 0), color, createShape([bRing]));
+    // f-d は [3,5]×[2.5,4.5]。いまはどの面にも触れない。
+    const d = squareLeaf('f-d', 'vd', 3, 2.5);
+    let root = emptyProject();
+    root = applyAddProposal(root, { featureId: a.feature.id, anchorTime: T, snapshot: addSnapshot(a.feature, a.vertices) });
+    root = applyAddProposal(root, { featureId: b.id, anchorTime: T, snapshot: addSnapshot(b, bOwn) });
+    root = applyAddProposal(root, { featureId: d.feature.id, anchorTime: T, snapshot: addSnapshot(d.feature, d.vertices) });
+
+    // f-a を掴んで共有頂点 va-2 を (2,4) へ。f-a は f-d に触れないが、f-b の上の辺 (2,4)→(4,2) が f-d を横切る。
+    const proposal = createEditProposal(a.feature.id, T, {
+      feature: a.feature,
+      vertices: [createVertex(asVertexId('va-2'), { lon: 2, lat: 4 })],
+    });
+    const result = bindingOver(root).startProcess(proposal);
+    expect(result.status).toBe(PROCESS_STATUS.ConflictsPending);
+    if (result.status !== PROCESS_STATUS.ConflictsPending) return;
+    expect(result.conflicts.map((x) => x.id)).toEqual(['f-b__f-d']);
   });
 });

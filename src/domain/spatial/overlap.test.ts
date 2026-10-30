@@ -781,22 +781,45 @@ describe('purity: same input yields same output', () => {
   });
 });
 
-describe('onlyInvolving: 1 つの面を含む組だけを調べる', () => {
+describe('onlyInvolving: 指定した面を含む組だけを調べる', () => {
+  const terminals = [
+    term('a', rect(0, 0, 2, 2)),
+    term('b', rect(1, 0, 3, 2)),
+    term('c', rect(2.5, 0, 4, 2)),
+    term('d', rect(3.5, 0, 5, 2)),
+  ];
+
   it('その面を含む組だけを返し、他の組は調べない', () => {
-    const terminals = [
-      term('a', rect(0, 0, 2, 2)),
-      term('b', rect(1, 0, 3, 2)),
-      term('c', rect(2.5, 0, 4, 2)),
-    ];
     expect(pairKeys(detectTerminalOverlaps(terminals, NO_SEAM))).toEqual(
-      new Set(['a|b', 'b|c']),
+      new Set(['a|b', 'b|c', 'c|d']),
     );
     expect(
-      pairKeys(detectTerminalOverlaps(terminals, { ...NO_SEAM, onlyInvolving: id('a') })),
+      pairKeys(
+        detectTerminalOverlaps(terminals, { ...NO_SEAM, onlyInvolving: new Set([id('a')]) }),
+      ),
     ).toEqual(new Set(['a|b']));
     const counter = { count: 0 };
-    detectTerminalOverlaps(terminals, { ...NO_SEAM, onlyInvolving: id('c'), counter });
+    detectTerminalOverlaps(terminals, { ...NO_SEAM, onlyInvolving: new Set([id('d')]), counter });
     expect(counter.count).toBe(1);
+  });
+
+  it('複数の面（共有頂点を動かして形が変わった面の全部）を含む組を返す', () => {
+    expect(
+      pairKeys(
+        detectTerminalOverlaps(terminals, {
+          ...NO_SEAM,
+          onlyInvolving: new Set([id('a'), id('d')]),
+        }),
+      ),
+    ).toEqual(new Set(['a|b', 'c|d']));
+  });
+
+  it('空の集合なら何も調べない', () => {
+    const counter = { count: 0 };
+    expect(
+      detectTerminalOverlaps(terminals, { ...NO_SEAM, onlyInvolving: new Set(), counter }),
+    ).toEqual([]);
+    expect(counter.count).toBe(0);
   });
 });
 
