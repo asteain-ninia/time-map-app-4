@@ -5219,6 +5219,7 @@ import type { AnchorEntry } from '../domain/anchor-series';
 import {
   createLiveAddBinding,
   createLiveEditBinding,
+  createLiveRingEditBinding,
   createLiveKnifeBinding,
   createLiveMergeBinding,
   createLiveAffiliationBinding,
@@ -5477,14 +5478,16 @@ function createRingEditBootstrap(
   // 追加か削除かは **確定した形そのもの**から決める（環の数が増えたか減ったか）。
   // 道具の局面（`subMode`）を確定の入口まで運ぶ道を新設するより、結果から見るほうが
   // 経路が 1 本で済む（教訓 5.6: 経路ではなく結果状態で判定する）。
-  const liveAdd = createLiveEditBinding(access, UI_COMMAND_LABEL.RingAdd);
-  const liveDelete = createLiveEditBinding(access, UI_COMMAND_LABEL.RingDelete);
+  const liveAdd = createLiveRingEditBinding(access, UI_COMMAND_LABEL.RingAdd);
+  const liveDelete = createLiveRingEditBinding(access, UI_COMMAND_LABEL.RingDelete);
   /** その地物がいま持っている環の数（引けなければ 0）。 */
   const ringCountOf = (root: DomainRoot, featureId: FeatureId): number => {
     const f = featuresAt(root, getTime()).find((x) => x.id === featureId);
     return f !== undefined && f.kind === FEATURE_KIND.Leaf ? f.shape.rings.length : 0;
   };
-  const bindingFor = (snapshot: RingFeatureSnapshot): ReturnType<typeof createLiveEditBinding> => {
+  const bindingFor = (
+    snapshot: RingFeatureSnapshot,
+  ): ReturnType<typeof createLiveRingEditBinding> => {
     const after = snapshot.feature;
     if (after === undefined || after.kind !== FEATURE_KIND.Leaf) return liveAdd;
     return after.shape.rings.length >= ringCountOf(getRoot(), after.id) ? liveAdd : liveDelete;
@@ -5492,12 +5495,13 @@ function createRingEditBootstrap(
   // The hook's StartRingEditProcess is the confirm entry: assemble the ONE complete-
   // state proposal (snapshot) and drive U24→U13. add / delete are always a real change
   // (changed: true), so the no-op guard never suppresses them (教訓 5.24).
+  // 束ねの `.ports` は検出が空なので渡さない。`startProcess` が提案に結び直す（B97 / 教訓 5.101）。
   const startProcess: StartRingEditProcess<DomainRoot> = (snapshot, anchorTime, current) =>
     confirmRingEdit<DomainRoot>({
       snapshot,
       anchorTime,
       current,
-      ports: bindingFor(snapshot).ports,
+      runProcess: (proposal) => bindingFor(snapshot).startProcess(proposal),
       changed: true,
     });
   const applyResolutionsFor = (

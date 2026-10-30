@@ -60,6 +60,8 @@ export const RING_EDIT_STRINGS = {
    */
   ringKindHole: '穴',
   ringKindTerritory: '外周・飛び地',
+  /** ConflictPaused status (FR-62). 分ける・穴あけと同じ文。 */
+  conflictPaused: '空間競合の解決待ちです。',
 } as const;
 
 /** 輪郭の道具の段数（設計書 §C.4 の「手順 n/m」の m）。1 = 面を選ぶ / 2 = 輪郭を描く。 */

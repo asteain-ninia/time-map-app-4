@@ -86,7 +86,7 @@ import {
   createTerminalShapeCache,
   type TerminalShapeCache,
 } from '../domain/spatial/index';
-import { detectTerminalOverlaps } from '../domain/spatial/index';
+import { detectTerminalOverlaps, type OverlapPair } from '../domain/spatial/index';
 import { resolveLeafShape } from '../domain/hierarchy/resolve-shape';
 import { difference, isOk } from '../domain/geometry/index';
 import { isMultiPolygonEmpty, type GeoMultiPolygon } from '../domain/geometry/types';
@@ -322,6 +322,52 @@ function detectSpatialAt<Snapshot>(
     return conflictsFromOverlapPairs(pairs, names, () => ({ kind: 'point', at: time }));
   };
 }
+
+/** 提案に結び直す検出の作り方。 */
+type SpatialDetectorFor = <Snapshot>(
+  access: DomainRootAccess,
+  proposal: EditProposal<Snapshot>,
+  cache?: TerminalShapeCache,
+) => (resultState: DomainRoot) => SpatialCheckResult;
+
+const detectAllOverlaps: SpatialDetectorFor = (_access, proposal, cache) =>
+  detectSpatialAt(proposal, cache);
+
+/**
+ * 輪郭の道具（穴・飛び地の追加と削除）の検出。**その面の重なりが、確定済みの形より増えた組だけ**を
+ * 競合にする。
+ *
+ * 輪郭の道具は 1 つの面の形しか変えないので、他の組は調べない（他の組の古い重なりで普通の穴あけを
+ * 止めない）。増えたかどうかは組ごとに重なりの形を比べる: 前からあった組でも、新しい飛び地が
+ * 同じ相手へ別の所で重なったら止める（教訓 5.97。1 ビットの例外にしない）。
+ * 全部の組を調べないので、実データでも確定が固まらない。
+ */
+const detectIntroducedOverlaps: SpatialDetectorFor = (access, proposal, cache) => (resultState) => {
+  const time = proposal.anchorTime;
+  const overlapsOfFeature = (
+    root: DomainRoot,
+    terminalCache?: TerminalShapeCache,
+  ): readonly OverlapPair[] =>
+    detectTerminalOverlaps(
+      extractTerminalShapes(buildForest(featuresAt(root, time)), verticesAt(root, time), terminalCache),
+      { onlyInvolving: proposal.featureId },
+    );
+  const pairs = overlapsOfFeature(resultState, cache);
+  // ふつうは重なりが無い。そのときは確定済みの形を調べない。
+  if (pairs.length === 0) return [];
+  const before = overlapsOfFeature(access.getRoot());
+  const introduced = pairs.filter((pair) => {
+    const prior = before.find((p) => p.a === pair.a && p.b === pair.b);
+    if (prior === undefined) return true;
+    const grown = difference(pair.overlap, prior.overlap);
+    // 比べられないなら止める側へ倒す（重なりを黙って通さない）。
+    return !isOk(grown) || !isMultiPolygonEmpty(grown.result);
+  });
+  return conflictsFromOverlapPairs(introduced, displayNamesAt(resultState, time), () => ({
+    kind: 'point',
+    at: time,
+  }));
+};
 
 /**
  * 確定経路ごとの `makeCommand` を作る。ポートの形（baseline / finalState / touched）は
@@ -730,10 +776,11 @@ function bindPortsToProposal<Snapshot>(
   base: ConsistencyPorts<DomainRoot, Snapshot>,
   proposal: EditProposal<Snapshot>,
   spatialCache?: TerminalShapeCache,
+  detector: SpatialDetectorFor = detectAllOverlaps,
 ): ConsistencyPorts<DomainRoot, Snapshot> {
   return {
     ...base,
-    detectSpatial: detectSpatialAt(proposal, spatialCache),
+    detectSpatial: detector(access, proposal, spatialCache),
     applyResolution: applyResolutionAt(access, proposal.anchorTime),
   };
 }
@@ -749,13 +796,14 @@ function runResolutionsGuarded<Snapshot>(
   proposal: EditProposal<Snapshot>,
   resolutions: readonly Resolution[],
   spatialCache?: TerminalShapeCache,
+  detector?: SpatialDetectorFor,
 ): ProcessResult<DomainRoot> {
   try {
     return orchestratorApplyResolutions(
       access.getRoot(),
       proposal,
       resolutions,
-      bindPortsToProposal(access, base, proposal, spatialCache),
+      bindPortsToProposal(access, base, proposal, spatialCache, detector),
     );
   } catch (error) {
     const rejection: RejectedResult = {
@@ -793,11 +841,19 @@ function createAccumulatingApply<Snapshot>(
   ports: ConsistencyPorts<DomainRoot, Snapshot>,
   proposal: EditProposal<Snapshot>,
   spatialCache?: TerminalShapeCache,
+  detector?: SpatialDetectorFor,
 ): (resolutions: readonly Resolution[]) => ProcessResult<DomainRoot> {
   const accumulated = new Map<string, Resolution>();
   return (resolutions) => {
     for (const r of resolutions) accumulated.set(r.conflictId, r);
-    return runResolutionsGuarded(access, ports, proposal, [...accumulated.values()], spatialCache);
+    return runResolutionsGuarded(
+      access,
+      ports,
+      proposal,
+      [...accumulated.values()],
+      spatialCache,
+      detector,
+    );
   };
 }
 
@@ -856,8 +912,11 @@ export const createLiveAddBinding: CreateLiveAddBinding = (access) => {
  * stale capture, 教訓 5.6) and never writes the store — the host's onCommitted owns
  * the single store-write path.
  */
-export const createLiveEditBinding: CreateLiveEditBinding = (access, label) => {
-  const ports: ConsistencyPorts<DomainRoot, FeatureSnapshot> = {
+function editPorts(
+  access: DomainRootAccess,
+  label: string | undefined,
+): ConsistencyPorts<DomainRoot, FeatureSnapshot> {
+  return {
     applyProposal: (current, proposal) => applyEditProposal(current, proposal, calendar),
     checkTime: checkTimeOverExisting,
     // 増分 8E（G-14）: 穴・飛び地の形を **この編集で新しく壊した** なら確定させない。
@@ -873,6 +932,10 @@ export const createLiveEditBinding: CreateLiveEditBinding = (access, label) => {
     // 行き先に合わせて label を渡す（既定は従来どおり素性の変更）。
     makeCommand: labelledMakeCommand(label ?? UI_COMMAND_LABEL.Edit),
   };
+}
+
+export const createLiveEditBinding: CreateLiveEditBinding = (access, label) => {
+  const ports = editPorts(access, label);
   const spatialCache = createTerminalShapeCache();
   return {
     ports,
@@ -884,6 +947,26 @@ export const createLiveEditBinding: CreateLiveEditBinding = (access, label) => {
       ),
     applyResolutionsFor: (proposal) =>
       createAccumulatingApply(access, ports, proposal, spatialCache),
+  };
+};
+
+/**
+ * 輪郭の道具の束ね（B97）。編集の束ねと同じ手順で、検出だけ {@link detectIntroducedOverlaps}。
+ * 板を出す確定と板の適用が同じ検出を見る（FR-29 / FR-62）。
+ */
+export const createLiveRingEditBinding: CreateLiveEditBinding = (access, label) => {
+  const ports = editPorts(access, label);
+  const spatialCache = createTerminalShapeCache();
+  return {
+    ports,
+    startProcess: (proposal) =>
+      runGuarded(
+        access.getRoot(),
+        proposal,
+        bindPortsToProposal(access, ports, proposal, spatialCache, detectIntroducedOverlaps),
+      ),
+    applyResolutionsFor: (proposal) =>
+      createAccumulatingApply(access, ports, proposal, spatialCache, detectIntroducedOverlaps),
   };
 };
 

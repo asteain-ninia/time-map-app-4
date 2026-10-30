@@ -126,6 +126,11 @@ export const RING_EDIT_FLOW = {
   Drafting: 'drafting',
   /** A target face is chosen; awaiting a ring click to delete (delete sub-mode). */
   Deleting: 'deleting',
+  /**
+   * 確定の手続きへ渡して、重なり解決の板の答えを待っている（FR-62 / 教訓 5.95）。ここにある
+   * 頂点はもう「打ちかけ」ではない。行き先は板が決める。板が閉じると宿主が道具を構え直す。
+   */
+  ConflictPaused: 'conflict-paused',
 } as const;
 
 export type RingEditFlow = (typeof RING_EDIT_FLOW)[keyof typeof RING_EDIT_FLOW];
@@ -338,6 +343,8 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
   const [pendingDelete, setPendingDelete] = useState<PendingRingDelete | null>(null);
   // Carries the grid-snap toggle across draft starts (mirrors startDraft's gridSnap arg).
   const [gridSnap, setGridSnapState] = useState(false);
+  // 確定の手続きへ渡して止まっているか（教訓 5.95）。{@link discard} が必ず下ろす（教訓 5.2）。
+  const [conflictPaused, setConflictPaused] = useState(false);
 
   // The SINGLE reset契約 every exit path funnels through (教訓 5.2). Drops the draft,
   // the delete target and the message together; `armed` (tool-active) is kept unless a
@@ -352,6 +359,7 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
     // ときに **古い写しのまま**確認が残り、その写しで確定できてしまう（教訓 5.2:
     // 出口はすべてこの 1 か所を通る、の対象に含める）。
     setPendingDelete(null);
+    setConflictPaused(false);
   }, []);
 
   const start = useCallback(() => {
@@ -440,6 +448,9 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
           discard();
           return;
         case PROCESS_STATUS.ConflictsPending:
+          // FR-62: 止める。下書きは捨てない（板が閉じるまで、行き先は決まっていない）。
+          setMessage(null);
+          setConflictPaused(true);
           onConflicts?.(outcome.result, outcome.proposal);
           return;
         case PROCESS_STATUS.Rejected:
@@ -584,7 +595,7 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
   // with plain clicks, and matches the guide copy the tool already showed.
   const handleClick = useCallback(
     (point: WorldCoordinate, featureIdAtPoint: FeatureId | null) => {
-      if (!armed) return;
+      if (!armed || conflictPaused) return;
       if (subMode === RING_EDIT_SUBMODE.Add) {
         if (draft === null) {
           // Phase 1: pick the face; NO vertex is placed by the selection click.
@@ -627,6 +638,7 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
     },
     [
       armed,
+      conflictPaused,
       subMode,
       draft,
       gridSnap,
@@ -654,7 +666,7 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
   }, []);
 
   const confirm = useCallback(() => {
-    if (draft === null) return;
+    if (draft === null || conflictPaused) return;
     const leaf = resolveTargetLeaf(draft.targetFeatureId);
     if (leaf === undefined) {
       setMessage(RING_REJECT_MESSAGES['target-not-found']);
@@ -676,7 +688,7 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
       return;
     }
     runConfirm(snapshotForLeaf(result.feature, result.vertices));
-  }, [draft, resolveTargetLeaf, resolveStore, ids, runConfirm]);
+  }, [draft, conflictPaused, resolveTargetLeaf, resolveStore, ids, runConfirm]);
 
   // --- Derived view -------------------------------------------------------
   const targetId: FeatureId | null =
@@ -687,11 +699,12 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
   // with the guide below.
   const flow: RingEditFlow = useMemo(() => {
     if (!armed) return RING_EDIT_FLOW.Idle;
+    if (conflictPaused) return RING_EDIT_FLOW.ConflictPaused;
     if (subMode === RING_EDIT_SUBMODE.Delete) {
       return deleteTargetId !== null ? RING_EDIT_FLOW.Deleting : RING_EDIT_FLOW.SelectingTarget;
     }
     return draft !== null ? RING_EDIT_FLOW.Drafting : RING_EDIT_FLOW.SelectingTarget;
-  }, [armed, subMode, draft, deleteTargetId]);
+  }, [armed, conflictPaused, subMode, draft, deleteTargetId]);
 
   const guide = useMemo(() => {
     if (subMode === RING_EDIT_SUBMODE.Delete) {
@@ -702,7 +715,9 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
     return draft !== null ? RING_EDIT_STRINGS.guideDrawRing : RING_EDIT_STRINGS.guideSelectTarget;
   }, [subMode, draft, deleteTargetId]);
 
-  const canConfirm = draft !== null && draft.vertices.length >= 3;
+  // 止まっている間は確定できない。これが偽なので、宿主が道具を構え直しても見張り
+  // （`useDraftSwitchGuard`）は「捨てますか」を出さない（教訓 5.95）。
+  const canConfirm = !conflictPaused && draft !== null && draft.vertices.length >= 3;
 
   return {
     flow,

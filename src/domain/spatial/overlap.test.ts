@@ -781,6 +781,25 @@ describe('purity: same input yields same output', () => {
   });
 });
 
+describe('onlyInvolving: 1 つの面を含む組だけを調べる', () => {
+  it('その面を含む組だけを返し、他の組は調べない', () => {
+    const terminals = [
+      term('a', rect(0, 0, 2, 2)),
+      term('b', rect(1, 0, 3, 2)),
+      term('c', rect(2.5, 0, 4, 2)),
+    ];
+    expect(pairKeys(detectTerminalOverlaps(terminals, NO_SEAM))).toEqual(
+      new Set(['a|b', 'b|c']),
+    );
+    expect(
+      pairKeys(detectTerminalOverlaps(terminals, { ...NO_SEAM, onlyInvolving: id('a') })),
+    ).toEqual(new Set(['a|b']));
+    const counter = { count: 0 };
+    detectTerminalOverlaps(terminals, { ...NO_SEAM, onlyInvolving: id('c'), counter });
+    expect(counter.count).toBe(1);
+  });
+});
+
 // Reference: confirm helpers compile-use WorldCoordinate (silences unused import
 // drift if helpers change shape).
 const _coordTypeCheck: WorldCoordinate = createCoordinate(0, 0);

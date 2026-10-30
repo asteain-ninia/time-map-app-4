@@ -10,6 +10,7 @@ import {
   createLiveAddBinding,
   createLiveKnifeBinding,
   createLiveEditBinding,
+  createLiveRingEditBinding,
   createLiveMergeBinding,
   createDeleteFeatureCommandForRoot,
   createAnchorIntervalCommandForRoot,
@@ -2452,5 +2453,105 @@ describe('applyResolutionsFor — 多成分 adjust のシーム跨ぎ片も解�
     expect(after).toContain(aFeature.id);
     expect(after).toContain(bFeature.id);
     expect(checkConsistency(root, getCalendar('gregorian')).inconsistencies).toEqual([]);
+  });
+});
+
+// B97 — 輪郭の道具の束ね。その面の重なりが確定済みの形より増えたときだけ止める。
+describe('createLiveRingEditBinding — 増えた重なりだけを止める (B97)', () => {
+  const T = timePointYear(1000);
+
+  /** f-a [0,2]² と f-b [1,3]×[0,2] は前から重なっている。f-c [5,7]×[0,2] は離れている。 */
+  function seed(): {
+    root: DomainRoot;
+    a: ReturnType<typeof squareLeaf>;
+    b: ReturnType<typeof squareLeaf>;
+    c: ReturnType<typeof squareLeaf>;
+  } {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const b = squareLeaf('f-b', 'vb', 1, 0);
+    const c = squareLeaf('f-c', 'vc', 5, 0);
+    let root = emptyProject();
+    for (const leaf of [a, b, c]) {
+      root = applyAddProposal(root, {
+        featureId: leaf.feature.id,
+        anchorTime: T,
+        snapshot: addSnapshot(leaf.feature, leaf.vertices),
+      });
+    }
+    return { root, a, b, c };
+  }
+
+  function bindingOver(root: DomainRoot): ReturnType<typeof createLiveRingEditBinding> {
+    let n = 0;
+    return createLiveRingEditBinding({
+      getRoot: () => root,
+      nextVertexId: () => asVertexId(`rv-${(n += 1)}`),
+      nextRingId: () => asRingId(`rr-${(n += 1)}`),
+    });
+  }
+
+  /** 地物の頂点を `move` で動かした提案（形の変化の代わり）。 */
+  function moved(
+    leaf: ReturnType<typeof squareLeaf>,
+    move: (lon: number, lat: number, index: number) => readonly [number, number],
+  ): ReturnType<typeof createEditProposal<{ feature: LeafFeature; vertices: Vertex[] }>> {
+    const vertices = leaf.vertices.map((v, i) => {
+      const [lon, lat] = move(v.coordinate.lon, v.coordinate.lat, i);
+      return createVertex(v.id, { lon, lat });
+    });
+    return createEditProposal(leaf.feature.id, T, { feature: leaf.feature, vertices });
+  }
+
+  it('他の組の古い重なりでは止めない（編集の束ねの全組検出なら止まる形）', () => {
+    const { root, c } = seed();
+    const proposal = moved(c, (lon, lat) => [lon + 0.5, lat]);
+    expect(createLiveEditBinding({ getRoot: () => root }).startProcess(proposal).status).toBe(
+      PROCESS_STATUS.ConflictsPending,
+    );
+    expect(bindingOver(root).startProcess(proposal).status).toBe(PROCESS_STATUS.Committed);
+  });
+
+  it('同じ相手との古い重なりが変わらない・減るなら止めない', () => {
+    const { root, a } = seed();
+    // 重なりから遠い左下の頂点だけ動かす。
+    const same = moved(a, (lon, lat, i) => (i === 0 ? [lon + 0.2, lat] : [lon, lat]));
+    expect(bindingOver(root).startProcess(same).status).toBe(PROCESS_STATUS.Committed);
+    // 離れる向きへ動かす。
+    const less = moved(a, (lon, lat) => [lon - 0.5, lat]);
+    expect(bindingOver(root).startProcess(less).status).toBe(PROCESS_STATUS.Committed);
+  });
+
+  it('同じ相手との古い重なりが増えたら止める（前からの組だからと素通りさせない）', () => {
+    const { root, a } = seed();
+    const more = moved(a, (lon, lat) => [lon + 0.5, lat]);
+    const result = bindingOver(root).startProcess(more);
+    expect(result.status).toBe(PROCESS_STATUS.ConflictsPending);
+  });
+
+  it('新しい相手との重なりは止まり、板に出るのはその組だけで、適用で確定する', () => {
+    const { root, b, c } = seed();
+    const proposal = moved(c, (lon, lat) => [lon - 3, lat]);
+    const binding = bindingOver(root);
+    const pending = binding.startProcess(proposal);
+    expect(pending.status).toBe(PROCESS_STATUS.ConflictsPending);
+    if (pending.status !== PROCESS_STATUS.ConflictsPending) return;
+    expect(pending.conflicts.map((x) => x.id)).toEqual(['f-b__f-c']);
+    const outcome = binding.applyResolutionsFor(proposal)([
+      {
+        conflictId: pending.conflicts[0]!.id,
+        priorityFeatureId: b.feature.id,
+        adjustFeatureId: c.feature.id,
+      },
+    ]);
+    expect(outcome.status).toBe(PROCESS_STATUS.Committed);
+  });
+
+  it('面を消す提案では止めない', () => {
+    const { root, a } = seed();
+    const proposal = createEditProposal(a.feature.id, T, {
+      vertices: [],
+      deletedFeatureId: a.feature.id,
+    });
+    expect(bindingOver(root).startProcess(proposal).status).toBe(PROCESS_STATUS.Committed);
   });
 });

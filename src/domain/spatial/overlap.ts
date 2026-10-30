@@ -78,6 +78,11 @@ export interface DetectOptions {
   readonly seamTurns?: readonly number[];
   /** Optional predicate-call counter (for the narrowing / benchmark tests). */
   readonly counter?: PredicateCounter;
+  /**
+   * この地物を含む組だけを調べる。1 つの面の形しか変えない編集（輪郭の道具）では、他の組の
+   * 重なりは変わらないので調べなくてよい（実データの全組は 1 回 1 秒かかる）。
+   */
+  readonly onlyInvolving?: FeatureId;
 }
 
 const DEFAULT_SEAM_TURNS: readonly number[] = [-1, 0, 1];
@@ -219,6 +224,7 @@ export function detectTerminalOverlaps(
 ): OverlapPair[] {
   const seamTurns = options.seamTurns ?? DEFAULT_SEAM_TURNS;
   const counter = options.counter;
+  const onlyInvolving = options.onlyInvolving;
 
   // 1. Build placements: the identity (turns 0) plus a seam replica per turn for
   //    shapes that have any extent. Replicas at turn 0 duplicate the identity, so
@@ -291,6 +297,7 @@ export function detectTerminalOverlaps(
       // anchor (mirrors the naïve i<j ordering; avoids counting A∩B twice and
       // matches the naïve test family A-identity × B-turns).
       if (aKey > idToString(b.id)) continue;
+      if (onlyInvolving !== undefined && a.id !== onlyInvolving && b.id !== onlyInvolving) continue;
       // Cheap reject: bbox must actually intersect (search is inclusive; this also
       // mirrors the touch boundary, but the real decision is the area test below).
       if (!bboxesIntersect(a.bbox, b.bbox)) continue;

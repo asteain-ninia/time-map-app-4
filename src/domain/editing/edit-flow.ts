@@ -260,7 +260,23 @@ export interface MovingRing {
   readonly movingIndexes: readonly number[];
 }
 
-export interface ReleaseInput<S> {
+/**
+ * 確定の手続きの呼び方。素の `ports` か、束ねが提案に結び直して走らせる `runProcess` か。
+ * 束ねの `.ports` は `detectSpatial` が空なので、重なりを見たい経路は `runProcess` を渡す（教訓 5.101）。
+ */
+export type ReleaseProcess<S> =
+  | {
+      /** The U13 dependency ports (FR-61 pipeline). */
+      readonly ports: ConsistencyPorts<S, FeatureSnapshot>;
+      readonly runProcess?: undefined;
+    }
+  | {
+      readonly ports?: undefined;
+      /** 組み上がった提案を、束ねの `startProcess`（提案に結び直した検出）へ流す。 */
+      readonly runProcess: (proposal: EditProposal<FeatureSnapshot>) => ProcessResult<S>;
+    };
+
+export type ReleaseInput<S> = ReleaseProcess<S> & {
   readonly session: DragSession;
   /** The anchor time the edit confirms at (FR-59). */
   readonly anchorTime: TimePoint;
@@ -268,8 +284,6 @@ export interface ReleaseInput<S> {
   readonly snapshot: FeatureSnapshot;
   /** The current domain state to validate against. */
   readonly current: S;
-  /** The U13 dependency ports (FR-61 pipeline). */
-  readonly ports: ConsistencyPorts<S, FeatureSnapshot>;
   /**
    * Override the no-op decision (e.g. attribute-only edits where the gesture had
    * no move but the attribute changed). Default uses the drag {@link isNoOp}.
@@ -282,7 +296,7 @@ export interface ReleaseInput<S> {
    * `domain/geo/long-edge.ts` の同じ述語を通す。
    */
   readonly movingRings?: readonly MovingRing[];
-}
+};
 
 /**
  * Confirm a release: run the no-op guard, then (if changed) assemble the proposal
@@ -311,7 +325,10 @@ export function confirmRelease<S>(input: ReleaseInput<S>): ReleaseOutcome<S> {
   }
 
   const proposal = createEditProposal(featureId, input.anchorTime, input.snapshot);
-  const result = startProcess(input.current, proposal, input.ports);
+  const result =
+    input.runProcess !== undefined
+      ? input.runProcess(proposal)
+      : startProcess(input.current, proposal, input.ports);
   return { kind: RELEASE_OUTCOME.Processed, result, proposal };
 }
 

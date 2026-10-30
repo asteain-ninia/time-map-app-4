@@ -27,6 +27,7 @@ import {
   confirmRelease,
   type FeatureSnapshot,
   type ReleaseOutcome,
+  type ReleaseProcess,
 } from '../editing/edit-flow';
 import {
   EDIT_TOOL,
@@ -34,7 +35,6 @@ import {
   type DragSession,
   type DragTarget,
 } from '../editing/drag-session';
-import type { ConsistencyPorts } from '../consistency/types';
 import { createCoordinate } from '../coordinate';
 
 /**
@@ -78,15 +78,13 @@ export function snapshotForDeletedFeature(featureId: FeatureId): FeatureSnapshot
   return buildSnapshot({ vertices: [], deletedFeatureId: featureId });
 }
 
-export interface RingConfirmInput<S> {
+export type RingConfirmInput<S> = ReleaseProcess<S> & {
   /** The complete after-state snapshot assembled from the command result. */
   readonly snapshot: FeatureSnapshot;
   /** The editing-base / current timeline time recorded as the anchor (FR-57). */
   readonly anchorTime: TimePoint;
   /** The current domain state the pipeline validates against. */
   readonly current: S;
-  /** U13 dependency ports (the fixed FR-61 pipeline). */
-  readonly ports: ConsistencyPorts<S, FeatureSnapshot>;
   /**
    * Whether the after-state differs from the baseline. Derived by the caller from
    * the SAME leaf the command edited (教訓 5.24): false ⇒ no-op ⇒ no history. A
@@ -94,7 +92,7 @@ export interface RingConfirmInput<S> {
    * {@link isShapeChanged}.
    */
   readonly changed: boolean;
-}
+};
 
 /**
  * Confirm a ring command through the single integrity-maintenance pipeline. When
@@ -105,14 +103,16 @@ export interface RingConfirmInput<S> {
 export function confirmRingEdit<S>(input: RingConfirmInput<S>): ReleaseOutcome<S> {
   const featureId =
     input.snapshot.deletedFeatureId ?? input.snapshot.feature?.id ?? PLACEHOLDER_FEATURE_ID;
-  return confirmRelease<S>({
+  const base = {
     session: nonDragSession(featureId),
     anchorTime: input.anchorTime,
     snapshot: input.snapshot,
     current: input.current,
-    ports: input.ports,
     forceChanged: input.changed,
-  });
+  };
+  return input.runProcess !== undefined
+    ? confirmRelease<S>({ ...base, runProcess: input.runProcess })
+    : confirmRelease<S>({ ...base, ports: input.ports });
 }
 
 /**

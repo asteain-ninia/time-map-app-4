@@ -57,3 +57,17 @@
   gap: 4px;
   font-size: 13px;
 }
+
+/* 重なり解決の板の後ろに出す状態の知らせ（分ける・穴あけと同じ）。 */
+.ring-edit-tool > [data-testid='ring-edit-conflict-paused'] {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1000;
+  padding: 16px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
+}

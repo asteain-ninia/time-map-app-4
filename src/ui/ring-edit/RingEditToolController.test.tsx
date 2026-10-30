@@ -695,3 +695,81 @@ describe('RingEditToolController — バグハント第11波 (#3/#6): focus guar
     h.unmount();
   });
 });
+
+// B97 / 教訓 5.95 — 確定の手続きに渡して止まっている間の局面。
+describe('RingEditToolController — 重なりで止まっている間 (B97 / 教訓 5.95)', () => {
+  const conflictsPendingOutcome: ReleaseOutcome<S> = {
+    kind: RELEASE_OUTCOME.Processed,
+    result: {
+      status: PROCESS_STATUS.ConflictsPending,
+      conflicts: [],
+      unresolvedConflictIds: [],
+      trialState: NEXT_STATE,
+    },
+    proposal: createEditProposal(TARGET_ID, ANCHOR, buildSnapshot({ vertices: [] })),
+  };
+
+  /** 穴を 4 点打って確定し、止まった状態にする。 */
+  function pausedHarness(): Harness {
+    const h = mountRing(conflictsPendingOutcome);
+    activateRing(h.store);
+    selectTargetFace();
+    clickInput(1, 1);
+    clickInput(3, 1);
+    clickInput(3, 3);
+    clickInput(1, 3);
+    fireEvent.click(screen.getByTestId('ring-edit-confirm'));
+    return h;
+  }
+
+  it('止まった局面になり、確定は押せず、状態の知らせが出る', () => {
+    const h = pausedHarness();
+    expect(screen.getByTestId('ring-edit-tool').getAttribute('data-flow')).toBe('conflict-paused');
+    expect(screen.getByTestId('ring-edit-conflict-paused').textContent).toBe(
+      RING_EDIT_STRINGS.conflictPaused,
+    );
+    expect((screen.getByTestId('ring-edit-confirm') as HTMLButtonElement).disabled).toBe(true);
+    h.unmount();
+  });
+
+  it('打鍵は道具に届かない（Escape で道具を降りない・Ctrl+Z で頂点を減らさない）', () => {
+    const h = pausedHarness();
+    act(() => {
+      fireEvent.keyDown(document.body, { key: 'Escape' });
+    });
+    act(() => {
+      fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true });
+    });
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditRing);
+    expect(screen.getByTestId('ring-edit-tool').getAttribute('data-flow')).toBe('conflict-paused');
+    expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('4');
+    expect(screen.queryByTestId('ring-edit-draft-discard-confirm')).toBeNull();
+    h.unmount();
+  });
+
+  it('宿主が道具を構え直しても「捨てますか」を出さず、面選びへ戻る（§5.95 の症状）', () => {
+    const h = pausedHarness();
+    const s = h.store.getState();
+    act(() => {
+      s.setActiveTool(null, s.selection);
+    });
+    act(() => {
+      h.store.getState().setActiveTool(TOOL_ID.EditRing, s.selection);
+    });
+    expect(screen.queryByTestId('ring-edit-draft-discard-confirm')).toBeNull();
+    expect(screen.getByTestId('ring-edit-tool').getAttribute('data-flow')).toBe('selecting-target');
+    expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('0');
+    h.unmount();
+  });
+
+  it('消す側で止まっても、やめ方は同じ', () => {
+    const h = mountRing(conflictsPendingOutcome);
+    activateRing(h.store);
+    fireEvent.click(screen.getByTestId('ring-edit-submode'));
+    selectTargetFace();
+    clickInput(10, 10);
+    fireEvent.click(screen.getByTestId('ring-delete-impact-confirm'));
+    expect(screen.getByTestId('ring-edit-tool').getAttribute('data-flow')).toBe('conflict-paused');
+    h.unmount();
+  });
+});

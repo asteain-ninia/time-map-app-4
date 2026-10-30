@@ -254,7 +254,11 @@ export function RingEditToolController<S>(
   // 1 本で受ける ―― **確定できる輪郭（3 点以上）を持っているあいだは、切替先を構えずに
   // 聞く**。旧版はここで無条件に `resetForSwitch()` を呼んでいたので、**輪郭 4 点が
   // 確認なしに消えていた**（増分 5 の手直し 2 回目）。
-  const ringVertexCount = ring.draft?.vertices.length ?? 0;
+  // **重なりで止まっている間は 0 と数える**（教訓 5.95。`AddToolController` の draftSizeRef と
+  // 同じ理由）。この頂点はもう確定の手続きに渡してあり、行き先は重なり解決の板が決める。
+  // 数えていると、板を閉じたあとの構え直しで「描きかけの頂点 4 個を捨てました」と嘘をつく。
+  const ringVertexCount =
+    ring.flow === RING_EDIT_FLOW.ConflictPaused ? 0 : (ring.draft?.vertices.length ?? 0);
   const ringGuard: DraftSwitchGuard = useDraftSwitchGuard({
     store,
     toolId: TOOL_ID.EditRing,
@@ -287,8 +291,10 @@ export function RingEditToolController<S>(
 
   // --- Keyboard: Escape→cancel, Ctrl+Z→undo vertex (FR-78). Active while a session runs.
   const onDrawingChange = props.onDrawingChange;
+  // **重なりで止まっている間は打鍵を受けない**（鍵盤は板のもの。教訓 5.95。穴あけ・分けると
+  // 同じ形）。受けると Escape が板の下で下書きを捨て、Ctrl+Z が止まっている頂点を減らす。
   useEffect(() => {
-    if (ring.flow === RING_EDIT_FLOW.Idle) return;
+    if (ring.flow === RING_EDIT_FLOW.Idle || ring.flow === RING_EDIT_FLOW.ConflictPaused) return;
     const onKey = (e: KeyboardEvent): void => {
       // Focus guard (バグハント第11波 #3/#6): a text-editing element owns the
       // keyboard (timeline year field / sidebar input) — let native Escape /
@@ -641,6 +647,12 @@ export function RingEditToolController<S>(
           onConfirm={() => ring.confirmPendingDelete()}
           onCancel={() => ring.cancelPendingDelete()}
         />
+      )}
+
+      {ring.flow === RING_EDIT_FLOW.ConflictPaused && (
+        <p data-testid="ring-edit-conflict-paused" role="status">
+          {RING_EDIT_STRINGS.conflictPaused}
+        </p>
       )}
 
       {/* 確定できる輪郭を捨てる前の確認（設計書 §D.4.1 の 3）。**器は追加の道具・
