@@ -35,6 +35,7 @@ import {
   launchApp,
   launchAppWithProject,
   leafReport,
+  liveCamera,
   projectStats,
   vertexHandlePositions,
   type ScreenPoint,
@@ -308,7 +309,7 @@ test.describe('B98 — 頂点のドラッグ・面の移動の確定は重なり
       expect(sharedIds, 'B の 2 頂点が A の右辺の 2 頂点に吸着して共有になっている').toHaveLength(2);
       // 第三の面「D」。共有頂点の真上の通り道には触れず、B の上の辺が持ち上がると横切る所。
       // 引いた先 (x, y-110) から D のどの角も吸着の距離（既定 50px）より遠くに置く ――
-      // 吸着すると共有頂点が D の頂点へ溶接され、別の形（B100）になる。
+      // 吸着すると共有頂点が D の頂点へ溶接され、別の形になる（次の検査）。
       const dId = await face(page, rect(aTopRight[0] + 90, aTopRight[1] - 60, 20, 20), 'D');
       const before = await drawnShapes(page);
 
@@ -331,6 +332,79 @@ test.describe('B98 — 頂点のドラッグ・面の移動の確定は重なり
       expect(after[dId]).toEqual(before[dId]);
       expect(after[bId]).not.toEqual(before[bId]);
       expect(after[aId]).not.toEqual(before[aId]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('共有頂点を第三の面の角へ吸着させても共有は切れず、板は本当に横切る組だけを言う（B100）', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await jumpToYear(page, 1200);
+      await armAddAreaTool(page);
+      const b = await addInputLayerBox(page);
+      const cx = b.x + b.width / 2;
+      const cy = b.y + b.height / 2;
+      const half = 90;
+      const aCx = cx - half - 10;
+      const aCorners = rect(aCx, cy, half, half);
+      const aId = await face(page, aCorners, 'A');
+      const aTopRight = aCorners[1]!;
+      const aBottomRight = aCorners[2]!;
+      await armAddAreaTool(page);
+      await page.mouse.move(aTopRight[0] + 2, aTopRight[1] + 2);
+      await expect(page.getByTestId('option-bar-next-step')).toContainText('頂点に合わせます');
+      await expect.poll(async () => handleCount(page), { timeout: 10_000 }).toBeGreaterThan(0);
+      const bId = await drawFace(
+        page,
+        [
+          [aTopRight[0] + 2, aTopRight[1] + 2],
+          [aTopRight[0] + 2 * half, aTopRight[1]],
+          [aBottomRight[0] + 2 * half, aBottomRight[1]],
+          [aBottomRight[0] + 2, aBottomRight[1] - 2],
+        ],
+        { name: 'B' },
+      );
+      const aVertexIds = new Set((await committedVertices(page, aId)).keys());
+      const sharedIds = [...(await committedVertices(page, bId)).keys()].filter((id) =>
+        aVertexIds.has(id),
+      );
+      expect(sharedIds).toHaveLength(2);
+      // D の左上の角は、引いた先 (x, y-110) から約 42px（既定の吸着距離 50px の内側）。
+      const dId = await face(page, rect(aTopRight[0] + 50, aTopRight[1] - 60, 20, 20), 'D');
+      const dVertices = await committedVertices(page, dId);
+      const before = await drawnShapes(page);
+
+      await selectWithTool(page, aCx, cy, aId, 'tool-edit.vertex');
+      await expect.poll(async () => (await vertexHandlePositions(page)).length).toBe(4);
+      await drag(page, aTopRight[0], aTopRight[1], aTopRight[0], aTopRight[1] - 110);
+      await expectPausedUnchanged(page, before);
+
+      // 溶接が及べば A と B は同じ角を引くので、この 2 面は重ならない。止めるのは B ／ D だけ。
+      const rows = page.getByTestId('conflict-rows').locator('li');
+      await expect(rows).toHaveCount(1);
+      await expect(rows.first().getByTestId('conflict-row-features')).toContainText('B');
+      await expect(rows.first().getByTestId('conflict-row-features')).toContainText('D');
+
+      await keepFace(rows.first(), 'D');
+      await page.getByTestId('conflict-apply').click();
+      await expect(page.getByTestId('conflict-dialog')).toHaveCount(0);
+
+      // 動かした共有頂点の id はどの面にも残らず、A と B は D の角を共有し続ける。
+      const movedIds = sharedIds.filter((id) => !dVertices.has(id));
+      const aAfter = await committedVertices(page, aId);
+      const bAfter = await committedVertices(page, bId);
+      const stillShared = [...bAfter.keys()].filter((id) => aAfter.has(id));
+      expect(stillShared, 'A と B は 2 頂点を共有したまま').toHaveLength(2);
+      const onCorner = stillShared.filter((id) => dVertices.has(id));
+      expect(onCorner, 'A と B が共有する片方は D の角').toHaveLength(1);
+      expect(aAfter.get(onCorner[0]!)).toEqual(dVertices.get(onCorner[0]!));
+      expect(bAfter.get(onCorner[0]!)).toEqual(dVertices.get(onCorner[0]!));
+      expect(
+        movedIds.filter((id) => aAfter.has(id) && !bAfter.has(id)),
+        '片方の面だけが引く共有頂点が残らない',
+      ).toEqual([]);
     } finally {
       await app.close();
     }
@@ -491,9 +565,20 @@ test.describe('B98 — 実データのコピーで', () => {
         (p, q) =>
           Math.hypot(p.lon - 96.6, p.lat - 57.37) - Math.hypot(q.lon - 96.6, q.lat - 57.37),
       )[0]!;
-      const [hx, hy] = toScreen(nearest.lon, nearest.lat);
-      const dx = ix - hx;
-      const dy = iy - hy;
+      // 全体図では 50px（既定の吸着距離）の中にたいてい他の面の頂点があり、6px のつもりでも
+      // 吸着してそこへ飛ぶ。ここで見たいのは吸着しないドラッグなので、その頂点へ寄る。
+      const [zx, zy] = toScreen(nearest.lon, nearest.lat);
+      await page.mouse.move(zx, zy);
+      for (let i = 0; i < 40 && (await liveCamera(page)).zoom < 50; i += 1) {
+        await page.mouse.wheel(0, -240);
+        await page.waitForTimeout(50);
+      }
+      expect((await liveCamera(page)).zoom).toBeGreaterThanOrEqual(50);
+      const zoomedToScreen = await worldToScreen(page);
+      const [hx, hy] = zoomedToScreen(nearest.lon, nearest.lat);
+      const [tx, ty] = zoomedToScreen(96.6, 57.37);
+      const dx = tx - hx;
+      const dy = ty - hy;
       const d = Math.hypot(dx, dy);
       const before = await drawnShapes(page);
       let started = Date.now();
@@ -504,11 +589,14 @@ test.describe('B98 — 実データのコピーで', () => {
       await expect(page.getByTestId('conflict-dialog')).toHaveCount(0);
       await page.keyboard.press('Control+z');
       await expect.poll(async () => drawnShapes(page)).toEqual(before);
+      await page.getByTestId('map-fit-all').click();
+      await expect.poll(async () => (await liveCamera(page)).zoom).toBeLessThan(50);
+      const [mx, my] = (await worldToScreen(page))(96.6, 57.37);
 
       // 面の移動: 隣と接している国を 10px ずらすと重なるので、板で止まる。
       await page.getByTestId('tool-edit.move').click();
       started = Date.now();
-      await drag(page, ix, iy, ix + 10, iy);
+      await drag(page, mx, my, mx + 10, my);
       await expect(page.getByTestId('conflict-dialog')).toBeVisible();
       const moveMs = Date.now() - started;
       console.log(`[B98] 実データの面の移動が板で止まるまで ${String(moveMs)}ms`);

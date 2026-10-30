@@ -50,6 +50,7 @@
 // the geometry, so what slides == what is drawn == what is committed (単一真実源, 教訓 5.29).
 
 import {
+  EDIT_TOOL,
   moveDraggedVertexSet,
   movingVertexIds as movingVertexIdsOf,
   rigidMoveDelta,
@@ -853,16 +854,45 @@ export function createNeighboursQuery(
     // 「そこにある 1 点」なので、他の地物に連動して動くのは意味が通らない。掴んでいる側が
     // 点情報のときも同じ（向きを変えても連動は連動である）。
     const draggedIsPoint = draggedFeature?.kind === FEATURE_KIND.Point;
+    // FR-32: 掴んだ頂点と同じ輪・線にある頂点へは吸着しない。付け替えると同じ頂点が 2 度並ぶ
+    // （共有頂点なら隣の面の輪も見る。B100）。候補の持ち主は近い面なので、調べるのも近い面だけ。
+    const ringMates = new Set<string>();
+    const noteContainer = (ids: readonly VertexId[]): void => {
+      if (session.draggedVertexId === undefined || !ids.includes(session.draggedVertexId)) return;
+      for (const id of ids) ringMates.add(id);
+    };
+    for (const f of features) {
+      if (f.kind === FEATURE_KIND.Line) noteContainer(f.vertexIds);
+      else if (f.kind === FEATURE_KIND.Leaf && (f.id === draggedFeatureId || nearFeatureIds.has(f.id))) {
+        for (const ring of f.shape.rings) noteContainer(ring.vertexIds);
+      }
+    }
+    // 辺から足す頂点はまだ誰も引いていないので、足す先の輪・線がそのまま同じ入れ物になる。
+    if (session.target.tool === EDIT_TOOL.EdgeAdd && draggedFeature !== undefined) {
+      const addTo = session.target.ringId;
+      if (draggedFeature.kind === FEATURE_KIND.Line) {
+        for (const id of draggedFeature.vertexIds) ringMates.add(id);
+      } else if (draggedFeature.kind === FEATURE_KIND.Leaf) {
+        for (const id of draggedFeature.shape.rings.find((r) => r.id === addTo)?.vertexIds ?? []) {
+          ringMates.add(id);
+        }
+      }
+    }
+    const pushSnapCandidates = (f: Feature): void => {
+      for (const c of featureSnapCandidates(f, store)) {
+        if (!ringMates.has(c.vertexId)) pushIfNear(c);
+      }
+    };
     for (const f of features) {
       if (f.id === draggedFeatureId) continue;
       if (draggedIsPoint || f.kind === FEATURE_KIND.Point) continue;
       if (f.kind === FEATURE_KIND.Leaf) {
         if (!nearFeatureIds.has(f.id)) continue; // only near terminals contribute vertices.
-        for (const c of featureSnapCandidates(f, store)) pushIfNear(c);
+        pushSnapCandidates(f);
         continue;
       }
       // Line: include vertices within the margin of the preview.
-      for (const c of featureSnapCandidates(f, store)) pushIfNear(c);
+      pushSnapCandidates(f);
     }
 
     // Hole / enclave containment for the dragged vertex (FR-89), when applicable.

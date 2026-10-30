@@ -532,3 +532,39 @@ describe('HB4-2 (診断 H3): containment(親領域)も連動する自辺を壁�
     expect(failures).toEqual([]);
   });
 });
+
+describe('FR-32: 掴んだ頂点と同じ輪・線の頂点へは吸着しない（B100）', () => {
+  const snapIdsAt = (session: DragSession, target: { lon: number; lat: number }): string[] => {
+    const root = sharedEdgeProject();
+    const query = createNeighboursQuery({
+      getRoot: () => root,
+      getTime: () => timePointYear(0),
+      snapWorldMargin: () => 15,
+    });
+    return query(target, session).snapCandidates.map((c) => c.vertexId as unknown as string);
+  };
+
+  it('共有頂点を掴むと、それを引く隣の面の輪の頂点も候補から外れる', () => {
+    // sv-top は B の輪で b-tr・sv-bot と同じ。付け替えると B の輪に同じ頂点が 2 度並ぶ。
+    expect(snapIdsAt(sharedVertexDrag(), { lon: 19, lat: 10 })).toEqual([]);
+  });
+
+  it('辺から足す頂点は、足す先の輪の頂点だけが外れる', () => {
+    const session = beginDrag(
+      {
+        tool: EDIT_TOOL.EdgeAdd,
+        featureId: asFeatureId('leaf-a'),
+        ringId: asRingId('leaf-a-r'),
+        startVertexId: asVertexId('sv-bot'),
+        endVertexId: asVertexId('sv-top'),
+        newVertexId: asVertexId('reserved'),
+      },
+      { lon: 10, lat: 5 },
+    );
+    const ids = snapIdsAt(session, { lon: 15, lat: 5 });
+    expect(ids).toContain('b-br');
+    expect(ids).toContain('b-tr');
+    expect(ids).not.toContain('sv-bot');
+    expect(ids).not.toContain('sv-top');
+  });
+});

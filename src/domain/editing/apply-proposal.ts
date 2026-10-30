@@ -1694,7 +1694,6 @@ export function applyEditProposal(
   calendar: Calendar,
 ): DomainProject {
   const { snapshot, featureId, anchorTime } = proposal;
-  const movedVertices: readonly Vertex[] = snapshot.vertices;
 
   const found = findHistoryContaining(root, featureId, anchorTime, calendar);
   if (found === undefined) {
@@ -1704,6 +1703,12 @@ export function applyEditProposal(
     return root;
   }
   const { index, history } = found;
+
+  // 吸着で共有に変わるなら、掴んだ頂点の行き先は **吸着先の確定済みの座標** である（B100）。
+  // 単一の頂点のドラッグでは提案の座標は離した場所のままなので、そのまま配ると
+  // 隣は離した場所へ、掴んだ面は吸着先へ行き、1 つの点が 2 つに割れる（教訓 5.103）。
+  const landing = resolveShareLanding(root, snapshot, anchorTime, calendar);
+  const movedVertices: readonly Vertex[] = landing?.movedVertices ?? snapshot.vertices;
 
   // 引き継ぎ（A1 / 反証 F1）の材料は **編集前の**系列から採る。T の直前で効いていた
   // 姿が「旧値」で、提案の地物が「新値」である。
@@ -1745,8 +1750,8 @@ export function applyEditProposal(
       // coincident vertices become ONE shared vertex AS PART OF this indivisible
       // edit (otherwise they stay distinct ids and a later move tears the boundary).
       const shared =
-        snapshot.sharePair !== undefined
-          ? applySharePair(editedFeatures, baseVertices, snapshot.sharePair)
+        landing !== undefined
+          ? applySharePair(editedFeatures, baseVertices, landing.pair, landing.targetBody)
           : { features: editedFeatures, vertices: baseVertices };
       return anchorFor(shared.features, shared.vertices, featureId, anchorTime);
     },
@@ -1821,6 +1826,19 @@ export function applyEditProposal(
       ? h // 対象の履歴は上で引き継ぎ済み。
       : carryVertexForwardIn(h, anchorTime, vertexCarries, calendar),
   );
+  // **吸着の付け替えを、同じ頂点を引く隣の面にも掛ける**（B100 / FR-30 / 教訓 5.103）。上の 2 本は
+  // 頂点の体を配るだけで id は変えない。付け替えが掴んだ面の中で終わると、隣は古い id を
+  // 引き続け、共有が黙って切れる。T の時点は分割と同じ 1 本で、T より後ろは同じ歩き方で。
+  if (landing !== undefined) {
+    histories = applyVertexRemapToHistories(
+      histories,
+      new Map([[landing.pair.dragged, landing.pair.target]]),
+      [landing.targetBody],
+      anchorTime,
+      calendar,
+    );
+    histories = carryShareIntoLaterAnchors(histories, landing, anchorTime, calendar);
+  }
   // **辺に足した頂点を、その辺を共有するすべての地物にも入れる**（増分 8A の手直し・反証 重 2）。
   // 上の 2 本は「既に引かれている頂点の体」を配るだけなので、まだ誰も引いていない新しい
   // 頂点は届かない。対象の履歴も含めて全履歴を見る ―― まとめ役の子どうしのように、隣が
@@ -2052,6 +2070,108 @@ function carryVertexForwardIn(
   return series === history.series ? history : { featureId: history.featureId, series };
 }
 
+/** 吸着で共有に変わる確定の、付け替えの組と行き先の体。 */
+interface ShareLanding {
+  readonly pair: { readonly dragged: VertexId; readonly target: VertexId };
+  /** 吸着先の確定済みの体。全履歴でこの 1 つの座標に揃える（教訓 5.94）。 */
+  readonly targetBody: Vertex;
+  /** 掴んだ頂点を吸着先の座標へ置き直した、提案の頂点の一覧。 */
+  readonly movedVertices: readonly Vertex[];
+}
+
+/**
+ * 共有の組から、付け替えの行き先を決める。吸着先の体はその時刻の確定済みの写しから引く
+ * （写しに無ければ提案の座標で作る）。組が無い・自分自身なら undefined。
+ *
+ * **同じ輪・線が掴んだ頂点と吸着先を両方引いているなら投げる**（FR-32）。付け替えると同じ頂点が
+ * 2 度並び、長さ 0 の辺ができる。候補の側（`slide-snap-neighbours.ts`）で外してあるので
+ * ふつうは来ない。投げれば束ねが確定を断る（教訓 5.94。壊れた輪を記録しない）。
+ */
+function resolveShareLanding(
+  root: DomainProject,
+  snapshot: FeatureSnapshot,
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): ShareLanding | undefined {
+  const pair = snapshot.sharePair;
+  if (pair === undefined || pair.dragged === pair.target) return undefined;
+  const { dragged, target } = pair;
+  let held: Vertex | undefined;
+  const assertKeepsContainers = (feature: Feature): void => {
+    for (const { ids } of vertexIdLists(feature)) {
+      if (ids.includes(dragged) && ids.includes(target)) {
+        throw new Error(`share pair collapses a ring: ${dragged} -> ${target} in ${feature.id}`);
+      }
+    }
+  };
+  if (snapshot.feature !== undefined) assertKeepsContainers(snapshot.feature);
+  for (const history of root.histories) {
+    const resolution = resolveAt(history.series, anchorTime, calendar);
+    if (resolution.kind !== 'present') continue;
+    const { features, vertices } = resolution.entry.anchor.snapshot;
+    for (const feature of features) assertKeepsContainers(feature);
+    held ??= getVertex(vertices, target);
+  }
+  const draggedBody = snapshot.vertices.find((v) => v.id === dragged);
+  const targetBody =
+    held ?? (draggedBody === undefined ? undefined : createVertex(target, draggedBody.coordinate));
+  if (targetBody === undefined) return undefined;
+  return {
+    pair,
+    targetBody,
+    movedVertices: snapshot.vertices.map((v) =>
+      v.id === dragged ? createVertex(dragged, targetBody.coordinate) : v,
+    ),
+  };
+}
+
+/**
+ * 吸着の付け替えを **T より後ろの錨** へ引き継ぐ（B100。歩き方は分割と同じ
+ * {@link carryIntoLaterAnchors}）。座標はすでに `applyVertexCarryForward` が配ってあるので、
+ * ここでは id だけを付け替える。残すと、見かけは重なったまま後の年で共有が切れている。
+ *
+ * 打ち切る錨（記録された歴史を壊さない）: 掴んだ頂点を引いていない／座標が吸着先と違う
+ * （その年に本当に動いた）／同じ輪が吸着先も引いている（FR-32）。吸着先そのものが後の年に動く
+ * なら、その年から先は同じ id の体が食い違うので持ち込まない（`until`）。
+ *
+ * 純関数。変化の無い履歴は同じ値を返す。
+ */
+function carryShareIntoLaterAnchors(
+  histories: readonly FeatureHistory[],
+  landing: ShareLanding,
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): FeatureHistory[] {
+  const { pair, targetBody } = landing;
+  const { dragged, target } = pair;
+  const remap = new Map([[dragged, target]]);
+  let until: TimePoint | null = null;
+  for (const history of histories) {
+    for (const entry of history.series.entries) {
+      if (compareTime(entry.start, anchorTime, calendar) <= 0) continue;
+      const held = getVertex(entry.anchor.snapshot.vertices, target);
+      if (held === undefined || quantizedEqual(held.coordinate, targetBody.coordinate)) continue;
+      if (until === null || compareTime(entry.start, until, calendar) < 0) until = entry.start;
+    }
+  }
+  const rewrite = (snap: AnchorSnapshot): AnchorSnapshot | typeof STOP_CARRYING => {
+    const body = getVertex(snap.vertices, dragged);
+    if (body === undefined || !quantizedEqual(body.coordinate, targetBody.coordinate)) {
+      return STOP_CARRYING;
+    }
+    const collapses = snap.features.some((f) =>
+      vertexIdLists(f).some(({ ids }) => ids.includes(dragged) && ids.includes(target)),
+    );
+    if (collapses) return STOP_CARRYING;
+    const features = snap.features.map((f) => repointThroughRemap(f, remap));
+    return createAnchorSnapshot(features, remapVertexStore(snap.vertices, [targetBody], features));
+  };
+  return histories.map((history) => {
+    const series = carryIntoLaterAnchors(history.series, anchorTime, until, calendar, rewrite);
+    return series === history.series ? history : { featureId: history.featureId, series };
+  });
+}
+
 /** 移動前の体を、いま効いている頂点表から引く（引けない id は入れない）。 */
 function beforeBodiesOf(
   store: VertexStore | null,
@@ -2199,12 +2319,12 @@ function applyMovedVerticesToHistories(
  * 教訓5.20) so it undoes/redoes as one unit.
  *
  * The target's coordinate is canonical (the candidate's body is discarded — exactly
- * shared-vertex.ts shareVertices semantics). The dragged vertex was moved onto the
- * target at the snap, so the merged store already carries that (snapped) coordinate
- * under the dragged id; this function carries it forward onto the TARGET id when the
- * target body is absent from this anchor's store (the target lives in a sibling
- * history), so the snapshot never holds a dangling reference (no-dangling-refs,
- * 教訓5.31), and prunes the now-orphaned dragged body.
+ * shared-vertex.ts shareVertices semantics). {@link resolveShareLanding} found that body;
+ * this function stores it under the TARGET id when it is absent from this anchor's store
+ * (the target lives in a sibling history), so the snapshot never holds a dangling
+ * reference (no-dangling-refs, 教訓5.31), and prunes the now-orphaned dragged body.
+ * This covers the edited anchor only; neighbours citing the dragged id are repointed by
+ * the caller (B100).
  *
  * Pure — returns the new feature list + vertex store; never mutates the inputs.
  */
@@ -2212,24 +2332,20 @@ function applySharePair(
   features: readonly Feature[],
   vertices: VertexStore,
   sharePair: { readonly dragged: VertexId; readonly target: VertexId },
+  targetBody: Vertex,
 ): { readonly features: readonly Feature[]; readonly vertices: VertexStore } {
   const { dragged, target } = sharePair;
-  if (dragged === target) return { features, vertices }; // never share with itself.
 
   const repointed = features.map((f) => repointFeatureVertex(f, dragged, target));
   const stillReferencesDragged = repointed.some((f) => featureReferences(f, dragged));
 
-  // Carry the canonical coordinate onto the target id. The dragged body sits at the
-  // snapped (== target) coordinate after the move; reuse it as the target's source
-  // when the target has no body in THIS anchor store (single source of truth, R6).
+  // The target's confirmed body, when THIS anchor store does not hold it yet (single
+  // source of truth, R6): never the release position, which would fork the id's body.
   let store = vertices;
   if (getVertex(store, target) === undefined) {
-    const draggedBody = getVertex(store, dragged);
-    if (draggedBody !== undefined) {
-      const byId = new Map(store.byId);
-      byId.set(target, createVertex(target, draggedBody.coordinate));
-      store = { byId };
-    }
+    const byId = new Map(store.byId);
+    byId.set(target, targetBody);
+    store = { byId };
   }
   // Prune the orphaned dragged body (it is no longer referenced after repointing).
   if (!stillReferencesDragged && getVertex(store, dragged) !== undefined) {
