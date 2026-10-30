@@ -7,6 +7,14 @@ import { defineConfig } from 'vitest/config';
 // 1.9: React コンポーネントの操作テストを実装と同時に作成). The environment is
 // chosen per-file via `environmentMatchGlobs` below: `.test.tsx` → jsdom; every
 // other test file stays in node.
+// テストのファイルを集める起点。ドライブ文字を大文字に揃える（開発ガイド §5.52）。
+// vitest は `environmentMatchGlobs` の glob を絶対パスにするときドライブ文字を必ず大文字にするが、
+// 集めたファイルのパスは作業ディレクトリの綴りのまま持つ。`e:\` で起動すると両者が食い違って
+// glob が 1 つも当たらず、`.test.tsx` が node で走って `document is not defined` で落ちる。
+// `root` を直す手は使えない。読み込み済みの vitest 本体が別物として読まれ、全部の検査が
+// 「Vitest failed to find the current suite」で落ちる。
+const testDir = process.cwd().replace(/^[a-z]:/, (drive) => drive.toUpperCase());
+
 export default defineConfig({
   // `@vitejs/plugin-react` provides the JSX/TSX transform for the .test.tsx files.
   plugins: [react()],
@@ -18,6 +26,7 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify('0.0.0-test'),
   },
   test: {
+    dir: testDir,
     environment: 'node',
     // Per-file environment: component tests need a DOM; domain/logic tests do not.
     environmentMatchGlobs: [['src/**/*.test.tsx', 'jsdom']],
@@ -49,6 +58,8 @@ export default defineConfig({
     include: [
       // テスト基盤そのものの検査（「検査が走っているか」を見る 1 本がここに居る）。
       'src/test-support/**/*.test.ts',
+      // 環境の割り当てが効いていることを見る番兵（`vitest-environment.test.tsx`）。
+      'src/test-support/**/*.test.tsx',
       'src/domain/**/*.test.ts',
       'src/ui/state/**/*.test.ts',
       'src/render/**/*.test.ts',
