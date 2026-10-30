@@ -235,7 +235,7 @@ paths:
 - 確かめ方: `eslint.config.js` の `no-restricted-syntax`（エラー）と `src/ui/shell/ui-text-tables.test.ts`（ソース走査）。文字の範囲・表・除外の一覧は `scripts/ui-text-rule.mjs` の 1 か所だけに書く。用語集の「出さない語」は `FORBIDDEN_TERMS` に枠がある（いまは空）。
 
 ### 5.101 束ねの `.ports` をそのまま渡すと、重なりの検出は空のまま通る
-- 正しい道: 確定は束ねの `startProcess`（`bindPortsToProposal` が提案の年へ検出を結び直す）と `applyResolutionsFor` を通す。前段の関門（`confirmRelease` の世界の外・半周の辺）を残すときは `runProcess` で渡す（`src/domain/editing/edit-flow.ts`、`src/ui/App.tsx` の `createRingEditBootstrap`）。検出の範囲を絞るなら、変わりうるものの単位で比べる（`src/ui/consistency-binding.ts` の `detectIntroducedOverlaps`。§5.97）。
-- 誤った道の兆候: `ports: binding.ports` を確定の入口へ渡す。束ねの `.ports` の `detectSpatial` は空を返す。単体も E2E も緑のまま、重なる形が記録される（輪郭の道具で 8E まで見逃し、閉じた B84 の根拠にもなった）。「重なりで止まったことが無い」を「止まらなくてよい」と読む。
-- 確かめ方: その確定で重なる形を実際に作り、板が出ることを E2E で見る。`e2e/inc8e-ring-conflict.spec.ts`。`.ports` を渡す残りは `src/ui/map/edit-session-adapter.ts`（現状.md の B98）。
+- 正しい道: 確定は束ねの `startProcess`（`bindPortsToProposal` が提案の年へ検出を結び直す）と `applyResolutionsFor` を通す。前段の関門（`confirmRelease` の世界の外・半周の辺）を残すときは `runProcess` で渡す（`src/domain/editing/edit-flow.ts`、`src/ui/App.tsx` の `createRingEditBootstrap`、`src/ui/map/mount/hit-test.ts` の編集セッション）。検出の範囲を絞るなら、変わりうるものの単位で比べる（`src/ui/consistency-binding.ts` の `introducedOverlapsDetector`。形の変わった面は結果の状態から決める。§5.6 / §5.97）。
+- 誤った道の兆候: `ports: binding.ports` を確定の入口へ渡す。束ねの `.ports` の `detectSpatial` は空を返す。単体も E2E も緑のまま、重なる形が記録される（輪郭の道具で 8E まで見逃し、閉じた B84 の根拠にもなった。頂点のドラッグ・面の移動も同じ形で見逃していた＝B98）。「重なりで止まったことが無い」を「止まらなくてよい」と読む。
+- 確かめ方: その確定で重なる形を実際に作り、板が出ることを E2E で見る。`e2e/inc8e-ring-conflict.spec.ts`（輪郭の道具）、`e2e/inc8e-drag-conflict.spec.ts`（頂点のドラッグ・面の移動・共有頂点・穴と飛び地の頂点）。`src/ui` で `ports: .*\.ports` を Grep して、確定の入口へ渡している所が無いことを見る（2026-10-31 時点で 0 件。`render.ports` はカメラの口で別物）。
 - 検査: 未整備。手で確かめる。
