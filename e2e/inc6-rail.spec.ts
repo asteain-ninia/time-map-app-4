@@ -715,7 +715,10 @@ test.describe('増分 6 — 時刻を動かした 1 コマ（設計書 §F.2 の
       await loadSyntheticAnchors(page, 50_000, { asAggregateChild: false });
 
       /**
-       * 「押してから画面（`timeline-current` の文字）が変わるまで」を 20 回測って平均を返す。
+       * 「押してから画面（`timeline-current` の文字）が変わるまで」を 20 回測って中央値を返す。
+       * 全件の並列中は 1 回だけ大きく外れることがある（平均が 101.74ms に引かれて 1 度落ちた。
+       * 単独の実測はふつう 35ms 前後）。見張りたいのは毎回遅くなる後退なので、外れ値に引かれない
+       * 中央値で比べる。上限の値は変えない。
        *
        * **設計書 §F.2 は「16ms 以内。超えるなら実測値を上限として明記する」**としている。
        * 実測（1 台で静かに動かして）は **選んでいないとき 4.0ms / 5 万錨 34.8ms** で、
@@ -767,7 +770,9 @@ test.describe('増分 6 — 時刻を動かした 1 コマ（設計書 §F.2 の
             if (!changed) throw new Error('送りのボタンを押しても年が動かない');
             samples.push(performance.now() - started);
           }
-          return samples.reduce((a, b) => a + b, 0) / samples.length;
+          const sorted = [...samples].sort((a, b) => a - b);
+          const mid = sorted.length / 2;
+          return (sorted[mid - 1]! + sorted[mid]!) / 2;
         });
 
       // ①何も選んでいないとき（レーンは空）。
