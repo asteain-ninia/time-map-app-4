@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 
 import {
   addInputLayerBox,
@@ -100,6 +100,11 @@ async function closeGuideIfShown(page: Page): Promise<void> {
   await expect(guide).toHaveCount(0);
 }
 
+/** 重なりの行で、残す面を名前で選ぶ（名前は検査が描いた面のデータで、画面の文言ではない）。 */
+async function keepFace(row: Locator, name: string): Promise<void> {
+  await row.getByRole('radio', { name: new RegExp(name) }).check();
+}
+
 /** 「捨てますか」の板が（遅れて出る分も含めて）出ていないこと。 */
 async function expectNoDiscardBoard(page: Page): Promise<void> {
   await page.waitForTimeout(300);
@@ -159,7 +164,7 @@ test.describe('B97 — 輪郭の確定は重なりの検出を通る', () => {
       await expect(row.getByTestId('conflict-row-features')).toContainText('バアカ');
 
       // 飛び地（アルラーク国）を残す → バアカが 2 つに分かれる。
-      await row.getByRole('radio', { name: /アルラーク国/ }).check();
+      await keepFace(row, 'アルラーク国');
       await page.getByTestId('conflict-apply').click();
       await expect(dialog).toHaveCount(0);
 
@@ -204,7 +209,7 @@ test.describe('B97 — 輪郭の確定は重なりの検出を通る', () => {
       await closeGuideIfShown(page);
 
       const row = page.getByTestId('conflict-rows').locator('li').first();
-      await row.getByRole('radio', { name: /バアカ/ }).check();
+      await keepFace(row, 'バアカ');
       await page.getByTestId('conflict-apply').click();
       await expect(page.getByTestId('conflict-dialog')).toHaveCount(0);
       await expectNoDiscardBoard(page);
@@ -280,7 +285,7 @@ test.describe('B97 — 輪郭の確定は重なりの検出を通る', () => {
 
       // 島を残す → 湾は島の分だけ欠ける（穴の大きさは島の大きさになる）。
       const row = page.getByTestId('conflict-rows').locator('li').first();
-      await row.getByRole('radio', { name: /島/ }).check();
+      await keepFace(row, '島');
       await page.getByTestId('conflict-apply').click();
       await expect(dialog).toHaveCount(0);
       await expectNoDiscardBoard(page);
@@ -311,7 +316,7 @@ test.describe('B97 — 輪郭の確定は重なりの検出を通る', () => {
       await expect(dialog).toBeVisible();
       await closeGuideIfShown(page);
       const row = page.getByTestId('conflict-rows').locator('li').first();
-      await row.getByRole('radio', { name: /バアカ/ }).check();
+      await keepFace(row, 'バアカ');
       await page.getByTestId('conflict-apply').click();
       await expect(dialog).toHaveCount(0);
       await expectNoDiscardBoard(page);
@@ -327,7 +332,7 @@ test.describe('B97 — 輪郭の確定は重なりの検出を通る', () => {
       await armRingOn(page, cx - 220, cy);
       await drawRingAndConfirm(page, inside);
       await expect(dialog).toBeVisible();
-      await row.getByRole('radio', { name: /アルラーク国/ }).check();
+      await keepFace(row, 'アルラーク国');
       await page.getByTestId('conflict-apply').click();
       await expect(dialog).toHaveCount(0);
       await expectNoDiscardBoard(page);
@@ -361,14 +366,14 @@ test.describe('B97 — 輪郭の確定は重なりの検出を通る', () => {
       await closeGuideIfShown(page);
       const row = page.getByTestId('conflict-rows').locator('li').first();
       // 湾を残すと島が丸ごと無くなる。差し引きは空の形を作らないので断られ、記録されない。
-      await row.getByRole('radio', { name: /湾/ }).check();
+      await keepFace(row, '湾');
       await page.getByTestId('conflict-apply').click();
       await expect(dialog).toContainText('確定できません');
       expect(await drawnShapes(page)).toEqual(before);
 
       // 板のまま選び直せる。
       await page.getByTestId('conflict-retry').click();
-      await page.getByTestId('conflict-rows').locator('li').first().getByRole('radio', { name: /島/ }).check();
+      await keepFace(page.getByTestId('conflict-rows').locator('li').first(), '島');
       await page.getByTestId('conflict-apply').click();
       await expect(dialog).toHaveCount(0);
       await expectNoDiscardBoard(page);
