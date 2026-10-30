@@ -1293,3 +1293,116 @@ export async function openPreSaveBoard(page: Page): Promise<void> {
   await page.keyboard.press('Control+s');
   await expect(page.getByTestId('pre-save-dialog')).toBeVisible();
 }
+
+// ---------------------------------------------------------------------------
+// 見た目の点検（増分 8E 後半）。巡回（`__tour__`）と `e2e/inc8e-visual-unity.spec.ts` が同じ測り方を使う。
+// ---------------------------------------------------------------------------
+
+/** 見えている操作部品 1 個の実寸と計算済みのスタイル。 */
+export interface ControlMetrics {
+  tag: string;
+  type: string | null;
+  testid: string | null;
+  cls: string;
+  text: string;
+  w: number;
+  h: number;
+  /** 文字の行数（縦に重ならない行を数える。同じ行で字の大きさが違っても 1 行）。 */
+  lines: number;
+  /** 文字が枠の幅からはみ出しているか。 */
+  clipped: boolean;
+  fontSize: string;
+  border: string;
+  radius: string;
+  bg: string;
+  color: string;
+  whiteSpace: string;
+  /** 窓の外へ出ているか（スクロールの中に居るだけのものも真になる）。 */
+  offscreen: boolean;
+}
+
+/** 見えている見出し 1 個の実寸と計算済みのスタイル。 */
+export interface HeadingMetrics {
+  tag: string;
+  text: string;
+  h: number;
+  fontSize: string;
+  fontWeight: string;
+  margin: string;
+}
+
+/** いま見えている操作部品と見出しを実機で測る（寸法は jsdom では測れない。教訓 5.49）。 */
+export async function readControlMetrics(
+  page: Page,
+): Promise<{ controls: ControlMetrics[]; headings: HeadingMetrics[] }> {
+  return page.evaluate(() => {
+    const round = (n: number): number => Math.round(n * 10) / 10;
+    const textLines = (el: Element): number => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const rects = Array.from(range.getClientRects())
+        .filter((r) => r.width > 0 && r.height > 0)
+        .sort((a, b) => a.top - b.top);
+      let lines = 0;
+      let bottom = Number.NEGATIVE_INFINITY;
+      for (const r of rects) {
+        // 上の行の下端より下から始まるものだけを新しい行と数える（2px は字の高さの違いの遊び）
+        if (r.top >= bottom - 2) {
+          lines += 1;
+          bottom = r.bottom;
+        } else {
+          bottom = Math.max(bottom, r.bottom);
+        }
+      }
+      return lines;
+    };
+    const controls: ControlMetrics[] = [];
+    for (const el of Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'button,select,input,textarea,summary,[role="button"],[role="tab"],[role="menuitem"]',
+      ),
+    )) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) continue;
+      const cs = getComputedStyle(el);
+      if (cs.visibility === 'hidden') continue;
+      controls.push({
+        tag: el.tagName.toLowerCase(),
+        type: el.getAttribute('type'),
+        testid: el.getAttribute('data-testid'),
+        cls: typeof el.className === 'string' ? el.className : '',
+        text: (el.innerText ?? '').trim().slice(0, 40),
+        w: round(rect.width),
+        h: round(rect.height),
+        lines: textLines(el),
+        clipped: el.scrollWidth > el.clientWidth + 1,
+        fontSize: cs.fontSize,
+        border: `${cs.borderTopWidth} ${cs.borderTopStyle} ${cs.borderTopColor}`,
+        radius: cs.borderTopLeftRadius,
+        bg: cs.backgroundColor,
+        color: cs.color,
+        whiteSpace: cs.whiteSpace,
+        offscreen:
+          rect.right > window.innerWidth + 1 ||
+          rect.bottom > window.innerHeight + 1 ||
+          rect.left < -1 ||
+          rect.top < -1,
+      });
+    }
+    const headings: HeadingMetrics[] = [];
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6'))) {
+      const rect = el.getBoundingClientRect();
+      if (rect.height === 0) continue;
+      const cs = getComputedStyle(el);
+      headings.push({
+        tag: el.tagName.toLowerCase(),
+        text: (el.innerText ?? '').trim().slice(0, 30),
+        h: round(rect.height),
+        fontSize: cs.fontSize,
+        fontWeight: cs.fontWeight,
+        margin: cs.margin,
+      });
+    }
+    return { controls, headings };
+  });
+}

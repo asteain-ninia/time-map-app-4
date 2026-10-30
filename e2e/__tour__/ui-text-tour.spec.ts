@@ -9,6 +9,8 @@
 //   - `scenes/<番号>-<名前>.png` … 画面の写真
 //   - `scenes/<番号>-<名前>.json` … 画面に見えている文字（`document.body.innerText`）と、
 //     表示されている要素の `aria-label` / `title` / `placeholder` / `alt` の値、ウィンドウのタイトル
+//   - `scenes/<番号>-<名前>.json` の `controls` / `headings` … 見えている操作部品と見出しの実寸・計算済みの
+//     スタイル（見た目の点検用。`UI_TEXT_TOUR_SIZE=800x600` で窓の大きさを変えて撮れる）
 //   - `user-words.json` … 巡回が入れた利用者のデータの語（合成データの名前など。突き合わせで取り除く）
 // 突き合わせは `npm run ui-text:tour-match`（`scripts/ui-text-tour-match-cli.ts`）。
 //
@@ -41,6 +43,7 @@ import {
   openDepthOptions,
   openPreSaveBoard,
   openVertexCandidatesOnTinySquare,
+  readControlMetrics,
   type ScreenPoint,
 } from '../helpers';
 
@@ -60,6 +63,12 @@ const USER_WORDS: string[] = ['巡回の横長', '巡回の縦長'];
 for (let i = 0; i < 60; i += 1) USER_WORDS.push(`合成地物${String(i).padStart(4, '0')}`);
 for (let i = 1; i <= 40; i += 1) USER_WORDS.push(`合成州 ${String(i).padStart(2, '0')}`);
 USER_WORDS.push('合成の州', '合成の国', '合成の連邦', '合成の外の国', '合成のまとめ役', '合成の錨だらけ');
+
+/** `UI_TEXT_TOUR_SIZE=幅x高さ` で窓を変える（見た目の点検で最小の窓を撮る）。無ければ既定の窓のまま。 */
+const TOUR_SIZE = ((): { width: number; height: number } | null => {
+  const m = /^(\d+)x(\d+)$/.exec(process.env['UI_TEXT_TOUR_SIZE'] ?? '');
+  return m === null ? null : { width: Number(m[1]), height: Number(m[2]) };
+})();
 
 interface Capture {
   readonly pageTitle: string;
@@ -100,11 +109,13 @@ async function scene(
 ): Promise<void> {
   const base = join(SCENE_DIR, id);
   try {
+    if (TOUR_SIZE !== null) await page.setViewportSize(TOUR_SIZE);
     await setup();
     await page.waitForTimeout(200);
     const captured = await captureText(page);
+    const metrics = await readControlMetrics(page);
     await page.screenshot({ path: `${base}.png` });
-    writeFileSync(`${base}.json`, `${JSON.stringify({ id, title, ok: true, ...captured }, null, 1)}\n`);
+    writeFileSync(`${base}.json`, `${JSON.stringify({ id, title, ok: true, ...captured, ...metrics }, null, 1)}\n`);
     sceneCount += 1;
   } catch (error) {
     const message = error instanceof Error ? error.message.split('\n')[0] : String(error);
