@@ -371,14 +371,15 @@ test.describe('B98 — 頂点のドラッグ・面の移動の確定は重なり
         aVertexIds.has(id),
       );
       expect(sharedIds).toHaveLength(2);
-      // D の左上の角は、引いた先 (x, y-110) から約 42px（既定の吸着距離 50px の内側）。
+      // D の左上の角 (x+30, y-80) は、引いた先 (x+20, y-90) から約 14px。起動直後の倍率
+      // （2.53 px/度）で吸着が効く半径 18.5px の内側（上限 7.3 度 × 倍率。B102）。
       const dId = await face(page, rect(aTopRight[0] + 50, aTopRight[1] - 60, 20, 20), 'D');
       const dVertices = await committedVertices(page, dId);
       const before = await drawnShapes(page);
 
       await selectWithTool(page, aCx, cy, aId, 'tool-edit.vertex');
       await expect.poll(async () => (await vertexHandlePositions(page)).length).toBe(4);
-      await drag(page, aTopRight[0], aTopRight[1], aTopRight[0], aTopRight[1] - 110);
+      await drag(page, aTopRight[0], aTopRight[1], aTopRight[0] + 20, aTopRight[1] - 90);
       await expectPausedUnchanged(page, before);
 
       // 溶接が及べば A と B は同じ角を引くので、この 2 面は重ならない。止めるのは B ／ D だけ。
@@ -565,8 +566,9 @@ test.describe('B98 — 実データのコピーで', () => {
         (p, q) =>
           Math.hypot(p.lon - 96.6, p.lat - 57.37) - Math.hypot(q.lon - 96.6, q.lat - 57.37),
       )[0]!;
-      // 全体図では 50px（既定の吸着距離）の中にたいてい他の面の頂点があり、6px のつもりでも
-      // 吸着してそこへ飛ぶ。ここで見たいのは吸着しないドラッグなので、その頂点へ寄る。
+      // この縮尺の全体図では吸着の半径（18.5px）の中に島の頂点があり、6px のつもりでも
+      // 吸着してそこへ飛ぶ（`b102-snap-cap.spec.ts`）。ここで見たいのは吸着しないドラッグなので、
+      // その頂点へ寄る。
       const [zx, zy] = toScreen(nearest.lon, nearest.lat);
       await page.mouse.move(zx, zy);
       for (let i = 0; i < 40 && (await liveCamera(page)).zoom < 50; i += 1) {

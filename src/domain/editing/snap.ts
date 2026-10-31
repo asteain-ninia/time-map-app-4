@@ -14,7 +14,8 @@
 //      pixels) is the snap candidate.
 //   4. Because the comparison is in SCREEN pixels, the same 50px corresponds to a
 //      DIFFERENT world distance at different zooms — zoom-dependent proximity
-//      (FR-31), pinned by tests at two zooms.
+//      (FR-31), pinned by tests at two zooms. 縮小した全体図で遠くへ飛ばないよう、半径は
+//      `snapRadiusPx` が地図上の度数で頭打ちにする（呼ぶ側が半径を渡す前に通す）。
 //
 // LAYER: pure `domain` logic. The world→screen projection is an injected pure
 // function so this module stays renderer-agnostic and Vitest-runnable; the caller
@@ -64,7 +65,7 @@ export interface SnapInput {
   readonly draggedPosition: WorldCoordinate;
   /** Near-candidate vertices (U10-narrowed). Empty ⇒ no snap (教訓5.18). */
   readonly candidates: readonly SnapCandidate[];
-  /** Snap distance in SCREEN pixels (from U16 settings, FR-110). NOT hard-coded. */
+  /** Snap distance in SCREEN pixels（設定の値を {@link snapRadiusPx} に通した半径）. NOT hard-coded. */
   readonly snapDistancePx: number;
   /** The world→screen projection (injected render transform). */
   readonly toScreen: WorldToScreen;
@@ -74,6 +75,28 @@ export interface SnapInput {
    * these; this module does not re-derive participation, that is U11's FR-32).
    */
   readonly exclude?: ReadonlySet<VertexId>;
+}
+
+/**
+ * 吸着の半径の上限（地図上の度）。動作保証の上限の窓（3840×2160、表示倍率 100%）で
+ * ［全体表示］を押した倍率の実測 6.889 px/度（世界全体が収まる実データ。地図の幅 3472px）で、
+ * 設定の既定 50px は 7.26 度にあたる。その窓の全体図で 50px のまま効くよう 7.3 に切り上げた。
+ * 地物が世界の一部にしか無いプロジェクトは全体表示の倍率がもっと大きいので、やはり 50px で効く。
+ * 動作保証の範囲は要件定義書 FR-114。戻し方は `Infinity` にする（上限なしで設定の px だけになる）。
+ */
+export const SNAP_MAX_WORLD_DEGREES = 7.3;
+
+/**
+ * いまの倍率で効く吸着の半径（CSS px）。設定の px と、上限の度数を px へ直した値の小さいほう。
+ * 地図は正距円筒で経度と緯度の倍率が同じなので、画面の円はそのまま地図上の度数の円である。
+ * 距離そのものは画面で測るので、経度の継ぎ目の扱いは今までの測り方（候補を同じ周回へ寄せる・
+ * ±360 度の複製を見る）をそのまま受け継ぐ。吸着の全経路がこれを通す（頂点のドラッグ・辺から
+ * 足す頂点は `mount/hit-test.ts`、作図は `add/snap-ports.ts`）。
+ * 設定が 0 以下、または倍率が測れていないときは 0（吸着しない）。
+ */
+export function snapRadiusPx(distancePx: number, pxPerDegree: number): number {
+  if (!(distancePx > 0) || !(pxPerDegree > 0) || !Number.isFinite(pxPerDegree)) return 0;
+  return Math.min(distancePx, SNAP_MAX_WORLD_DEGREES * pxPerDegree);
 }
 
 function screenDistance(a: ScreenXY, b: ScreenXY): number {

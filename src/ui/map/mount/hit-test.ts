@@ -70,6 +70,7 @@ import {
   RELEASE_OUTCOME,
   type EditRefusalKind,
   type FeatureSnapshot,
+  snapRadiusPx,
 } from '../../../domain/editing/index';
 import { reportVertexCarryForward } from '../../../domain/editing/apply-proposal';
 import { surveyLinesAt } from '../../../domain/survey/index';
@@ -405,6 +406,8 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
       // disabling snap (snapDistancePx=0, a valid setting) must NOT also disable the slide
       // collision look-ahead, or a fast drag could tunnel a vertex through a thin
       // neighbour. Over-including candidates is safe: decideSnap with px=0 never snaps.
+      // 同じ理由で、この窓は吸着の半径の上限（`snapRadiusPx`）で狭めない。ここは候補を集める
+      // 範囲で、狭めると滑りの先読みまで変わる。吸着するかは decideSnap の半径が決める。
       const queryPx = Math.max(Number.isFinite(px) && px > 0 ? px : 0, SLIDE_LOOKAHEAD_PX);
       return queryPx / camera.zoom;
     },
@@ -463,9 +466,11 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
       const { camera, viewport } = ports.readCamera();
       return projectWorldToScreen(world, camera, viewport);
     },
-    // The live U16 snap distance in screen px (FR-110). Read fresh so a settings change
-    // takes effect on the next drag (教訓 5.35); non-positive ⇒ decideSnap never snaps.
-    snapDistancePx: () => store.getState().appSettings.snapDistancePx,
+    // The live U16 snap distance in screen px (FR-110), 地図上の度数の上限を通した半径（B102）.
+    // Read fresh so a settings or zoom change takes effect on the next frame (教訓 5.35);
+    // non-positive ⇒ decideSnap never snaps.
+    snapDistancePx: () =>
+      snapRadiusPx(store.getState().appSettings.snapDistancePx, ports.readCamera().camera.zoom),
     // The U10 near-candidate query for one drag frame (constrainSlide + decideSnap
     // inputs). Only called for a single-vertex drag (the adapter gates on a known
     // draggedVertexId); feature-move has no single point to slide / snap.

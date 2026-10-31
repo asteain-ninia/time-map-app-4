@@ -176,6 +176,28 @@ describe('createAddSnapPorts — 吸着（FR-31）', () => {
     expect(narrow.resolveProximity({ lon: 4.5, lat: 4 })).toBeNull();
   });
 
+  it('B102: 全体図では許容 px の内側でも、地図上の上限の度数より遠い頂点へは吸着しない', () => {
+    const root = commit(emptyProject(), squareLeaf('f-a', 'v-a', 0, 0, 4));
+    const wide = { enabled: true, vertex: true, tolerancePx: 50 };
+    // 2 px/度。頂点 (4,4) から 8 度 ＝ 16px。許容 50px の内側で、上限 7.3 度の外。
+    const low = portsFor(root, { centerLon: 2, centerLat: 2, zoom: 2 }, wide);
+    expect(low.resolveProximity({ lon: 12, lat: 4 })).toBeNull();
+    // 7 度なら上限の内側。
+    expect(low.resolveProximity({ lon: 11, lat: 4 })?.vertexId).toBe(asVertexId('v-a-2'));
+    // 寄った表示（10 px/度）では許容の 50px がそのまま効く。3 度 ＝ 30px。
+    const high = portsFor(root, { centerLon: 2, centerLat: 2, zoom: 10 }, wide);
+    expect(high.resolveProximity({ lon: 7, lat: 4 })?.vertexId).toBe(asVertexId('v-a-2'));
+  });
+
+  it('B102: 日付変更線の向こうの頂点も、上限の度数は最短の向きで測る', () => {
+    const root = commit(emptyProject(), squareLeaf('f-a', 'v-a', -177, 0, 4));
+    const wide = { enabled: true, vertex: true, tolerancePx: 50 };
+    const ports = portsFor(root, { centerLon: 180, centerLat: 2, zoom: 2 }, wide);
+    // 頂点 (-177, 4) の複製は 183 度。そこから 7 度は内側、8 度は外。
+    expect(ports.resolveProximity({ lon: 176, lat: 4 })?.vertexId).toBe(asVertexId('v-a-3'));
+    expect(ports.resolveProximity({ lon: 175, lat: 4 })).toBeNull();
+  });
+
   it('**日付変更線の向こうで描いているときは、押した位置と同じ周回へ寄せて返す**', () => {
     // 保存されている頂点の 1 つは lon = -173。地図は **1 周回東**の 187 度あたりを
     // 見ている（＝ 日付変更線の向こうへパンして描いている状態）。

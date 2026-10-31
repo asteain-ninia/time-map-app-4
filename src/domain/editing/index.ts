@@ -39,7 +39,9 @@ export {
   type SnapCandidate,
   type SnapDecision,
   type SnapInput,
+  SNAP_MAX_WORLD_DEGREES,
   decideSnap,
+  snapRadiusPx,
 } from './snap';
 
 export {

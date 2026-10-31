@@ -25,6 +25,7 @@
 
 import type { DomainProject } from '../../domain/persistence/index';
 import type { FeatureId } from '../../domain/ids';
+import { snapRadiusPx } from '../../domain/editing/index';
 import { FEATURE_KIND } from '../../domain/feature';
 import { HIT_KIND } from '../../domain/selection/index';
 import type { TimePoint } from '../../domain/time/time-point';
@@ -131,7 +132,8 @@ export function createAddSnapPorts(deps: AddSnapPortsDeps): AddSnapPorts {
         toScreen,
         wrap: { camera: view.camera, viewport: view.viewport },
         point: toScreen(raw),
-        radiusPx: ctx.snap.tolerancePx,
+        // 許容 px に地図上の度数の上限を通す（B102。頂点のドラッグと同じ 1 本）。
+        radiusPx: snapRadiusPx(ctx.snap.tolerancePx, view.camera.zoom),
         // **辺の中点ハンドルは候補にしない**（選択中の地物にだけ生えるもので、
         // §N-6 が保留している「辺への吸着」とは別物。混ぜると裁定前に辺吸着が
         // 半分だけ入ったことになる）。
