@@ -114,6 +114,9 @@ async function drawChild(
   await page.getByTestId('add-save').click();
   // 保存は 1 コマ遅れて走る。素性欄が閉じる（＝保存が走り終えた）のを待つ。
   await expect(page.getByTestId('add-property-form')).toHaveCount(0);
+  // 素性欄が閉じた直後は、まだ鍵盤が板の持ち主のままのことがある。直後の Ctrl+S が
+  // 「確認に答えてから」と断られないよう、持ち主が戻るのを待つ（一覧の修正前のコードでも 24 回中 4 回落ちた）。
+  await expect(page.getByTestId('app-focus-owner')).not.toHaveText('modal');
   return defaultParent;
 }
 
