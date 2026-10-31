@@ -22,7 +22,7 @@ export function deriveAnchorId(featureId: FeatureId, anchorTime: TimePoint): Anc
   return asAnchorId(`anchor:${idToString(featureId)}@${timePointKey(anchorTime)}`);
 }
 
-function timePointKey(tp: TimePoint): string {
+export function timePointKey(tp: TimePoint): string {
   switch (tp.granularity) {
     case 'year':
       return `${tp.year}`;

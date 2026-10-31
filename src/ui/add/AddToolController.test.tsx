@@ -1080,6 +1080,34 @@ describe('U23 手直し 2 回目 D1: 年が動いたときの下書き', () => {
     expect(screen.queryByTestId('add-draft-discard-confirm')).toBeNull();
   });
 
+  it('同じ年の中で月や日だけが動いても確認する（B43。吸着した相手はその月に居ないかもしれない）', () => {
+    const h = mountApp();
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(5, 0);
+    clickMap(5, 5); // 3 点＝面は確定できる
+    // いまは 1500 年 6 月 20 日。同じ年・同じ細かさのまま 9 月へ動かす。
+    act(() => {
+      h.store.getState().setCurrentTime(timePointYearMonthDay(1500, 9, 1), 'numericJump');
+    });
+    expect(screen.getByTestId('add-draft-discard-confirm')).toBeInTheDocument();
+    expect(h.store.getState().currentTime).toEqual(timePointYearMonthDay(1500, 6, 20));
+    act(() => fireEvent.click(screen.getByTestId('add-draft-discard-no')));
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
+    expect(h.store.getState().currentTime).toEqual(timePointYearMonthDay(1500, 6, 20));
+    expect(screen.queryByTestId('add-draft-discard-confirm')).toBeNull();
+    // 確定できる点数に届かない下書きは、月が動いても聞かずに捨てる（年と同じ）。
+    act(() => fireEvent.click(screen.getByTestId('add-undo')));
+    act(() => fireEvent.click(screen.getByTestId('add-undo')));
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('1');
+    act(() => {
+      h.store.getState().setCurrentTime(timePointYearMonthDay(1500, 6, 21), 'numericJump');
+    });
+    expect(screen.queryByTestId('add-draft-discard-confirm')).toBeNull();
+    expect(h.store.getState().currentTime).toEqual(timePointYearMonthDay(1500, 6, 21));
+    expect(screen.queryByTestId('add-vertex-count')?.textContent ?? '0').toBe('0');
+  });
+
   it('**板に答えるまで年は動かない**（2026-09-07 の手直し。教訓 5.71）', () => {
     // 旧版は年が動いたあとに聞いていたので、板の後ろでは **もう新しい年の地図**が
     // 見えていた（「続ける」で戻るので、画面が一度嘘をついてから訂正する形）。

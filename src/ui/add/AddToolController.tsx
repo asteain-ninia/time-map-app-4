@@ -40,6 +40,7 @@ import {
 import type { WorldCoordinate } from '../../domain/coordinate';
 import { type ProcessResult } from '../../domain/consistency/index';
 import type { FeatureId, RingId } from '../../domain/ids';
+import { timePointKey } from '../../domain/anchor-id';
 import type { TimePoint } from '../../domain/time/time-point';
 import type { SessionStore } from '../state/store';
 import { EDIT_MODE, type SnapSettings, type ToolId } from '../state/session';
@@ -402,7 +403,9 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   // どちらも **作図の外側で起きる遷移**で、打ちかけの下書きはその年・その選択のもとで
   // 打たれている。年が変われば吸着した相手が居ないかもしれないし（GPT #8）、一覧で
   // 選び直したなら利用者の関心はもう別の地物にある。**黙って残さない・黙って消さない。**
-  const currentTimeKey = `${String(currentTime.year)}/${currentTime.granularity}`;
+  // **月・日まで見る**（B43）。年と細かさだけを見ていたので、同じ年の中で 3 月 → 9 月と動いても
+  // 見張りが働かず、下書きと吸着した頂点 id がそのまま 9 月の記録になった。
+  const currentTimeKey = timePointKey(currentTime);
   const prevTimeRef = useRef<{ key: string; value: TimePoint }>({
     key: currentTimeKey,
     value: currentTime,
