@@ -98,4 +98,26 @@ describe('leafReport — E2E が表示と独立に地物を読む口', () => {
     expect(report.totalAreaKm2).toBe(0);
     expect(report.probeOwners).toEqual([]);
   });
+
+  it('継ぎ目をまたぐ面の内側を、保存された座標のまま読み違えない（B90）', () => {
+    const root = addSquare(project(), 'a', 'またぐ', 170, -170);
+    const r = leafReport(root, timePointYear(1000), {
+      ids: ['a'],
+      probes: [
+        { lon: 175, lat: 0.5 },
+        { lon: -175, lat: 0.5 },
+        { lon: 0, lat: 0.5 },
+      ],
+    });
+    expect(r.probeOwners).toEqual(['a', 'a', null]);
+  });
+
+  it('継ぎ目をまたいで重なる 2 つの面の重なりを測る（B90）', () => {
+    let root = addSquare(project(), 'a', 'A', 170, -170);
+    root = addSquare(root, 'b', 'B', 175, -175);
+    const r = leafReport(root, timePointYear(1000), { ids: ['a', 'b'] });
+    expect(r.entries.map((e) => e.id).sort()).toEqual(['a', 'b']);
+    const inner = r.entries.find((e) => e.id === 'b');
+    expect(r.maxPairOverlapKm2).toBeCloseTo(inner?.areaKm2 ?? -1, 3);
+  });
 });

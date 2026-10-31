@@ -13,6 +13,7 @@ import type { ColorInfo } from '../../domain/attributes';
 import { createCoordinate } from '../../domain/coordinate';
 import { FEATURE_KIND, type LeafFeature } from '../../domain/feature';
 import { multiPolygonAreaKm2 } from '../../domain/geo/geodesy';
+import { alignMultiPolygon, LONGITUDE_PERIOD, referenceLonForMultiPolygon } from '../../domain/geo/seam';
 import {
   intersection,
   isOk,
@@ -57,9 +58,18 @@ export interface LeafReport {
   readonly probeOwners: readonly (string | null)[];
 }
 
+/**
+ * 点が面の内側か。**保存された座標のまま判定しない**（B90）。経度 180 の頂点は -180 に畳まれて
+ * いるので、輪を連続の座標へ戻し、点は 1 周ぶん前後させても見る。
+ */
 function insideAny(mp: GeoMultiPolygon, lon: number, lat: number): boolean {
-  const p = createCoordinate(lon, lat);
-  return mp.some((poly) => pointInPolygon(p, poly) === POINT_LOCATION.Inside);
+  return mp.some((poly) => {
+    const aligned = alignMultiPolygon([poly])[0]!;
+    return [-LONGITUDE_PERIOD, 0, LONGITUDE_PERIOD].some(
+      (turn) =>
+        pointInPolygon(createCoordinate(lon + turn, lat), aligned) === POINT_LOCATION.Inside,
+    );
+  });
 }
 
 /** 指定の時刻で、問い合わせに当たる末端地物を読む。読むだけで何も変えない。 */
@@ -100,7 +110,9 @@ export function leafReport(
       const a = shapes[i];
       const b = shapes[j];
       if (a === undefined || b === undefined) continue;
-      const res = intersection(a, b);
+      // 2 つの面を同じ枝へ揃えてから重ねる（畳んだままだと継ぎ目に接する面が世界を覆う）。
+      const ref = referenceLonForMultiPolygon(a);
+      const res = intersection(alignMultiPolygon(a, ref), alignMultiPolygon(b, ref));
       if (!isOk(res)) continue;
       maxPairOverlapKm2 = Math.max(maxPairOverlapKm2, multiPolygonAreaKm2(res.result, geo));
     }
