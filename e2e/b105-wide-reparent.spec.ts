@@ -234,6 +234,14 @@ test.describe('B105・B108 — 実データのコピーで', () => {
       await page.getByTestId('add-save').click();
       await expect(page.getByTestId('add-property-form')).toHaveCount(0);
 
+      // 観測の確かめ: 分ける前の子は親の中にあるので、重なりは継ぎ目の両側を足して子の面積と同じ。
+      // これが半分に出るなら、下の `maxPairOverlapKm2 === 0` は反対側の引き残しを見られない。
+      const drawn = await leafReport(page, { ids: [WIDE_ID], names: [CHILD_NAME] });
+      const drawnChild = drawn.entries.find((e) => e.name === CHILD_NAME);
+      if (drawnChild === undefined) throw new Error(`子が無い: ${JSON.stringify(drawn.entries)}`);
+      // 親の東の端は 179.99 なので、179.99〜180 の細い隙間のぶん（子の 1 %）だけ子より小さい。
+      expect(drawn.maxPairOverlapKm2 / (drawnChild.areaKm2 ?? 1)).toBeCloseTo(0.99, 2);
+
       await reparentChildToWide(page);
       await expectNoConflictBoard(
         page,

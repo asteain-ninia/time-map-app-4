@@ -14,6 +14,7 @@
 import { createCoordinate, type WorldCoordinate } from '../coordinate';
 import {
   alignMultiPolygon,
+  LONGITUDE_PERIOD,
   referenceLonForMultiPolygon,
   replicateAcrossSeam,
 } from '../geo/index';
@@ -129,6 +130,27 @@ export function subtractAcrossSeam(
 }
 
 /**
+ * 2 つの形の共通部分を、`clip` の周ごとに返す。整列は基準 ±180 の窓の片側にしか置かないので、1 周ずれた
+ * 所の重なりは写しと比べないと見えない。周ごとに分けて返すのは、写しどうしが隣り合う形でも足し算で
+ * 測れるようにするため。入力は同じ基準へ揃えておく。集合演算が断ったら `undefined`。
+ */
+export function commonPartsAcrossSeam(
+  subject: GeoMultiPolygon,
+  clip: GeoMultiPolygon,
+): GeoMultiPolygon[] | undefined {
+  const parts: GeoMultiPolygon[] = [];
+  for (const turn of [-LONGITUDE_PERIOD, 0, LONGITUDE_PERIOD]) {
+    const shifted = clip.map((poly) =>
+      poly.map((ring) => ring.map((c) => createCoordinate(c.lon + turn, c.lat))),
+    );
+    const common = intersection(subject, shifted);
+    if (!isOk(common)) return undefined;
+    parts.push(common.result);
+  }
+  return parts;
+}
+
+/**
  * 面 = 差分 + 共通部分 を確かめる。共通部分は ±360 の写しごとに測る。差分の複製の処理を通さないのは、
  * その処理の誤りをここで捕まえるため。面は正規化してから測る（古いデータの重なった片で誤って断らない）。
  */
@@ -139,15 +161,9 @@ function differenceAddsUp(
 ): boolean {
   const normalized = union(subject, EMPTY_MULTI_POLYGON);
   if (!isOk(normalized)) return false;
-  let removed = 0;
-  for (const turn of [-360, 0, 360]) {
-    const shifted = clip.map((poly) =>
-      poly.map((ring) => ring.map((c) => createCoordinate(c.lon + turn, c.lat))),
-    );
-    const common = intersection(subject, shifted);
-    if (!isOk(common)) return false;
-    removed += netLonLatArea(common.result);
-  }
+  const commons = commonPartsAcrossSeam(subject, clip);
+  if (commons === undefined) return false;
+  const removed = commons.reduce((sum, common) => sum + netLonLatArea(common), 0);
   return areasMatchWithinRounding(
     netLonLatArea(normalized.result),
     netLonLatArea(diff) + removed,

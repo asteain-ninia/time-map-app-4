@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
 import { applyAddProposal } from '../../domain/editing/apply-proposal';
 import { createLeafFeature } from '../../domain/feature';
+import { multiPolygonAreaKm2 } from '../../domain/geo/geodesy';
 import { createGeoParams } from '../../domain/geo/geo-params';
 import { asFeatureId, asRingId, asVertexId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/serialize';
@@ -119,5 +120,41 @@ describe('leafReport — E2E が表示と独立に地物を読む口', () => {
     expect(r.entries.map((e) => e.id).sort()).toEqual(['a', 'b']);
     const inner = r.entries.find((e) => e.id === 'b');
     expect(r.maxPairOverlapKm2).toBeCloseTo(inner?.areaKm2 ?? -1, 3);
+  });
+
+  it('幅の広い面と継ぎ目にかかる面の重なりは、継ぎ目の両側を足して測る', () => {
+    // 帯は経度 -180〜179。子は 170〜190。重なるのは 170〜179 と 180〜190（保存は -180〜-170）の 2 か所。
+    const lons = [-180, -90, 0, 90, 179];
+    const band = [...lons.map((x) => ({ lon: x, lat: 0 })), ...[...lons].reverse().map((x) => ({ lon: x, lat: 1 }))];
+    const vs = band.map((p, i) => createVertex(asVertexId(`band-${i}`), p));
+    const feature = createLeafFeature(
+      asFeatureId('band'),
+      createBasicAttributes('帯', 0, 0),
+      color,
+      createShape([createTerritoryRing(asRingId('r-band'), vs.map((v) => v.id))]),
+      { kindLabel: '国' },
+    );
+    let root = applyAddProposal(project(), {
+      featureId: asFeatureId('band'),
+      anchorTime: timePointYear(1000),
+      snapshot: { feature, vertices: vs, sharedCandidateIds: new Map() },
+    });
+    root = addSquare(root, 'child', '子', 170, -170);
+    const rect = (west: number, east: number) => [
+      [
+        [
+          { lon: west, lat: 0 },
+          { lon: east, lat: 0 },
+          { lon: east, lat: 1 },
+          { lon: west, lat: 1 },
+        ],
+      ],
+    ];
+    const geo = root.settings.geo;
+    const expected = multiPolygonAreaKm2(rect(170, 179), geo) + multiPolygonAreaKm2(rect(-180, -170), geo);
+
+    const r = leafReport(root, timePointYear(1000), { ids: ['band', 'child'] });
+
+    expect(r.maxPairOverlapKm2 / expected).toBeCloseTo(1, 6);
   });
 });

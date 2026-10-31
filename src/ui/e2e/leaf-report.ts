@@ -14,15 +14,10 @@ import { createCoordinate } from '../../domain/coordinate';
 import { FEATURE_KIND, type LeafFeature } from '../../domain/feature';
 import { multiPolygonAreaKm2 } from '../../domain/geo/geodesy';
 import { alignMultiPolygon, LONGITUDE_PERIOD, referenceLonForMultiPolygon } from '../../domain/geo/seam';
-import {
-  intersection,
-  isOk,
-  pointInPolygon,
-  POINT_LOCATION,
-  type GeoMultiPolygon,
-} from '../../domain/geometry/index';
+import { pointInPolygon, POINT_LOCATION, type GeoMultiPolygon } from '../../domain/geometry/index';
 import { resolveLeafShape } from '../../domain/hierarchy/resolve-shape';
 import type { DomainProject } from '../../domain/persistence/serialize';
+import { commonPartsAcrossSeam } from '../../domain/promotion/subtract-across-seam';
 import type { TimePoint } from '../../domain/time/time-point';
 
 import { featuresAt, verticesAt } from '../live-lookup';
@@ -110,11 +105,13 @@ export function leafReport(
       const a = shapes[i];
       const b = shapes[j];
       if (a === undefined || b === undefined) continue;
-      // 2 つの面を同じ枝へ揃えてから重ねる（畳んだままだと継ぎ目に接する面が世界を覆う）。
+      // 2 つの面を同じ枝へ揃えてから重ねる（畳んだままだと継ぎ目に接する面が世界を覆う）。±360 の写し
+      // とも比べる。揃えるだけだと、幅の広い面の継ぎ目の反対側の重なりが見えない（教訓 5.109）。
       const ref = referenceLonForMultiPolygon(a);
-      const res = intersection(alignMultiPolygon(a, ref), alignMultiPolygon(b, ref));
-      if (!isOk(res)) continue;
-      maxPairOverlapKm2 = Math.max(maxPairOverlapKm2, multiPolygonAreaKm2(res.result, geo));
+      const parts = commonPartsAcrossSeam(alignMultiPolygon(a, ref), alignMultiPolygon(b, ref));
+      if (parts === undefined) continue;
+      const overlap = parts.reduce((sum, part) => sum + multiPolygonAreaKm2(part, geo), 0);
+      maxPairOverlapKm2 = Math.max(maxPairOverlapKm2, overlap);
     }
   }
 

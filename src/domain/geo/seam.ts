@@ -19,6 +19,8 @@
 // (lesson 5.17), and the same input always yields the same output.
 
 import { coordinatesEqual, createCoordinate, type WorldCoordinate } from '../coordinate';
+import { ringStrictlyContains } from '../geometry/predicates';
+import { quantizeCoordinate } from '../geometry/quantize';
 import { unwrapClosedLonSequence, unwrapLonSequence, wrapLonDeg } from './longitude';
 
 /** Full periodic span of longitude (degrees). One world turn. */
@@ -389,44 +391,56 @@ function alignPiece(
   return [alignedOuter, ...holes.map((hole) => unwrapRingAnchored(hole, center))];
 }
 
+/** 外周の面積の大きさ。入れ子の外側を先に決める順に使う（穴の中のものは必ず外の片より小さい）。 */
+function ringAreaAbs(ring: readonly WorldCoordinate[]): number {
+  let sum = 0;
+  ring.forEach((a, i) => {
+    const b = ring[(i + 1) % ring.length]!;
+    sum += a.lon * b.lat - b.lon * a.lat;
+  });
+  return Math.abs(sum) / 2;
+}
+
 /**
- * 片の周を、自分より幅の広い片の範囲の中へ入れ直す（B108 の穴の中の飛び地）。
+ * 穴の中の飛び地を、その穴と同じ周へ入れ直す（B108 (b)）。
  *
  * 飛び地は保存では穴の子だが、`resolveLeafShape` では独立の片になる。片を 1 つずつ基準へ寄せると、
- * 窓（基準 ±180）の外まで広がる片の中にある飛び地が反対側の周へ行き、穴と 1 周離れる。輪の入れ子が
- * 組めなくなり、最上位の領土が重なった形で確定する。幅の広い片が窓の外へ出ていないなら、窓の中の
- * 片は動かす先が無いので何もしない。
+ * 窓（基準 ±180）の外まで広がる片の穴の中にある飛び地が反対側の周へ行き、穴と 1 周離れる。輪の入れ子が
+ * 組めなくなり、最上位の領土が重なった形で確定する。
+ *
+ * 判定は「写した外周が穴の輪の中に入る」で行う。経度の範囲だけで見ると、幅の広い片の南北の外にある
+ * 飛び地や、穴の無い片の範囲に入るだけの片まで動かして、刃物・穴あけ・結合が壊れる。外周が大きい片から
+ * 順に決めるので、入れ子が何段あっても外側の穴はもう置き場が決まっている。穴を持つ片が窓の中に
+ * 収まっているなら、窓の中の片は動かす先が無いので何もしない。
+ *
+ * 比べる前に格子へ丸める。経度をつなぐ計算と ±360 の足し算で格子の値から少しずれ、穴の縁に接する
+ * 飛び地が外に見えるのを防ぐ（厳密な述語へ計算で作った点を渡さない。教訓 5.45）。
  */
-function placePiecesInsideWiderPieces(pieces: WorldCoordinate[][][], ref: number): WorldCoordinate[][][] {
-  if (pieces.length < 2) return pieces;
-  const extents = pieces.map((piece) => {
-    const lons = (piece[0] ?? []).map((c) => c.lon);
-    return lons.length === 0
-      ? { min: 0, max: 0 }
-      : { min: lons.reduce((a, b) => Math.min(a, b)), max: lons.reduce((a, b) => Math.max(a, b)) };
-  });
-  if (!extents.some((e) => e.min < ref - 180 || e.max > ref + 180)) return pieces;
-  const inside = (min: number, max: number, outer: { min: number; max: number }): boolean =>
-    min >= outer.min && max <= outer.max;
+function placeEnclavesInsideHoles(pieces: WorldCoordinate[][][], ref: number): WorldCoordinate[][][] {
+  const exits = pieces.some(
+    (piece) =>
+      piece.length > 1 && (piece[0] ?? []).some((c) => c.lon < ref - 180 || c.lon > ref + 180),
+  );
+  if (!exits) return pieces;
+
   const out = [...pieces];
-  const widestFirst = extents
-    .map((e, i) => ({ i, width: e.max - e.min }))
-    .sort((a, b) => b.width - a.width);
-  widestFirst.forEach(({ i, width }, rank) => {
-    const e = extents[i]!;
-    const wider = widestFirst
-      .slice(0, rank)
-      .filter((o) => o.width > width)
-      .map((o) => extents[o.i]!);
-    if (wider.some((w) => inside(e.min, e.max, w))) return;
-    for (const turn of [-1, 1]) {
-      const delta = turn * LONGITUDE_PERIOD;
-      if (!wider.some((w) => inside(e.min + delta, e.max + delta, w))) continue;
-      out[i] = shiftPiece(out[i]!, delta);
-      extents[i] = { min: e.min + delta, max: e.max + delta };
-      return;
+  const largestFirst = pieces
+    .map((piece, i) => ({ i, area: ringAreaAbs(piece[0] ?? []) }))
+    .sort((a, b) => b.area - a.area);
+  const placedHoles: WorldCoordinate[][] = [];
+  for (const { i } of largestFirst) {
+    const piece = out[i]!;
+    const outer = piece[0] ?? [];
+    const inHole = (delta: number): boolean => {
+      const moved = outer.map((c) => quantizeCoordinate(createCoordinate(c.lon + delta, c.lat)));
+      return placedHoles.some((hole) => ringStrictlyContains(hole, moved));
+    };
+    if (placedHoles.length > 0 && !inHole(0)) {
+      const delta = [-LONGITUDE_PERIOD, LONGITUDE_PERIOD].find(inHole);
+      if (delta !== undefined) out[i] = shiftPiece(piece, delta);
     }
-  });
+    for (const hole of out[i]!.slice(1)) placedHoles.push(hole.map(quantizeCoordinate));
+  }
   return out;
 }
 
@@ -438,8 +452,8 @@ function shiftPiece(piece: WorldCoordinate[][], delta: number): WorldCoordinate[
  * Align a multi-polygon onto the common branch `ref` (defaulting to the
  * multi-polygon's own outer-ring reference), PIECE BY PIECE: each piece's outer ring
  * is anchored to `ref`, and its holes follow that outer ring (see {@link alignPiece}).
- * A piece that lies within a wider piece's longitude extent goes on that piece's
- * branch (see {@link placePiecesInsideWiderPieces}).
+ * A piece inside another piece's hole goes on that hole's branch (see
+ * {@link placeEnclavesInsideHoles}).
  * The single helper drill, the aggregate union, and the display unwrap all funnel
  * through, so a seam-crossing outer ring and its holes never land a world turn apart
  * (audit root cause A / B106). Pieces are kept intact (教訓5.1) — no ring is merged or
@@ -449,7 +463,7 @@ export function alignMultiPolygon(
   mp: readonly (readonly (readonly WorldCoordinate[])[])[],
   ref: number = referenceLonForMultiPolygon(mp),
 ): WorldCoordinate[][][] {
-  return placePiecesInsideWiderPieces(
+  return placeEnclavesInsideHoles(
     mp.map((poly) => alignPiece(poly, ref)),
     ref,
   );
