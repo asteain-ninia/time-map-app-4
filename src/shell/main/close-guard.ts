@@ -162,6 +162,16 @@ export interface WindowCloseGuard {
  * **アプリで 1 回** しか登録できないので、応答の振り分けはここが持つ（ウィンドウ再作成
  * や dev リロードでハンドラが多重登録されない — 要求 ID で正しいガードへ配る）。
  */
+/** {@link CloseGuardHub.inspect} の値。 */
+export interface CloseGuardHubState {
+  /** 応答待ちの要求の数。 */
+  readonly pendingCount: number;
+  /** 直近の close がアプリ終了由来か。 */
+  readonly quitRequested: boolean;
+  /** 貼ってあるガードごとの局面（平常は `idle`）。 */
+  readonly phases: readonly string[];
+}
+
 export interface CloseGuardHub {
   /** ウィンドウ 1 枚にガードを貼る（createWindow から）。 */
   readonly attach: (ports: CloseGuardWindowPorts) => WindowCloseGuard;
@@ -179,6 +189,11 @@ export interface CloseGuardHub {
   readonly acceptVerdict: (payload: unknown, senderId?: number) => void;
   /** `app.on('before-quit')`: この close は「アプリ終了」由来だと記録する。 */
   readonly noteQuitRequested: () => void;
+  /**
+   * いまの状態を読むだけの口（E2E の起動の使い回しが、検査の残したものを調べるのに使う。
+   * `src/shell/main/e2e-main-probe.ts`）。状態は変えない。
+   */
+  readonly inspect: () => CloseGuardHubState;
   /**
    * 以後の close を無条件に素通しする（**閉じはしない**、素通しにするだけ）。
    * 本番経路の呼び出し元は無い。E2E ハーネス（Playwright の app.close() は
@@ -240,6 +255,8 @@ export function createCloseGuardHub(env: CloseGuardEnv): CloseGuardHub {
   const released = new Set<() => void>();
   /** 直近の close が `app.quit()` 由来か（before-quit で立つ）。 */
   let quitRequested = false;
+  /** 貼り付け済みガードの局面を読む口（{@link CloseGuardHub.inspect} 用）。 */
+  const phaseReaders = new Set<() => GuardPhase>();
 
   const attach = (ports: CloseGuardWindowPorts): WindowCloseGuard => {
     let phase: GuardPhase = 'idle';
@@ -367,6 +384,8 @@ export function createCloseGuardHub(env: CloseGuardEnv): CloseGuardHub {
       phase = 'allowed';
     };
     released.add(release);
+    const readPhase = (): GuardPhase => phase;
+    phaseReaders.add(readPhase);
 
     const guard: WindowCloseGuard = {
       onCloseAttempt: () => {
@@ -419,6 +438,7 @@ export function createCloseGuardHub(env: CloseGuardEnv): CloseGuardHub {
         clearPending();
         phase = 'idle';
         released.delete(release);
+        phaseReaders.delete(readPhase);
       },
     };
 
@@ -470,6 +490,11 @@ export function createCloseGuardHub(env: CloseGuardEnv): CloseGuardHub {
     noteQuitRequested: () => {
       quitRequested = true;
     },
+    inspect: () => ({
+      pendingCount: pending.size,
+      quitRequested,
+      phases: [...phaseReaders].map((read) => read()),
+    }),
     forceAllow: (reason) => {
       env.log(`${CLOSE_GUARD_LOG.forceAllowed}${reason}`);
       for (const release of released) release();

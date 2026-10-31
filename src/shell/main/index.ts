@@ -42,6 +42,7 @@ import {
 import { acquireSingleInstanceLock, revealWindow } from './single-instance';
 import { IPC_CHANNEL, type AutoSaveConfig } from '../ipc/contract';
 import { e2eHarnessAdditionalArguments } from '../ipc/e2e-harness';
+import { installE2eMainProbe } from './e2e-main-probe';
 import { SHELL_MAIN_STRINGS } from './strings';
 
 // Electron main process. Shell layer may import domain only (never ui/render).
@@ -546,14 +547,40 @@ function wireIpc(): void {
       target.webContents.send(IPC_CHANNEL.AutoSaveTick);
     }
   });
-  scheduler.reconfigure(DEFAULT_AUTO_SAVE_INTERVAL_MS);
+  let autoSaveIntervalMs = DEFAULT_AUTO_SAVE_INTERVAL_MS;
+  scheduler.reconfigure(autoSaveIntervalMs);
 
   let maxGenerations = DEFAULT_MAX_GENERATIONS;
 
   const applyAutoSaveConfig = (config: AutoSaveConfig): void => {
+    autoSaveIntervalMs = config.intervalMs;
     scheduler.reconfigure(config.intervalMs);
     maxGenerations = config.maxGenerations;
   };
+
+  // E2E_TEST=1 のときだけ、本体のモジュール変数を読む口を main プロセスの中に置く
+  // （起動の使い回しの見張り。e2e/shared-launch.ts）。preload にも renderer にも出ない。
+  if (E2E_TEST) {
+    installE2eMainProbe(globalThis, {
+      read: () => ({
+        currentDocumentPath: currentDocumentPath ?? null,
+        pendingLoadPath: pendingLoadPathEntry?.path ?? null,
+        loadCommitCount,
+        issuedBackupCount: issuedBackups.size,
+        restoredSourcePath: restoredSourcePath ?? null,
+        backupSourceCandidate: backupSourceCandidate ?? null,
+        backupFeatureMemoSize: backupFeatureMemo.size,
+        trustedSenderCount: trustedSenderIds.size,
+        autoSaveIntervalMs,
+        autoSaveRunning: scheduler.isRunning(),
+        maxGenerations,
+        closeGuard: closeGuardHub.inspect(),
+      }),
+      rearmAutoSaveTimer: () => {
+        scheduler.reconfigure(autoSaveIntervalMs);
+      },
+    });
+  }
 
   const deps: IpcDeps = {
     registrar: (channel, handler) => {
