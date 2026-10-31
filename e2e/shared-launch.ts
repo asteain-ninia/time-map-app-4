@@ -242,6 +242,14 @@ async function readRendererState(page: Page): Promise<Record<string, unknown>> {
   });
 }
 
+/**
+ * 葉の値を文字列にする。**文字列だけ引用符で囲む**ので、null と文字列 "null"、1 と "1"、
+ * 空の配列の印 `[]` と文字列 "[]" が同じにならない。
+ */
+function encodeLeaf(value: unknown): string {
+  return typeof value === 'string' ? JSON.stringify(value) : String(value);
+}
+
 /** 平らにする。`windows.0.bounds.x` のような項目名で差が読めるように。 */
 function flatten(prefix: string, value: unknown, out: Record<string, string>): void {
   if (value !== null && typeof value === 'object') {
@@ -252,7 +260,7 @@ function flatten(prefix: string, value: unknown, out: Record<string, string>): v
     for (const [key, item] of entries) flatten(`${prefix}.${key}`, item, out);
     return;
   }
-  out[prefix] = String(value);
+  out[prefix] = encodeLeaf(value);
 }
 
 /** Playwright の側に残る状態を見張るための控え（検査が呼んだかどうかを印で覚える）。 */
