@@ -157,11 +157,6 @@ export interface WindowCloseGuard {
   readonly dispose: () => void;
 }
 
-/**
- * 全ウィンドウ分の close ガードを束ねるハブ。IPC 受け口（`ipcMain.handle`）は
- * **アプリで 1 回** しか登録できないので、応答の振り分けはここが持つ（ウィンドウ再作成
- * や dev リロードでハンドラが多重登録されない — 要求 ID で正しいガードへ配る）。
- */
 /** {@link CloseGuardHub.inspect} の値。 */
 export interface CloseGuardHubState {
   /** 応答待ちの要求の数。 */
@@ -172,6 +167,11 @@ export interface CloseGuardHubState {
   readonly phases: readonly string[];
 }
 
+/**
+ * 全ウィンドウ分の close ガードを束ねるハブ。IPC 受け口（`ipcMain.handle`）は
+ * **アプリで 1 回** しか登録できないので、応答の振り分けはここが持つ（ウィンドウ再作成
+ * や dev リロードでハンドラが多重登録されない — 要求 ID で正しいガードへ配る）。
+ */
 export interface CloseGuardHub {
   /** ウィンドウ 1 枚にガードを貼る（createWindow から）。 */
   readonly attach: (ports: CloseGuardWindowPorts) => WindowCloseGuard;

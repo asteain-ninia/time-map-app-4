@@ -100,6 +100,11 @@ export interface LaunchOptions {
 }
 
 export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedApp> {
+  // 初回起動のガイド（FR-118 / 設計書 §H.3。増分 6）は **既定で出る**。既定の設定で
+  // 起動するたびに出るので、**launchApp の 1 か所で畳む** ―― spec ごとに畳む形にすると、
+  // 次に spec を足した人が忘れて「板の外を押したのに何も起きない」で悩む（増分 5 の
+  // 「板を先に閉じる」の申し送りと同じ型）。**「今後表示しない」ではなく「閉じる」**を
+  // 押す ―― 設定を書くと、設定そのものを見る検査が汚れる。
   // 既定はここで終わる（検査ごとに起動し直す）。使い回しは E2E_LAUNCH_MODE を指定したときだけ
   // （e2e/shared-launch.ts、開発ガイド §1.12）。
   if (launchMode() === 'fresh') {
@@ -177,11 +182,6 @@ async function startElectron(options: LaunchOptions): Promise<LaunchedApp> {
  * 出たガイドが次の操作を覆う。待つのは板が本当に出るまでで、時間切れなら
  * 「もう出ない設定になっている」と読んで何もしない（冪等さは保つ）。
  */
-// 初回起動のガイド（FR-118 / 設計書 §H.3。増分 6）は **既定で出る**。既定の設定で
-// 起動するたびに出るので、**launchApp の 1 か所で畳む** ―― spec ごとに畳む形にすると、
-// 次に spec を足した人が忘れて「板の外を押したのに何も起きない」で悩む（増分 5 の
-// 「板を先に閉じる」の申し送りと同じ型）。**「今後表示しない」ではなく「閉じる」**を
-// 押す ―― 設定を書くと、設定そのものを見る検査が汚れる。
 export async function dismissFirstRunGuide(page: Page): Promise<void> {
   const close = page.getByTestId('first-run-guide-close');
   try {
