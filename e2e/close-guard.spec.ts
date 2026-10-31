@@ -27,6 +27,7 @@
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test';
 
 import { launchApp, commitOneFace } from './helpers';
+import { FRESH_LAUNCH } from './shared-launch';
 
 /** Fire the REAL window close event from main (× / Alt+F4 と同じ経路). */
 async function requestClose(app: ElectronApplication): Promise<void> {
@@ -80,7 +81,7 @@ function unsavedDialog(page: Page) {
   return page.getByTestId('unsaved-dialog');
 }
 
-test.describe('FR-107 終了確認ガード（close ブリッジ）', () => {
+test.describe('FR-107 終了確認ガード（close ブリッジ）', { annotation: FRESH_LAUNCH }, () => {
   test('未保存のまま閉じようとすると閉じず、未保存警告が出る（キャンセルで開いたまま）', async () => {
     const { app, page } = await launchApp();
     try {

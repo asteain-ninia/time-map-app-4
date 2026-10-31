@@ -38,6 +38,7 @@ import { expect } from '@playwright/test';
 // したときに **spec だけが古いまま緑で通る**（走らせている顔ぶれが減ったことに誰も
 // 気づけない）。`ALL_TOOLS` は `src/ui/shell/tools.ts` の並び順の単一の真実源である。
 import { ALL_TOOLS } from '../src/ui/shell/tools';
+import { launchMode, launchShared } from './shared-launch';
 
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -99,6 +100,43 @@ export interface LaunchOptions {
 }
 
 export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedApp> {
+  // 既定はここで終わる（検査ごとに起動し直す）。使い回しは E2E_LAUNCH_MODE を指定したときだけ
+  // （e2e/shared-launch.ts、開発ガイド §1.12）。
+  if (launchMode() === 'fresh') {
+    const launched = await startElectron(options);
+    if (options.keepFirstRunGuide !== true) await dismissFirstRunGuide(launched.page);
+    return launched;
+  }
+  return launchShared({
+    start: () => startElectron(options),
+    waitForShell,
+    settleFirstRun: async (page) => {
+      if (options.keepFirstRunGuide !== true) await dismissFirstRunGuide(page);
+    },
+    userDataDir,
+    launchKey: JSON.stringify([options.extraArgs ?? [], options.extraEnv ?? {}]),
+  });
+}
+
+/** 殻（`app-shell`）が載るまで待つ。 */
+async function waitForShell(page: Page): Promise<void> {
+  // Wait until the renderer bundle has executed and React mounted the shell.
+  //
+  // COLD-LAUNCH BUDGET: the FIRST Electron launch in a batch pays the cold-start
+  // cost (electron-vite build artifacts loaded, V8 warm-up, renderer bundle parse),
+  // which on a loaded/headless CI box can exceed the 30s DEFAULT waitForSelector
+  // timeout and flake the whole gate. We give this wait an EXPLICIT budget sized to
+  // the per-test cap (playwright.config.ts timeout: 60_000) minus launch overhead,
+  // so the shell-mount wait — not an undersized default — is what governs (and a
+  // genuinely stuck launch still fails fast via the per-test timeout). Paired with
+  // retries:1 in the config so a single cold-start outlier cannot redden the gate.
+  await page.waitForSelector('[data-testid="app-shell"]', {
+    state: 'attached',
+    timeout: 45_000,
+  });
+}
+
+async function startElectron(options: LaunchOptions): Promise<LaunchedApp> {
   // Build the child env from the current one, then DELETE the run-as-node leak.
   // Electron treats ELECTRON_RUN_AS_NODE as set even when empty (""), which makes
   // `require('electron')` in main return a path string instead of the app — and
@@ -126,26 +164,7 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
     env: childEnv,
   });
   const page = await app.firstWindow();
-  // Wait until the renderer bundle has executed and React mounted the shell.
-  //
-  // COLD-LAUNCH BUDGET: the FIRST Electron launch in a batch pays the cold-start
-  // cost (electron-vite build artifacts loaded, V8 warm-up, renderer bundle parse),
-  // which on a loaded/headless CI box can exceed the 30s DEFAULT waitForSelector
-  // timeout and flake the whole gate. We give this wait an EXPLICIT budget sized to
-  // the per-test cap (playwright.config.ts timeout: 60_000) minus launch overhead,
-  // so the shell-mount wait — not an undersized default — is what governs (and a
-  // genuinely stuck launch still fails fast via the per-test timeout). Paired with
-  // retries:1 in the config so a single cold-start outlier cannot redden the gate.
-  await page.waitForSelector('[data-testid="app-shell"]', {
-    state: 'attached',
-    timeout: 45_000,
-  });
-  // 初回起動のガイド（FR-118 / 設計書 §H.3。増分 6）は **既定で出る**。既定の設定で
-  // 起動するたびに出るので、**launchApp の 1 か所で畳む** ―― spec ごとに畳む形にすると、
-  // 次に spec を足した人が忘れて「板の外を押したのに何も起きない」で悩む（増分 5 の
-  // 「板を先に閉じる」の申し送りと同じ型）。**「今後表示しない」ではなく「閉じる」**を
-  // 押す ―― 設定を書くと、設定そのものを見る検査が汚れる。
-  if (options.keepFirstRunGuide !== true) await dismissFirstRunGuide(page);
+  await waitForShell(page);
   return { app, page };
 }
 
@@ -158,6 +177,11 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
  * 出たガイドが次の操作を覆う。待つのは板が本当に出るまでで、時間切れなら
  * 「もう出ない設定になっている」と読んで何もしない（冪等さは保つ）。
  */
+// 初回起動のガイド（FR-118 / 設計書 §H.3。増分 6）は **既定で出る**。既定の設定で
+// 起動するたびに出るので、**launchApp の 1 か所で畳む** ―― spec ごとに畳む形にすると、
+// 次に spec を足した人が忘れて「板の外を押したのに何も起きない」で悩む（増分 5 の
+// 「板を先に閉じる」の申し送りと同じ型）。**「今後表示しない」ではなく「閉じる」**を
+// 押す ―― 設定を書くと、設定そのものを見る検査が汚れる。
 export async function dismissFirstRunGuide(page: Page): Promise<void> {
   const close = page.getByTestId('first-run-guide-close');
   try {

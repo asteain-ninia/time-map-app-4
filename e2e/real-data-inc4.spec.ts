@@ -22,6 +22,7 @@ import {
   listedFeatureCount,
   loadProject,
 } from './helpers';
+import { FRESH_LAUNCH } from './shared-launch';
 
 const REAL_DATA_FILE = 'derle-world-full-2026-08-16.gimoza';
 const dataDir =
@@ -105,7 +106,7 @@ test.describe('増分 4 — 実データ（デーレ界）', () => {
   // 書き換わり、過去の名前がどこにも残らない ―― 旧版の「同じ式を選び直せば通史から
   // 同じ束が出る」仕掛けはここで崩れていた（現状 B51）。束を保存ファイルの節に持たせて、
   // **アプリを終了して開き直しても** 並び・基準・カーソル・済が戻ることを固定する。
-  test('0 年で直したまとまりが、保存して開き直しても済ごと戻る', async () => {
+  test('0 年で直したまとまりが、保存して開き直しても済ごと戻る', { annotation: FRESH_LAUNCH }, async () => {
     test.setTimeout(240_000);
     const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-inc4-bundle-'));
     const workingCopy = join(workDir, REAL_DATA_FILE);

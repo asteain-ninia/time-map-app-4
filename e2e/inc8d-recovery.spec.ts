@@ -36,6 +36,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { test, expect, type Page } from '@playwright/test';
 
 import { commitOneFace, enterEditMode, launchApp, loadProject } from './helpers';
+import { FRESH_LAUNCH } from './shared-launch';
 
 /** `dir` にある `baseName` の世代のファイル名（古い順）。 */
 function backupsIn(dir: string, baseName: string): string[] {
@@ -153,7 +154,7 @@ async function expectRestoredFrom(page: Page, sourceName: string): Promise<void>
 }
 
 test.describe('増分 8D: 復旧と設定（V14・V12 の④）', () => {
-  test('V14 (a): 古い世代を選ぶとその中身が戻り、保存先は未確定。Ctrl+S は名前を付けて保存へ落ち、開き直しても中身は残る', async () => {
+  test('V14 (a): 古い世代を選ぶとその中身が戻り、保存先は未確定。Ctrl+S は名前を付けて保存へ落ち、開き直しても中身は残る', { annotation: FRESH_LAUNCH }, async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-8d-restore-'));
     const original = join(workDir, 'original.gimoza');
     const restoredTarget = join(workDir, 'restored.gimoza');
@@ -281,7 +282,7 @@ test.describe('増分 8D: 復旧と設定（V14・V12 の④）', () => {
     }
   });
 
-  test('V14 (a) 手直し: 元のファイルが壊れて開けなくても、新しく起動したところから世代へ戻せる（新規のあとは元のファイルを選ばせる）', async () => {
+  test('V14 (a) 手直し: 元のファイルが壊れて開けなくても、新しく起動したところから世代へ戻せる（新規のあとは元のファイルを選ばせる）', { annotation: FRESH_LAUNCH }, async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-8d-corrupt-'));
     const original = join(workDir, 'world.gimoza');
     const rescued = join(workDir, 'rescued.gimoza');
@@ -353,7 +354,7 @@ test.describe('増分 8D: 復旧と設定（V14・V12 の④）', () => {
     }
   });
 
-  test('V14 手直し: 世代のファイルを D&D でも「開く」でも、直接開いたら保存先にしない（世代は上書きしない）', async () => {
+  test('V14 手直し: 世代のファイルを D&D でも「開く」でも、直接開いたら保存先にしない（世代は上書きしない）', { annotation: FRESH_LAUNCH }, async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-8d-bak-'));
     const original = join(workDir, 'direct.gimoza');
     const rescued = join(workDir, 'from-bak.gimoza');
@@ -454,7 +455,7 @@ test.describe('増分 8D: 復旧と設定（V14・V12 の④）', () => {
     }
   });
 
-  test('V12 の④: 設定 →「保存とバックアップ」で間隔と世代数を変えると、世代数が保存に効き、再起動しても残る', async () => {
+  test('V12 の④: 設定 →「保存とバックアップ」で間隔と世代数を変えると、世代数が保存に効き、再起動しても残る', { annotation: FRESH_LAUNCH }, async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-8d-settings-'));
     const target = join(workDir, 'gens.gimoza');
     try {

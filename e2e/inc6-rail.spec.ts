@@ -26,6 +26,7 @@ import {
   railMarkPositions,
   railView,
 } from './helpers';
+import { FRESH_LAUNCH } from './shared-launch';
 
 /** 窓の大きさを変えて、レイアウトが落ち着くまで待つ。 */
 async function resizeWindow(page: Page, width: number, height: number): Promise<void> {
@@ -586,7 +587,7 @@ test.describe('増分 6 — 初回起動のガイド（FR-118 / 設計書 §H.3�
     }
   });
 
-  test('「今後表示しない」は次の起動でも効く（アプリ側に覚える＝決定 (2)）', async () => {
+  test('「今後表示しない」は次の起動でも効く（アプリ側に覚える＝決定 (2)）', { annotation: FRESH_LAUNCH }, async () => {
     // 旧版はプロジェクトの設定にしか書いていなかったので、**押しても次の起動でまた出た**
     // （起動直後は新規プロジェクトなので、押した印の行き先が無い）。
     const first = await launchApp({ keepFirstRunGuide: true });

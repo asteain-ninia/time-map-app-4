@@ -10,8 +10,9 @@
 import { test, expect } from '@playwright/test';
 
 import { launchApp } from './helpers';
+import { FRESH_LAUNCH } from './shared-launch';
 
-test.describe('起動 — composition root boots end-to-end (FR-111)', () => {
+test.describe('起動 — composition root boots end-to-end (FR-111)', { annotation: FRESH_LAUNCH }, () => {
   test('the built app launches and the AppShell layout mounts', async () => {
     const { app, page } = await launchApp();
     try {
