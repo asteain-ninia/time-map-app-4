@@ -65,9 +65,8 @@ function boxRing([w, s, e, n]: Box): GeoRing {
 }
 
 /**
- * 東西の辺を `step` 度ごとに刻み、0.5 度ずつ波打たせた枠。保存形式は 1 辺で経度 180 度以上を
- * 渡れない（技術方針 §6.8）。まっすぐに刻むと集合演算が同じ線上の点を消して長い辺に戻すので
- * （別の不具合。現状.md の B105）、波打たせて幅の広い形を確かめられるようにしている。
+ * 東西の辺を `step` 度ごとに刻み、0.5 度ずつ波打たせた枠。まっすぐな幅広の帯の場合は
+ * `direct-domain.long-edge.test.ts` が見る（B105）。
  */
 function wavyBoxRing([w, s, e, n]: Box, step: number): GeoRing {
   const south: WorldCoordinate[] = [];

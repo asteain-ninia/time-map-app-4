@@ -147,3 +147,8 @@ paths:
 - 正しい道: 畳む（代表区間 [-180, 180) へ折る）のは保存する頂点の座標だけにする。包含・面積・重なりは、集合演算の出力のままの連続の座標か、`alignMultiPolygon` で揃えた座標で見る。
 - 誤った道の兆候: `rewrapRing`／`normalizeCoordinate` のあとの座標を `ringStrictlyContains`／`pointInPolygon`／`intersection`／面積に渡す。継ぎ目を「またぐ」形だけ検査している（経度がちょうど 180 に「接する」だけの形で起きる。`area-544` は経度 123.98〜180）。`resolveLeafShape` の出力をそのまま判定に渡す（同じ折り返しが入っている。E2E の観測 `leafReport` がこれで湖の点を読み違えていた）。
 - 確かめ方: 同じ形を経度をずらして、東の端がちょうど 180・西の端がちょうど -180・内側の輪の辺が 180 に乗る位置を必ず混ぜ、輪の階層と面積が変わらないことを見る。面積は連続の座標で測る（畳んだまま測ると壊れた輪を測る）。`src/domain/promotion/direct-domain.seam.test.ts`、`src/ui/e2e/leaf-report.test.ts`、`e2e/b90-seam-lake.spec.ts`。
+
+### 5.108 輪を 1 本ずつ揃えると片の中で周が割れる ―― 周は片で決め、代表は経度の範囲の中央にする
+- 正しい道: 整列は片（外周と穴の組）の単位で行い、片の周は外周で決めて、穴は外周の範囲の中へ置く（`geo/seam.ts` の `alignMultiPolygon`）。周を決める代表の経度は範囲の中央（`ringLonExtentCenter`）にする。集合演算の出力は 1 つの連続の枠なので、組み立てのときに寄せ直さない。集合演算の出力に経度 180 度以上の辺が残ったら、次の整列や保存へ渡す前に点を打つ（`geo/long-edge.ts`）。
+- 誤った道の兆候: `poly.map((ring) => unwrapRing(ring))` のような輪ごとの展開。「外周と同じずらし量を穴に掛ける」だけの直し（外周と穴は保存の時点で別の周に居ることがあるので、ずらす前の位置を揃えないと直らない）。頂点の平均を代表にする（頂点の密な側へ偏る）。穴が消えても面積の足し算を確かめず、領土と穴の数も見ない検査。基準からわざと 180 度前後へ置く形を入れない検査（`area-544` は単独で正しく、遠い面と結合したときだけ穴が消えた）。
+- 確かめ方: 基準をずらしても穴が外周の範囲の中にある性質（`src/domain/geo/seam.align-piece.test.ts`）、実データの遠い面との結合（`src/domain/merge/proposal.seam.test.ts` は同じ形の合成）、まっすぐな幅広の帯の読み直しの面積（`src/domain/promotion/direct-domain.long-edge.test.ts`、`e2e/b105-wide-reparent.spec.ts`）。
