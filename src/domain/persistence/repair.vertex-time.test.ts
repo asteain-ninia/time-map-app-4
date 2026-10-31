@@ -10,7 +10,7 @@ import { createAnchor, createAnchorSnapshot } from '../anchor';
 import { createAnchorEntry, resolveAt, type AnchorEntry } from '../anchor-series';
 import { createBasicAttributes, createColorInfo } from '../attributes';
 import { createCoordinate } from '../coordinate';
-import { createLeafFeature } from '../feature';
+import { createLeafFeature, createPointFeature } from '../feature';
 import { asAnchorId, asFeatureId, asRingId, asVertexId } from '../ids';
 import { createShape, createTerritoryRing } from '../ring';
 import { timePointYear } from '../time/time-point';
@@ -49,6 +49,36 @@ function entry(
     createAnchor(
       asAnchorId(`a${String(anchorNo)}`),
       createAnchorSnapshot([feature], createVertexStore([...points, ...stray].map(body))),
+    ),
+    timePointYear(start),
+    end === null ? null : timePointYear(end),
+  );
+}
+
+/** 点の地物の錨。`cited` だけを引き、`stray` は頂点の表に残るだけ（どの地物も引かない写し）。 */
+function pointEntry(
+  featureId: string,
+  cited: Pt,
+  start: number,
+  end: number | null = null,
+  stray: readonly Pt[] = [],
+): AnchorEntry {
+  const body = (p: Pt): Vertex => createVertex(asVertexId(p[0]), createCoordinate(p[1], p[2]));
+  anchorNo += 1;
+  return createAnchorEntry(
+    createAnchor(
+      asAnchorId(`a${String(anchorNo)}`),
+      createAnchorSnapshot(
+        [
+          createPointFeature(
+            asFeatureId(featureId),
+            createBasicAttributes(featureId, 0, 0),
+            COLOR,
+            asVertexId(cited[0]),
+          ),
+        ],
+        createVertexStore([cited, ...stray].map(body)),
+      ),
     ),
     timePointYear(start),
     end === null ? null : timePointYear(end),
@@ -219,5 +249,72 @@ describe('B72: 頂点を揃える修復は、食い違っていない年と頂�
     repaired(project);
     expect(project.histories[0]!.series.entries).toHaveLength(1);
     expect(coordAt(project, 'F', 1500, 'a1')).toEqual([10, 0]);
+  });
+
+  // 表に残っているだけの写しは、その錨でその頂点が居たことの記録ではない。
+  it('初めて頂点を引いた錨を「動かした版」と読まず、動かした記録を巻き戻さない', () => {
+    const project = projectOf([
+      // A は 100 年に v を (0,0) から (1,0) へ動かした。
+      history('A', [pointEntry('A', ['v', 0, 0], 0, 100), pointEntry('A', ['v', 1, 0], 100)]),
+      // B は 200 年まで w を引く。表に引かれていない v=(50,0) が残り、200 年に初めて v=(0,0) を引く。
+      history('B', [
+        pointEntry('B', ['w', 30, 0], 0, 200, [['v', 50, 0]]),
+        pointEntry('B', ['v', 0, 0], 200),
+      ]),
+    ]);
+    const out = repaired(project);
+    expect(coordAt(out, 'A', 0, 'v')).toEqual([0, 0]);
+    expect(coordAt(out, 'A', 100, 'v')).toEqual([1, 0]);
+    expect(coordAt(out, 'A', 200, 'v')).toEqual([1, 0]);
+    expect(coordAt(out, 'A', 300, 'v')).toEqual([1, 0]);
+    expect(startsOf(out, 'A')).toEqual([[0, 100], [100, null]]);
+    // 揃えられるのは、動かしていない B の側。
+    expect(coordAt(out, 'B', 200, 'v')).toEqual([1, 0]);
+  });
+
+  it('動かした記録がどちらにも無いとき、表に残っていた写しを「先に居た」根拠にしない', () => {
+    const project = projectOf([
+      // C は 200 年に初めて v を引く。それより前の表の v=(5,5) は引かれていない写し。
+      history('C', [
+        pointEntry('C', ['w', 30, 0], 0, 200, [['v', 5, 5]]),
+        pointEntry('C', ['v', 5, 5], 200),
+      ]),
+      // D は 100 年から v=(6,6) を引いている。実際に先に居たのは D。
+      history('D', [pointEntry('D', ['v', 6, 6], 100)]),
+    ]);
+    const out = repaired(project);
+    expect(coordAt(out, 'D', 100, 'v')).toEqual([6, 6]);
+    expect(coordAt(out, 'D', 200, 'v')).toEqual([6, 6]);
+    expect(coordAt(out, 'C', 200, 'v')).toEqual([6, 6]);
+    expect(startsOf(out, 'D')).toEqual([[100, null]]);
+  });
+
+  it('過去の錨で実際に引いていれば、動かした記録は今までどおり勝つ', () => {
+    const project = projectOf([
+      // E は 0 年から v を引き、200 年に (2,0) へ動かした。
+      history('E', [pointEntry('E', ['v', 0, 0], 0, 200), pointEntry('E', ['v', 2, 0], 200)]),
+      // G は 100 年から動かしていない。
+      history('G', [pointEntry('G', ['v', 0, 0], 100)]),
+    ]);
+    const out = repaired(project);
+    expect(coordAt(out, 'E', 200, 'v')).toEqual([2, 0]);
+    expect(coordAt(out, 'G', 150, 'v')).toEqual([0, 0]);
+    expect(coordAt(out, 'G', 200, 'v')).toEqual([2, 0]);
+  });
+
+  it('引いていない錨を挟むと、その先へ遡って「動かした」と読まない', () => {
+    const project = projectOf([
+      // J は 100 年まで v=(0,0) を引き、200 年までは引かず、200 年に (9,9) で引き直す。
+      history('J', [
+        pointEntry('J', ['v', 0, 0], 0, 100),
+        pointEntry('J', ['w', 30, 0], 100, 200, [['v', 0, 0]]),
+        pointEntry('J', ['v', 9, 9], 200),
+      ]),
+      // K は 50 年から動かしていない。連続して引いている K が先に居た版。
+      history('K', [pointEntry('K', ['v', 0, 0], 50)]),
+    ]);
+    const out = repaired(project);
+    expect(coordAt(out, 'K', 200, 'v')).toEqual([0, 0]);
+    expect(coordAt(out, 'J', 200, 'v')).toEqual([0, 0]);
   });
 });

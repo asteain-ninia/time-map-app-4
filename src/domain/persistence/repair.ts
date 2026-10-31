@@ -587,10 +587,18 @@ interface VertexVersion {
 /**
  * ある版の座標が、その系列でいつから続いているか。`moved` は、同じ系列の前の錨がこの頂点を
  * 別の座標で持っていた（＝その年に本当に動かした記録である）こと。比較は検出と同じ格子。
+ *
+ * **過去の錨でも、地物がこの頂点を引いているかを確かめる。** 引いていない錨の表に残っている体は、
+ * そこに頂点が居た記録ではない。それを「前の座標」と読むと、初めて頂点を引いた錨が「動かした版」に
+ * なり、ほかの系列が本当に動かした座標を巻き戻す（読み込み時の修復は取り消せない）。だから引いて
+ * いない錨は体が無い錨と同じに扱い、そこで打ち切る。その先まで遡って探すと、引いていない期間を
+ * またいで別の誤判定になる。今の版そのものが引かれていないとき（どの地物も引かず、紛れ込みの写しが
+ * 競う）は、表の中の比較しか材料が無いので従来どおり表で見る。
  */
 function versionRecord(
   version: VertexVersion,
   calendar: Calendar,
+  citedIn: (entry: AnchorEntry) => ReadonlySet<VertexId>,
 ): { readonly since: TimePoint; readonly moved: boolean } {
   const earlier = version.history.series.entries
     .filter((e) => compare(e.start, version.entry.start, calendar) < 0)
@@ -599,6 +607,7 @@ function versionRecord(
   for (const e of earlier) {
     const body = getVertex(e.anchor.snapshot.vertices, version.body.id);
     if (body === undefined) return { since, moved: false };
+    if (version.cited && !citedIn(e).has(version.body.id)) return { since, moved: false };
     if (!quantizedEqual(body.coordinate, version.body.coordinate)) return { since, moved: true };
     since = e.start;
   }
@@ -615,12 +624,16 @@ function versionRecord(
  *    持っていることがある。同じ注記の「隣が 1500 年から現れる」形）。
  * 4. それでも同じなら検出の走査順で先のもの。
  */
-function canonicalVersion(versions: readonly VertexVersion[], calendar: Calendar): VertexVersion {
+function canonicalVersion(
+  versions: readonly VertexVersion[],
+  calendar: Calendar,
+  citedIn: (entry: AnchorEntry) => ReadonlySet<VertexId>,
+): VertexVersion {
   const pool = versions.some((v) => v.cited) ? versions.filter((v) => v.cited) : versions;
   let best = pool[0]!;
-  let bestRecord = versionRecord(best, calendar);
+  let bestRecord = versionRecord(best, calendar, citedIn);
   for (const candidate of pool.slice(1)) {
-    const record = versionRecord(candidate, calendar);
+    const record = versionRecord(candidate, calendar, citedIn);
     const order = compare(record.since, bestRecord.since, calendar);
     const better =
       record.moved !== bestRecord.moved
@@ -703,7 +716,7 @@ function reconcileVertexCoordinates(project: DomainProject, calendar: Calendar):
     for (const versions of versionsById.values()) {
       const first = versions[0]!.body.coordinate;
       if (versions.every((v) => quantizedEqual(first, v.body.coordinate))) continue; // 検出と同じ判定。
-      const canonical = canonicalVersion(versions, calendar).body;
+      const canonical = canonicalVersion(versions, calendar, citedIn).body;
       for (const v of versions) {
         if (coordinatesEqual(v.body.coordinate, canonical.coordinate)) continue;
         rewritesAt.get(v.entry)!.set(v.body.id, canonical.coordinate);
