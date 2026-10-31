@@ -437,8 +437,14 @@ test.describe('BUGHUNT R2 — conflict flow / zoom-limit / save-load / undo連�
         const TIGHT_MIN = 0.5;
         const TIGHT_MAX = 4;
         if ((await useMin.count()) > 0 && (await useMax.count()) > 0) {
-          await useMin.fill(String(TIGHT_MIN)).catch(() => undefined);
-          await useMax.fill(String(TIGHT_MAX)).catch(() => undefined);
+          // 無効の欄へ fill すると、押せるようになるのを 30 秒待ってから握りつぶすだけになる
+          // （1 本で 60 秒失っていた）。押せるときだけ入れる（§5.100）。
+          if (await useMin.isEnabled().catch(() => false)) {
+            await useMin.fill(String(TIGHT_MIN)).catch(() => undefined);
+          }
+          if (await useMax.isEnabled().catch(() => false)) {
+            await useMax.fill(String(TIGHT_MAX)).catch(() => undefined);
+          }
           await shot(page, 'settings-zoom-edited');
           await page.getByTestId('settings-save').click();
           await page.waitForTimeout(200);
