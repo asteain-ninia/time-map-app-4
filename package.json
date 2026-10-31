@@ -18,6 +18,7 @@
     "smoke": "node scripts/smoke-launch.mjs",
     "e2e": "playwright test --project=main",
     "e2e:explore": "playwright test --project=explore",
+    "e2e:shared": "node scripts/e2e-shared.mjs",
     "e2e:tour": "playwright test --project=tour --workers=1",
     "ui-text:catalog": "vite-node scripts/ui-text-catalog-cli.ts",
     "ui-text:tour-match": "vite-node scripts/ui-text-tour-match-cli.ts",
