@@ -243,4 +243,9 @@ paths:
 ### 5.104 詳細度 0 の土台に「押されている」の白い文字を置くと、自分で背景を消した部品だけ文字が消える
 - 正しい道: 土台（`:where(button[aria-pressed='true'])`）は色の組（文字と背景）を一緒に決める。部品の側で背景を書くなら、文字の色も必ず書く（`.conflict-row__select`、`.knife-choice`）。折り返しや幅も同じで、土台の `nowrap` は中身で幅が決まる板（`DraggablePanel`）を窓の外へ押し広げるので、窓の小さい方でも見る。
 - 誤った道の兆候: 重なりの行を押すと文字が消える（背景は `none`、文字は土台の白）。画面に居ない局面の部品（分割の継承先の選択）は巡回にも写らない。`aria-pressed` を持つ部品を列挙せずに土台を入れる。
-- 確かめ方: `e2e/inc8e-visual-unity.spec.ts` の「白い背景に白い文字」。`aria-pressed` を Grep して、背景を書いて文字を書いていないクラスを探す。
+- 確かめ方: `e2e/helpers.ts` の `controlProblems`（文字と実際の背景のコントラスト比）と、`src/ui/shell/visual-unity.test.ts`「押された・選ばれた状態で地を変えるなら、文字の色も一緒に書く」。
+
+### 5.106 無効の見え方を土台の `opacity` で作ると、部品の無効の色に重なって読めなくなる
+- 正しい道: 無効は色の組（文字・地・枠）で 1 か所に決め、`opacity` を使わない。部品の色に勝つ詳細度を持たせ（`html button:disabled`）、部品の側は地を透明にする行だけ書く。押されたまま無効は文字の色まで土台で書く（`.toolbar button[aria-pressed='true']` の白が残ると比 1.2）。
+- 誤った道の兆候: `:where(button:disabled) { opacity: 0.5 }`（部品の無効の色と掛け算になり、起動直後の道具のレールが比 2.0）。計算済みの色だけを見る検査（`opacity` は `color` に出ない）。写真で「薄い」と感じたのに基準画像へ撮り直す。
+- 確かめ方: `e2e/helpers.ts` の `readControlMetrics`（地の透明度と祖先の `opacity` を重ねた比）と `readControlMetricsAllDisabled`（全部を無効にして測る）、`src/ui/shell/visual-unity.test.ts`「部品の無効の規則は、地を透明にするだけ」。
