@@ -142,3 +142,8 @@ paths:
 - 正しい道: 付け替え（吸着の共有・分割の継ぎ目）は提案の地物の写しで終わらせず、同じ id を引く全履歴へ掛ける（`src/domain/editing/apply-proposal.ts` の `resolveShareLanding`、`applyVertexRemapToHistories`、`carryShareIntoLaterAnchors`）。行き先の座標は相手の確定済みの体を正とし、提案の座標を相手の id の体にしない。同じ輪が両方を引くなら断る（FR-32）。
 - 誤った道の兆候: 「掴んだ頂点は吸着先の上に乗っているはず」を前提に、離した場所の座標を吸着先の id の体として写す（単一の頂点のドラッグの提案は乗っていない）。頂点の体だけを隣へ配って id を配らない。重なりの板に共有していた 2 面の組が出る。同じ id の体が履歴の間で食い違うと、`verticesAt` の後勝ちが履歴の順で結果を変えるので、順によっては緑に見える（実データの E2E はこれで通っていた）。
 - 確かめ方: 3 面（掴む面・共有する隣・吸着先）で、離した場所を吸着先からずらして確定し、隣も同じ id を引くことと、吸着先の体が全履歴で同じことを見る。吸着先の履歴を前に置く形も入れる。`src/domain/editing/apply-proposal.share-landing.test.ts`、`e2e/inc8e-drag-conflict.spec.ts`（B100）。
+
+### 5.107 保存のために畳んだ座標で、幾何を判定しない ―― 経度 180 の頂点は -180 になり、輪が世界を一周する
+- 正しい道: 畳む（代表区間 [-180, 180) へ折る）のは保存する頂点の座標だけにする。包含・面積・重なりは、集合演算の出力のままの連続の座標か、`alignMultiPolygon` で揃えた座標で見る。
+- 誤った道の兆候: `rewrapRing`／`normalizeCoordinate` のあとの座標を `ringStrictlyContains`／`pointInPolygon`／`intersection`／面積に渡す。継ぎ目を「またぐ」形だけ検査している（経度がちょうど 180 に「接する」だけの形で起きる。`area-544` は経度 123.98〜180）。`resolveLeafShape` の出力をそのまま判定に渡す（同じ折り返しが入っている。E2E の観測 `leafReport` がこれで湖の点を読み違えていた）。
+- 確かめ方: 同じ形を経度をずらして、東の端がちょうど 180・西の端がちょうど -180・内側の輪の辺が 180 に乗る位置を必ず混ぜ、輪の階層と面積が変わらないことを見る。面積は連続の座標で測る（畳んだまま測ると壊れた輪を測る）。`src/domain/promotion/direct-domain.seam.test.ts`、`src/ui/e2e/leaf-report.test.ts`、`e2e/b90-seam-lake.spec.ts`。
