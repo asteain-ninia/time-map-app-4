@@ -24,7 +24,7 @@ import {
   moveFeatureVertices,
 } from '../../domain/editing/move';
 import { addVertexToLeafRing, addVertexToLine } from '../../domain/editing/edit-ops';
-import { createVertex } from '../../domain/vertex';
+import { createVertex, withVertexCoordinate, type Vertex } from '../../domain/vertex';
 import {
   buildSnapshot,
   decideSharePairAtRelease,
@@ -41,6 +41,28 @@ import type { RingId, VertexId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
 import type { TimePoint } from '../../domain/time/time-point';
 import { featureByIdAt, verticesAt } from '../live-lookup';
+
+/**
+ * 保存する頂点の体の経度を [-180, 180) へ畳む（B80・B113）。頂点のドラッグ・面の移動・辺への追加は
+ * 全部ここを通す。
+ *
+ * ドラッグの座標は連続の経度で、継ぎ目を越えれば 181° や 184° になり、±360° の複製の上なら 538° にも
+ * なる。**確定の関門は押した所の巻きで移動量を見る**ので、`session.preview` と `buildMovingRings` は
+ * 畳まない（畳むと「半周以上」の誤判定が戻る）。畳むのは保存する体だけである。輪は隣り合う頂点を最短の
+ * 向きでつなぐので、畳んでも形は変わらない。
+ *
+ * 範囲の中の座標は畳む計算を通さない。足して引くと小数の端数が変わり、吸着先の座標とビットで揃わなくなる。
+ */
+function storedBody(vertex: Vertex): Vertex {
+  const { lon } = vertex.coordinate;
+  if (lon >= -180 && lon < 180) return vertex;
+  return withVertexCoordinate(vertex, normalizeCoordinate(vertex.coordinate));
+}
+
+/** 確定する提案の材料を組み立てる。頂点の体はここで保存の形に畳む（{@link storedBody}）。 */
+function storedSnapshot(input: Parameters<typeof buildSnapshot>[0]): FeatureSnapshot {
+  return buildSnapshot({ ...input, vertices: input.vertices.map(storedBody) });
+}
 
 /** The live domain context the snapshot is built against (read fresh per release). */
 export interface EditSnapshotContext {
@@ -93,13 +115,13 @@ export function buildEditSnapshot(
     // The share pair names the PRIMARY only — companions never snap (see the adapter's
     // applyMove), so a multi-vertex drag can share at most the grabbed vertex.
     const sharePair = decideSharePairAtRelease(session);
-    return buildSnapshot({ feature, vertices: moved, sharePair });
+    return storedSnapshot({ feature, vertices: moved, sharePair });
   }
 
   if (session.target.tool === EDIT_TOOL.FeatureMove) {
     const delta = dragDelta(session);
     const moved = moveFeatureVertices(feature, store, { dLon: delta.dLon, dLat: delta.dLat });
-    return buildSnapshot({ feature, vertices: moved });
+    return storedSnapshot({ feature, vertices: moved });
   }
 
   if (session.target.tool === EDIT_TOOL.EdgeAdd) {
@@ -113,15 +135,7 @@ export function buildEditSnapshot(
     // yields undefined → an EMPTY snapshot (片落とし禁止 — no half insert, 教訓 5.18); a
     // point has no edge at all.
     const { startVertexId, endVertexId, newVertexId } = session.target;
-    // 経度は **畳んで保存する**（B80）。`session.preview` は押した所の巻きのまま（±360° の複製の
-    // 上なら 538° など）で、確定の関門はこの巻きで移動量を見るので preview は変えない。輪は隣り合う
-    // 頂点の最短の向きでつなぐので、畳んでも形は変わらない。範囲の中の座標は畳む計算を通さない
-    // （足して引くと小数の端数が変わる）。
-    const inRange = session.preview.lon >= -180 && session.preview.lon < 180;
-    const newVertex = createVertex(
-      newVertexId,
-      inRange ? session.preview : normalizeCoordinate(session.preview),
-    );
+    const newVertex = createVertex(newVertexId, session.preview);
     let result;
     if (feature.kind === FEATURE_KIND.Line) {
       result = addVertexToLine(feature, startVertexId, endVertexId, newVertexId);
@@ -142,7 +156,7 @@ export function buildEditSnapshot(
     // 増分 8A の手直し（反証 重 2）: 足した辺を隣と共有していれば、隣の輪にも同じ頂点を
     // 入れる（`applyEditProposal` が行う）。そのための「どの辺に何を足したか」を渡す。
     // クリックで足す（N-06）ときもドラッグで足す（FR-87）ときも同じ 1 本を通る。
-    return buildSnapshot({
+    return storedSnapshot({
       feature: result.feature,
       vertices: [newVertex],
       sharePair,
