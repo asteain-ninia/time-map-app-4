@@ -50,6 +50,8 @@ export const UI_TEXT_EXEMPT_FILES = [
   'src/**/fixtures.ts',
   'src/**/fixtures-*.ts',
   'src/ui/e2e/**',
+  // 性質テストの共有の生成器（*.arbitraries.ts。検査を割ったときに写したもの。画面の文言ではない）
+  'src/domain/__bughunt__/**',
   // 性能の計測（開発者が読む計測の札と、計測用の作り物のデータ）
   'src/domain/perf/**',
   'src/render/perf/**',
