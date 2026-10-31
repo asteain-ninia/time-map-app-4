@@ -37,6 +37,7 @@ import {
 } from '../../domain/time/time-point';
 import { createVertexStore } from '../../domain/vertex';
 
+import { TOOL_ID } from '../shell/tools';
 import { EDIT_MODE } from '../state/session';
 import { createSessionStore, TIME_CHANGE_SOURCE } from '../state/store';
 
@@ -116,6 +117,7 @@ function makeStore(opts?: { active?: boolean; vertices?: boolean; mode?: 'view' 
     initial: {
       mode: opts?.mode === 'view' ? EDIT_MODE.View : EDIT_MODE.Edit,
       ...(opts?.active ? { activeFeature: fA } : {}),
+      ...(opts?.vertices && opts.mode !== 'view' ? { activeTool: TOOL_ID.EditVertex } : {}),
       ...(opts?.vertices
         ? { vertexSelection: { ownerFeatureId: fA, vertexIds: new Set([vA1]) } }
         : {}),

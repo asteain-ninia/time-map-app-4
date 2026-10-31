@@ -674,33 +674,41 @@ interface SelectionPatch {
   readonly vertexSelection: VertexSelectionContext | null;
 }
 
-/** Build the atomic store patch (truth + derived mirrors) from a SelectionState. */
 /**
  * 道具を持ち替えたあとに残す選択（増分 5c / 設計書 §D.2 の遷移表）。
  *
- * **地物の選択とマークは保つ。頂点の選択は「頂点ハンドルが見えなくなるとき」だけ捨てる。**
- * 頂点は「その道具で掴んでいるもの」なので、別の道具へ移っても掴んだままにすると、
- * 次の操作の対象が画面と食い違う（ナイフを構えているのに頂点が選ばれている、など）。
- *
- * **判定は「直前が『頂点』の道具だったか」ではなく、掴める道具かどうかの変化で行う**
- * （増分 5 の手直し A7 / GPT #9）。頂点と辺のハンドルを掴めるのは「頂点」「動かす」の
- * 2 つで（`toolShowsVertexHandles`。B114 で「選択」を外した）、旧版は `edit.vertex` から出る
- * ときしか捨てていなかった。だから **「動かす」で掴んだ頂点が、ナイフや追加の道具へ
- * 移っても見えないまま残り**、下書きを持たないうちに Delete を押すとその頂点が消えた。
- * ハンドルを出す条件（`toolShowsVertexHandles`）と、頂点の選択を残す条件を **同じ 1 本の
- * 述語**にすれば、「見えていないのに選ばれている」が構造的に起きない（教訓 5.30）。
- *
- * 掴んでいる最中の一時状態（`transient`）は必ず捨てる ―― これは教訓 5.2 が言う
- * 「一時的な UI 状態」そのもので、持ち越すと次の押下が前の掴みの続きになる。
+ * **地物の選択とマークは保つ。** 掴んでいる最中の一時状態（`transient`）は必ず捨てる ――
+ * これは教訓 5.2 が言う「一時的な UI 状態」そのもので、持ち越すと次の押下が前の掴みの続きになる。
+ * 頂点の選択は、ここではなく {@link keepVertexRule} が持ち替え先の道具だけで決める。
  */
-function selectionAcrossToolSwitch(
+function selectionAcrossToolSwitch(selection: SelectionState): SelectionState {
+  return selection.transient === IDLE_TRANSIENT
+    ? selection
+    : { ...selection, transient: IDLE_TRANSIENT };
+}
+
+/**
+ * **印を出さない道具のあいだは、頂点の選択を持たない**（B114 / 教訓 5.111）。店へ書く
+ * すべての `set()` の出口がこれを通るので、呼び出し側の経路に依らず成り立つ。
+ *
+ * 頂点は「その道具で掴んでいるもの」で、印が描かれていないのに選ばれていると、Delete が見えない
+ * 頂点を消し、Escape の階段に外すだけの段が余分に残る。判定は印を描く・掴める条件と同じ 1 本の
+ * 述語（`toolShowsVertexHandles`）を読み、「直前の道具が何だったか」は見ない（教訓 5.6）。
+ * B114 の直後は `setActiveTool` の既定の経路でだけ捨てていて、選択を明示で渡す
+ * `armEditTool`（素性欄の親のボタン・右クリックの「分ける」「所属」）を素通りしていた。
+ *
+ * 道具のコントローラは頂点の選択を読まない（対象は `activeFeature` と印）ので、「分ける」などで
+ * 頂点が落ちても働きは変わらない。頂点の選択が無いときは差分をそのまま返し、参照を作り直さない。
+ */
+function keepVertexRule<T extends Partial<SelectionPatch> & { readonly activeTool?: ToolId | null }>(
   state: { readonly selection: SelectionState; readonly activeTool: ToolId | null },
-  nextTool: ToolId | null,
-): SelectionState {
-  const losingVertexHandles =
-    toolShowsVertexHandles(state.activeTool) && !toolShowsVertexHandles(nextTool);
-  const kept = losingVertexHandles ? withoutVertexSet(state.selection) : state.selection;
-  return kept.transient === IDLE_TRANSIENT ? kept : { ...kept, transient: IDLE_TRANSIENT };
+  patch: T,
+): T | (T & SelectionPatch) {
+  const selection = patch.selection ?? state.selection;
+  if (selection.vertexIds.size === 0 && selection.vertexOwner === null) return patch;
+  const tool = patch.activeTool !== undefined ? patch.activeTool : state.activeTool;
+  if (toolShowsVertexHandles(tool)) return patch;
+  return { ...patch, ...selectionPatch(withoutVertexSet(selection)) };
 }
 
 /**
@@ -743,6 +751,7 @@ function forgetRemovedSurveyPatch(state: {
   return next === state.survey ? {} : { survey: next };
 }
 
+/** Build the atomic store patch (truth + derived mirrors) from a SelectionState. */
 function selectionPatch(selection: SelectionState): SelectionPatch {
   return {
     selection,
@@ -1123,9 +1132,17 @@ export function createSessionStore<S>(
       new Set(init.vertexSelection.vertexIds),
     );
   }
-  const initialPatch = selectionPatch(initialSelection);
+  const initialPatch = selectionPatch(
+    toolShowsVertexHandles(init.activeTool ?? null)
+      ? initialSelection
+      : withoutVertexSet(initialSelection),
+  );
 
-  return createStore<SessionStore<S>>((set, get) => {
+  return createStore<SessionStore<S>>((rawSet, get) => {
+    // **この店の書き込みはすべてここを通る**（頂点の選択の不変条件。{@link keepVertexRule}）。
+    const set = (patch: Partial<SessionStore<S>>): void => {
+      rawSet(keepVertexRule(get(), patch));
+    };
     // Capture the CURRENT (live) domain + settings as the saved / clean baseline.
     // Every clean-establishing path routes through here so the three references can
     // never drift (single capture site, 二重の真実源 を作らない). `domain` is taken
@@ -1660,9 +1677,9 @@ export function createSessionStore<S>(
       const acrossViewOnly = cur === EDIT_MODE.View || patch.mode === EDIT_MODE.View;
       set({
         ...patch,
-        // 鍵の開け閉めでも道具は外れるので、見えなくなる頂点の選択は捨てる（B114）。地物は残す。
+        // 鍵の開け閉めでも道具は外れる（見えなくなる頂点の選択は keepVertexRule が捨てる）。地物は残す。
         ...selectionPatch(
-          acrossViewOnly ? selectionAcrossToolSwitch(get(), null) : EMPTY_SELECTION,
+          acrossViewOnly ? selectionAcrossToolSwitch(get().selection) : EMPTY_SELECTION,
         ),
         // 鍵の切り替え・道具を外すのも持ち替えなので、消した線の覚えを捨てる（増分 8C の手直し）。
         ...forgetRemovedSurveyPatch(get()),
@@ -1686,9 +1703,8 @@ export function createSessionStore<S>(
       // 線引きを直した。道具の下書きは従来どおり全経路で捨てる（各コントローラの
       // `resetForSwitch`）。
       //
-      // **頂点の選択だけは別**（設計書 §D.2 の表）。頂点の道具から出るときに限って
-      // 捨てる ―― 頂点は「その道具で掴んでいるもの」なので、別の道具へ移っても
-      // 掴んだままにすると、次の操作の対象が画面と食い違う。
+      // **頂点の選択だけは別**（設計書 §D.2 の表）。印を出さない道具へ移ると捨てる ――
+      // 選択を明示で渡されたときも同じで、{@link keepVertexRule} が出口で決める。
       //
       // **増分 5b: `mode` は道具から導出する**（設計書 §D.1 / 裁定 1）。画面から
       // モードの 3 ボタンが消えたので、「いま追加モードか編集モードか」を決めるのは
@@ -1709,7 +1725,7 @@ export function createSessionStore<S>(
       set({
         ...patch,
         ...selectionPatch(
-          preserveSelection ?? selectionAcrossToolSwitch(get(), patch.activeTool),
+          preserveSelection ?? selectionAcrossToolSwitch(get().selection),
         ),
         // 道具の持ち替えで、消した測量の線を戻す覚えを捨てる（増分 8C の手直し）。
         ...forgetRemovedSurveyPatch(get()),
@@ -1873,7 +1889,7 @@ export function createSessionStore<S>(
       // atomically with the survey bridge mounting (入力軸の相互排他 — at most one
       // map-covering input layer). Unlike setActiveTool this does NOT clear the
       // selection: survey is a viewing aid, not a tool switch (U37 §2.1).
-      // ただし道具は外れるので、見えなくなる頂点の選択だけは捨てる（B114）。
+      // ただし道具は外れるので、見えなくなる頂点の選択だけは keepVertexRule が捨てる（B114）。
       //
       // **`mode` も一緒に書く**（増分 5 の手直し A5）。道具の欄を書くのに `mode` の
       // 導出を書き忘れると、面を描いている最中に測量を入り切りしたとき「画面は選ぶ、
@@ -1881,7 +1897,7 @@ export function createSessionStore<S>(
       set({
         survey: enableSurveyMode(get().survey),
         ...toolPatch(get(), null),
-        ...selectionPatch(selectionAcrossToolSwitch(get(), null)),
+        ...selectionPatch(selectionAcrossToolSwitch(get().selection)),
       });
     },
 

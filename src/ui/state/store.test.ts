@@ -28,7 +28,7 @@ import {
   KIND_LABEL_TOGGLE,
   LEDGER_MODE,
 } from '../discovery/index';
-import { EMPTY_HIT, IDLE_TRANSIENT } from '../../domain/selection';
+import { EMPTY_HIT, IDLE_TRANSIENT, replaceVertices } from '../../domain/selection';
 // A5 の結合検査で「その mode だと地図の左クリックがどこへ行くか」まで見るため、
 // U40 の行き先の決定（同じ 1 本）を引く。行き先を自前で書き写すと二重の真実源になる。
 import { DISPATCH_TARGET, POINTER_BUTTON, decideDispatch } from '../map/dispatch';
@@ -59,6 +59,9 @@ function resolverWith(
     vertexExistsAt: (_fid, vid) => presentVertices.has(vid),
   };
 }
+
+/** 頂点を選んでいられるのは「頂点」「動かす」の道具のあいだだけ（B114）。 */
+const VERTEX_TOOL = { mode: EDIT_MODE.Edit, activeTool: TOOL_ID.EditVertex } as const;
 
 function makeStore(
   existence?: ExistenceResolver,
@@ -174,6 +177,7 @@ describe('受け入れ基準 2: domain bridge via subscribe', () => {
   it('re-resolves selection from a command result (NOT a blanket clear, 教訓 5.11)', () => {
     const store = makeStore(undefined, {
       activeFeature: f('A'),
+      ...VERTEX_TOOL,
       vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1'), v('v2')]) },
     });
 
@@ -202,6 +206,7 @@ describe('受け入れ基準 2: domain bridge via subscribe', () => {
 
   it('resolves the vertex context away when its owner feature is deleted', () => {
     const store = makeStore(undefined, {
+      ...VERTEX_TOOL,
       vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1')]) },
     });
     const result = createCommandResult({ deleted: [f('A')] });
@@ -229,7 +234,7 @@ describe('受け入れ基準 2: domain bridge via subscribe', () => {
   });
 
   it('promotes a preferred created vertex set (教訓 5.11), keying off created/touched', () => {
-    const store = makeStore(undefined, { activeFeature: null });
+    const store = makeStore(undefined, { ...VERTEX_TOOL, activeFeature: null });
     // A split creates new vertices nv1/nv2 on the surviving feature S.
     const result = createCommandResult({
       survived: [f('S')],
@@ -253,6 +258,7 @@ describe('受け入れ基準 2: domain bridge via subscribe', () => {
   it('a survive vertex-delete leaves a ghost vertex id that the explicit clear must drop (HOLE-1)', () => {
     const store = makeStore(undefined, {
       activeFeature: f('A'),
+      ...VERTEX_TOOL,
       vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('gone')]) },
     });
     // The delete SURVIVED the feature A; the vertex id is deleted at the geometry level
@@ -277,6 +283,7 @@ describe('受け入れ基準 2: domain bridge via subscribe', () => {
   it('keeps the stored SelectionState in lockstep with the derived mirrors (single truth)', () => {
     const store = makeStore(undefined, {
       activeFeature: f('A'),
+      ...VERTEX_TOOL,
       vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1'), v('v2')]) },
     });
     const s = store.getState();
@@ -319,6 +326,7 @@ describe('受け入れ基準 2: domain bridge via subscribe', () => {
     // selection must be re-validated away (anchor-level), not left as a ghost.
     const existence = resolverWith(new Set<string>(), new Set<string>());
     const store = makeStore(existence, {
+      ...VERTEX_TOOL,
       vertexSelection: { ownerFeatureId: f('B'), vertexIds: new Set([v('v1')]) },
     });
     const result = createCommandResult({ survived: [f('B')] });
@@ -332,7 +340,7 @@ describe('受け入れ基準 2: domain bridge via subscribe', () => {
     // NOT be dropped by the anchor-level re-validation. revalidateForTime keeps what
     // is present, so the promoted feature + its vertex set survive.
     const existence = resolverWith(new Set(['M']), new Set(['nv1', 'nv2']));
-    const store = makeStore(existence, { activeFeature: null });
+    const store = makeStore(existence, { ...VERTEX_TOOL, activeFeature: null });
     const result = createCommandResult({
       deleted: [f('A'), f('B')],
       created: [f('M'), v('nv1'), v('nv2')],
@@ -399,6 +407,7 @@ describe('受け入れ基準 3: time-change re-validation', () => {
     // owner A present; only v1 present at the new time, v2 gone.
     const existence = resolverWith(new Set(['A']), new Set(['v1']));
     const store = makeStore(existence, {
+      ...VERTEX_TOOL,
       vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1'), v('v2')]) },
     });
 
@@ -409,6 +418,7 @@ describe('受け入れ基準 3: time-change re-validation', () => {
 
     // Now move to a time where no vertex exists -> context resolved away.
     const store2 = makeStore(resolverWith(new Set(['A']), new Set<string>()), {
+      ...VERTEX_TOOL,
       vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1')]) },
     });
     store2.getState().setCurrentTime(timePointYear(100), TIME_CHANGE_SOURCE.Playback);
@@ -969,6 +979,7 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
     it('drops a ghost vertex selection whose owner is absent at the current time after an undo/redo', () => {
       const existence = resolverWith(new Set<string>(), new Set<string>());
       const store = makeStore(existence, {
+        ...VERTEX_TOOL,
         vertexSelection: { ownerFeatureId: f('B'), vertexIds: new Set([v('v1')]) },
       });
       const result = createCommandResult({ survived: [f('B')] });
@@ -984,7 +995,7 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
         initialDomain: { tag: 'd0' },
         domainEquals: (a, b) => a.tag === b.tag,
         existence,
-        initial: { activeFeature: null },
+        initial: { ...VERTEX_TOOL, activeFeature: null },
       });
       const result = createCommandResult({
         deleted: [f('A')],
@@ -1552,13 +1563,13 @@ describe('mode/tool switch discards transient selection (教訓 5.2)', () => {
 
 describe('vertex selection update rules (FR-80 / FR-81)', () => {
   it('replace sets the whole selection set', () => {
-    const store = makeStore();
+    const store = makeStore(undefined, VERTEX_TOOL);
     store.getState().replaceVertexSelection(f('A'), [v('v1'), v('v2')]);
     expect([...store.getState().vertexSelection!.vertexIds]).toEqual([v('v1'), v('v2')]);
   });
 
   it('toggle adds then removes a vertex; emptying resolves the context away', () => {
-    const store = makeStore();
+    const store = makeStore(undefined, VERTEX_TOOL);
     store.getState().toggleVertexSelection(f('A'), v('v1'));
     expect([...store.getState().vertexSelection!.vertexIds]).toEqual([v('v1')]);
     store.getState().toggleVertexSelection(f('A'), v('v1'));
@@ -1566,14 +1577,14 @@ describe('vertex selection update rules (FR-80 / FR-81)', () => {
   });
 
   it('add merges vertices into an existing same-owner context', () => {
-    const store = makeStore();
+    const store = makeStore(undefined, VERTEX_TOOL);
     store.getState().replaceVertexSelection(f('A'), [v('v1')]);
     store.getState().addVerticesToSelection(f('A'), [v('v2'), v('v3')]);
     expect([...store.getState().vertexSelection!.vertexIds]).toEqual([v('v1'), v('v2'), v('v3')]);
   });
 
   it('switching owner starts a fresh context (FR-81: one owner)', () => {
-    const store = makeStore();
+    const store = makeStore(undefined, VERTEX_TOOL);
     store.getState().replaceVertexSelection(f('A'), [v('v1')]);
     store.getState().toggleVertexSelection(f('B'), v('v9'));
     const vs = store.getState().vertexSelection!;
@@ -1601,6 +1612,7 @@ describe('setActiveFeature selection hygiene (第10波 #2)', () => {
   it('clears a DIFFERENT owner\'s vertex selection when a new feature becomes active', () => {
     // A vertex of feature B is selected; the user then picks feature A from a panel.
     const store = makeStore(undefined, {
+      ...VERTEX_TOOL,
       vertexSelection: { ownerFeatureId: f('B'), vertexIds: new Set([v('v1')]) },
     });
     expect(store.getState().vertexSelection).not.toBeNull(); // B's vertex is selected.
@@ -1620,6 +1632,7 @@ describe('setActiveFeature selection hygiene (第10波 #2)', () => {
     // A must not wipe the live vertex selection (activeFeature === vertexOwner).
     const store = makeStore(undefined, {
       activeFeature: f('A'),
+      ...VERTEX_TOOL,
       vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1'), v('v2')]) },
     });
 
@@ -1636,6 +1649,7 @@ describe('setActiveFeature selection hygiene (第10波 #2)', () => {
     // STILL drop B's vertex selection — the guard keys off the vertex OWNER, not the
     // previous activeFeature (a食い違い activeFeature=A / vertexOwner=B must be healed).
     const store = makeStore(undefined, {
+      ...VERTEX_TOOL,
       activeFeature: f('A'),
     });
     // Force the食い違い: replace vertices under B (leaves activeFeature = A) …
@@ -1653,6 +1667,7 @@ describe('setActiveFeature selection hygiene (第10波 #2)', () => {
 
   it('clears a stale vertex selection when setting active feature to null', () => {
     const store = makeStore(undefined, {
+      ...VERTEX_TOOL,
       vertexSelection: { ownerFeatureId: f('B'), vertexIds: new Set([v('v1')]) },
     });
     store.getState().setActiveFeature(null);
@@ -1775,6 +1790,7 @@ describe('display control — independent axis (FR-42 非干渉, U34)', () => {
         // Start at a NON-default depth so the tests' setGlobalDepth(0) is an actual
         // change (the default is already globalDepth 0 → a no-op that would skip the heal).
         displayControl: { globalDepth: 5, focus: { originId: null, depth: 0, emphasize: false } },
+        ...VERTEX_TOOL,
         vertexSelection: { ownerFeatureId: f(owner), vertexIds: new Set(vertexIds.map(v)) },
         ...(activeFeature ? { activeFeature: f(activeFeature) } : {}),
       },
@@ -1885,6 +1901,7 @@ describe('display control — independent axis (FR-42 非干渉, U34)', () => {
       grabbability: displayOwners({ v0: 'A' }, ['A']),
       initial: {
         displayControl: { globalDepth: 1, focus: { originId: f('A'), depth: 2, emphasize: true } },
+        ...VERTEX_TOOL,
         vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v0')]) },
       },
     });
@@ -1923,6 +1940,7 @@ describe('display control — independent axis (FR-42 非干渉, U34)', () => {
       grabbability: timeKeyed,
       initial: {
         currentTime: t1,
+        ...VERTEX_TOOL,
         vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v0')]) },
       },
     });
@@ -1951,6 +1969,7 @@ describe('display control — independent axis (FR-42 非干渉, U34)', () => {
         initialDomain: { tag: 'd0' },
         grabbability: domainKeyed,
         initial: {
+          ...VERTEX_TOOL,
           vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v0')]) },
         },
       });
@@ -1984,6 +2003,7 @@ describe('display control — independent axis (FR-42 非干渉, U34)', () => {
       grabbability: timeKeyed,
       initial: {
         currentTime: t1,
+        ...VERTEX_TOOL,
         vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v0')]) },
       },
     });
@@ -2790,17 +2810,92 @@ describe('A7: 頂点の選択が落ちるのは「掴める道具から出ると
     }
   });
 
-  it('掴めない道具から出るときは落ちない（見えていなかったものは、もう落ちている）', () => {
-    // 掴めない道具の間では頂点の選択はそもそも起きないが、外から書き戻された場合に
-    // 二重に捨てないことを固定する（判定が「次の道具だけ」を見る形へ崩れたら落ちる）。
-    for (const to of ALL_TOOLS) {
-      const store = withGrabbedVertex(TOOL_ID.EditKnife);
-      store.getState().setActiveTool(to);
-      expect({ to, size: store.getState().vertexSelection?.vertexIds.size }).toEqual({
-        to,
-        size: 1,
-      });
+  it('印を出さない道具のあいだは、頂点の選択を持たない（全部の道具 × 明示の選択あり・なし）', () => {
+    // 道具のコントローラが選択を渡してくる経路（`armEditTool`・構え直し）も同じ。呼び出し側の
+    // 経路に依らず、持ち替えたあとの道具だけで決まる（B114 の検証で見つけた抜け道）。
+    for (const from of [...GRABBING, null]) {
+      for (const to of ALL_TOOLS) {
+        for (const explicit of [false, true]) {
+          const store = withGrabbedVertex(TOOL_ID.EditVertex);
+          const grabbed = store.getState().selection;
+          store.getState().setActiveTool(from);
+          if (explicit) store.getState().setActiveTool(to, grabbed);
+          else store.getState().setActiveTool(to);
+          const s = store.getState();
+          const expectedSize = !toolShowsVertexHandles(to)
+            ? 0
+            : explicit || from !== null
+              ? 1
+              : 0;
+          expect({
+            from,
+            to,
+            explicit,
+            size: s.selection.vertexIds.size,
+            owner: s.selection.vertexOwner,
+            mirror: s.vertexSelection?.vertexIds.size ?? 0,
+            active: s.activeFeature,
+          }).toEqual({
+            from,
+            to,
+            explicit,
+            size: expectedSize,
+            owner: expectedSize > 0 ? f('A') : null,
+            mirror: expectedSize,
+            active: f('A'),
+          });
+        }
+      }
     }
+  });
+
+  it('頂点を書く口は、印を出さない道具のあいだは効かない（経路が増えても破れない）', () => {
+    for (const tool of ALL_TOOLS) {
+      const writes: readonly ((s: ReturnType<typeof makeStore>) => void)[] = [
+        (s) => s.getState().replaceVertexSelection(f('A'), [v('v1')]),
+        (s) => s.getState().toggleVertexSelection(f('A'), v('v1')),
+        (s) => s.getState().addVerticesToSelection(f('A'), [v('v1')]),
+        (s) =>
+          s
+            .getState()
+            .restoreSelection(replaceVertices(s.getState().selection, f('A'), new Set([v('v1')]))),
+      ];
+      for (const write of writes) {
+        const store = makeStore(undefined, { mode: EDIT_MODE.Edit, activeTool: tool });
+        write(store);
+        expect({ tool, size: store.getState().selection.vertexIds.size }).toEqual({
+          tool,
+          size: toolShowsVertexHandles(tool) ? 1 : 0,
+        });
+      }
+    }
+  });
+
+  it('頂点の選択が無ければ、持ち替えで選択の参照を作り直さない（無駄な描き直しを出さない）', () => {
+    const store = makeStore(undefined, {
+      mode: EDIT_MODE.Edit,
+      activeTool: TOOL_ID.EditSelect,
+      activeFeature: f('A'),
+    });
+    const before = store.getState().selection;
+    store.getState().setActiveTool(TOOL_ID.EditKnife);
+    expect(store.getState().selection).toBe(before);
+  });
+
+  it('構え直し（null を挟む）は「頂点」の道具の頂点の選択を戻す。印を付けての所属変更は印を残す', () => {
+    const store = withGrabbedVertex(TOOL_ID.EditVertex);
+    const retained = store.getState().selection;
+    store.getState().setActiveTool(null, retained);
+    expect(store.getState().vertexSelection).toBeNull();
+    expect(store.getState().activeFeature).toBe(f('A'));
+    store.getState().setActiveTool(TOOL_ID.EditVertex, retained);
+    expect(store.getState().vertexSelection?.vertexIds.size).toBe(1);
+
+    const marked = withGrabbedVertex(TOOL_ID.EditVertex);
+    marked.getState().setFeatureMarks([f('A')]);
+    marked.getState().setActiveTool(TOOL_ID.EditReparent, marked.getState().selection);
+    expect(marked.getState().vertexSelection).toBeNull();
+    expect(marked.getState().ledger.marked.size).toBe(1);
   });
 
   it('地物の選択は、どの持ち替えでも残る（落ちるのは頂点だけ）', () => {

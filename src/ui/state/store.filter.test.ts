@@ -13,6 +13,8 @@ import { createCommandResult } from '../../domain/command/result';
 import { asFeatureId, asVertexId, type FeatureId, type VertexId } from '../../domain/ids';
 import { DEFAULT_FILTER_STATE, FEATURE_KIND_AXIS } from '../discovery/index';
 
+import { TOOL_ID } from '../shell/tools';
+import { EDIT_MODE } from './session';
 import { createSessionStore } from './store';
 
 interface TestDomain {
@@ -255,7 +257,11 @@ describe('表示条件を変えても選択は外さない（B55 の裁定 / 設
   it('隠しても、その地物の頂点の選択は残る', () => {
     const store = createSessionStore<TestDomain>({
       initialDomain: { tag: 'd0' },
-      initial: { vertexSelection: { ownerFeatureId: f('B'), vertexIds: new Set([v('v1')]) } },
+      initial: {
+        mode: EDIT_MODE.Edit,
+        activeTool: TOOL_ID.EditVertex,
+        vertexSelection: { ownerFeatureId: f('B'), vertexIds: new Set([v('v1')]) },
+      },
     });
     store.getState().setFeatureHidden(f('B'), true);
     expect(store.getState().vertexSelection).not.toBeNull();

@@ -14,6 +14,8 @@ import { describe, expect, it } from 'vitest';
 
 import { createLiveExistenceResolver } from './live-existence';
 import type { DomainRoot } from './consistency-binding';
+import { TOOL_ID } from './shell/tools';
+import { EDIT_MODE } from './state/session';
 import { createSessionStore, TIME_CHANGE_SOURCE, type SessionStore } from './state/store';
 import type { StoreApi } from 'zustand/vanilla';
 import { applyAddProposal } from '../domain/editing/apply-proposal';
@@ -156,7 +158,11 @@ describe('session store wired with the live existence resolver (App.tsx wiring)'
     const store = createSessionStore<DomainRoot>({
       initialDomain: root,
       existence: createLiveExistenceResolver(() => ref.store!.getState().domain),
-      initial: { currentTime: timePointYear(1000) },
+      initial: {
+        currentTime: timePointYear(1000),
+        mode: EDIT_MODE.Edit,
+        activeTool: TOOL_ID.EditVertex,
+      },
     });
     ref.store = store;
     store.getState().replaceVertexSelection(a.feature.id, [a.vertices[0]!.id, a.vertices[1]!.id]);

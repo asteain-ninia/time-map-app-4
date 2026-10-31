@@ -67,7 +67,11 @@ import { DISPLAY_KIND, decideDisplay } from './property/selection-display';
 import { buildSidebarContent } from './shell/SidebarContent';
 import { createLiveGrabbabilityResolver } from './live-grabbability';
 import { EDIT_MODE, type DisplayControl } from './state/session';
+import { TOOL_ID } from './shell/tools';
 import { createSessionStore, TIME_CHANGE_SOURCE } from './state/store';
+
+/** 頂点を選んでいられるのは「頂点」「動かす」の道具のあいだだけ（B114）。 */
+const VERTEX_TOOL = { mode: EDIT_MODE.Edit, activeTool: TOOL_ID.EditVertex } as const;
 
 const TIME = timePointYear(10);
 
@@ -150,6 +154,7 @@ describe('選択 heal の対称性: displayControl change → owner unresolvable
       initial: {
         currentTime: TIME,
         displayControl: EXPANDED,
+        ...VERTEX_TOOL,
         vertexSelection: { ownerFeatureId: CHILD_A, vertexIds: new Set(CHILD_A_VERTS) },
       },
     });
@@ -182,6 +187,7 @@ describe('選択 heal の対称性: displayControl change → owner unresolvable
       initial: {
         currentTime: TIME,
         displayControl: FOCUSED, // N=0 but the focus deep-dives agg-1's children
+        ...VERTEX_TOOL,
         vertexSelection: { ownerFeatureId: CHILD_A, vertexIds: new Set(CHILD_A_VERTS) },
       },
     });
@@ -224,9 +230,9 @@ describe('S4b 本番結線: PropertyPanelHost の ownerLookup (FR-81 貫通)', (
       initialDomain: opts.root,
       grabbability: createLiveGrabbabilityResolver(() => opts.root),
       initial: {
-        mode: EDIT_MODE.Edit,
         currentTime: TIME,
         displayControl: opts.displayControl,
+        ...VERTEX_TOOL,
         vertexSelection: {
           ownerFeatureId: asFeatureId(opts.owner ?? 'leaf-a'),
           vertexIds: new Set(opts.vertexIds.map(asVertexId)),
@@ -438,6 +444,7 @@ describe('S4c 対称性完成: root/time 変更でも display 再検証 (Codex f
       initial: {
         currentTime: TIME, // year 10: leaf-c top-level → Real (grabbable) at N=0
         displayControl: AGGREGATED,
+        ...VERTEX_TOOL,
         vertexSelection: { ownerFeatureId: LEAF_C, vertexIds: new Set(LEAF_C_V2) },
       },
     });
@@ -467,6 +474,7 @@ describe('S4c 対称性完成: root/time 変更でも display 再検証 (Codex f
       initial: {
         currentTime: TIME,
         displayControl: AGGREGATED,
+        ...VERTEX_TOOL,
         vertexSelection: { ownerFeatureId: LEAF_C, vertexIds: new Set(LEAF_C_V2) },
       },
     });
@@ -490,6 +498,7 @@ describe('S4c 対称性完成: root/time 変更でも display 再検証 (Codex f
       initial: {
         currentTime: TIME,
         displayControl: AGGREGATED,
+        ...VERTEX_TOOL,
         vertexSelection: { ownerFeatureId: LEAF_C, vertexIds: new Set(LEAF_C_V2) },
       },
     });
@@ -521,6 +530,7 @@ describe('S4c 対称性完成: root/time 変更でも display 再検証 (Codex f
       initial: {
         currentTime: TIME,
         displayControl: AGGREGATED,
+        ...VERTEX_TOOL,
         vertexSelection: { ownerFeatureId: LEAF_C, vertexIds: new Set(LEAF_C_V2) },
       },
     });
@@ -545,6 +555,7 @@ describe('S4c 対称性完成: root/time 変更でも display 再検証 (Codex f
       initial: {
         currentTime: TIME,
         displayControl: EXPANDED, // leaf-d (child) も Real → d-1 の first-wins 所有者 = leaf-d
+        ...VERTEX_TOOL,
         vertexSelection: {
           ownerFeatureId: asFeatureId('leaf-d'),
           vertexIds: new Set(

@@ -145,7 +145,7 @@ export function isSelectTool(tool: ToolId | null): boolean {
  * 内側が全部 8px 以内の頂点に当たり、国を選べなかった。
  *
  * 描く条件・掴める条件・頂点の選択を残す条件は、この 1 本を読む（`mount/render.ts`、
- * `mount/hit-test.ts`、`HandleCapNotice.tsx`、`store.ts` の `selectionAcrossToolSwitch`）。
+ * `mount/hit-test.ts`、`HandleCapNotice.tsx`、`store.ts` の `keepVertexRule`）。
  */
 export function toolShowsVertexHandles(tool: ToolId | null): boolean {
   return tool === TOOL_ID.EditVertex || tool === TOOL_ID.EditMove;

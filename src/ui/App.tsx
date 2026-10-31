@@ -2021,9 +2021,9 @@ export function App(): JSX.Element {
   );
 
   // fr96 — arm an edit tool from a menu intent (分割→ナイフ / 所属変更 / 結合). The
-  // SAME store transitions the toolbar buttons drive (単一真実源, 教訓 5.29): arm the
-  // tool WITH the current selection pinned so the just-right-clicked target stays
-  // selected across the reset契約 (教訓 5.11; setActiveTool clears by default).
+  // SAME store transitions the toolbar buttons drive (単一真実源, 教訓 5.29). 持ち替えでは
+  // 地物の選択が残るので、右クリックした対象はそのまま選ばれている（増分 5c で既定が反転した）。
+  // 頂点の選択は `setActiveTool` の出口で捨てる（B114。印の無い道具に見えない頂点を残さない）。
   //
   // **増分 5b: `setMode(Edit)` を先に立てるのをやめた。** モードは道具から導出される
   // ようになったので（設計書 §D.1）、ここで立てるのは二重であり、しかも **鍵が
@@ -2031,9 +2031,7 @@ export function App(): JSX.Element {
   // `setActiveTool` 自身が構えを断る。
   const armEditTool = useCallback(
     (tool: ToolId): void => {
-      const s = store.getState();
-      const retained = s.selection;
-      s.setActiveTool(tool, retained);
+      store.getState().setActiveTool(tool);
     },
     [store],
   );
