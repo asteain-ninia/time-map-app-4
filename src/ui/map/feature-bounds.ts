@@ -132,7 +132,7 @@ function boundsOfFeature(
  *
  * The ±360° step rule itself is NOT re-derived here — it is `shortestLonDeltaDeg`
  * (U04), the same single helper the seam alignment and the geodesy use (単一真実源).
- * Anchoring by the box CENTER mirrors `unwrapRingAnchored`'s mean-anchoring rule:
+ * Anchoring by the box CENTER mirrors `unwrapRingAnchored`'s extent-center anchoring rule:
  * anchoring by an edge would pull a >180°-wide box a whole turn away.
  */
 function alignBoxLonToBranch(box: WorldBounds, ref: number): WorldBounds {
