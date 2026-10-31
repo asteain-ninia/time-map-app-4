@@ -66,6 +66,34 @@ export function rawTextReadRestrictedSyntax() {
   ];
 }
 
+// ---- §5.44 輪の入れ子の写しを作らない ----
+
+/** 輪の入れ子を決める唯一の置き場（`nestRingsByContainment`）。ここだけが同じ名前を定義できる。 */
+export const RING_NESTING_OWNER_FILE = 'src/domain/promotion/direct-domain.ts';
+
+/**
+ * ESLint の no-restricted-syntax に渡す条件。入れ子の決め方の写しを、よく使われた名前で止める
+ * （切る・結合・穴あけの 3 か所に写しがあり、穴あけの写しだけが古い判定のまま残って B109 になった）。
+ */
+export function ringNestingRestrictedSyntax() {
+  const message =
+    '輪の入れ子は src/domain/promotion/direct-domain.ts の nestRingsByContainment を使い、写しを作らない（開発ガイド §5.44）';
+  const names = '/^(reparentByContainment|nestRingsByContainment|ringContains|alignedRingContains)$/';
+  return [
+    { selector: `FunctionDeclaration[id.name=${names}]`, message },
+    { selector: `VariableDeclarator[id.name=${names}]`, message },
+  ];
+}
+
+/**
+ * 点の包含の述語。輪の包含を「先頭の頂点 1 点」でこれに聞くと、先頭の頂点が縁に乗ったときに
+ * 「中に無い」と読む（B109。bughunt2 でも結合と刃物で同じ形を直した）。輪どうしは
+ * `ringStrictlyContains` を使う。走査は `src/test-support/test-lesson-rules.test.ts`。
+ */
+export const POINT_CONTAINMENT_PREDICATES = ['pointInPolygon'];
+/** 走査の例外の注記。直前の行に `// 1 点の判定: 理由` と書く。 */
+export const FIRST_VERTEX_PROBE_NOTE = '1 点の判定:';
+
 // ---- §5.64 と §5.39 の走査 ----
 
 /** 走査の対象（リポジトリ直下からの相対パス）。 */

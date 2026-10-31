@@ -10,6 +10,8 @@ import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { strFromU8, unzipSync } from 'fflate';
 
+import { RAIL_STRINGS } from '../src/ui/timeline/rail-strings';
+
 import {
   addInputLayerBox,
   armAddAreaTool,
@@ -21,12 +23,12 @@ import {
 
 /** 「直接ジャンプ」の月を入れて飛ぶ。板が出る場面でも使うので、動いたことは確かめない。 */
 async function requestMonth(page: Page, month: number): Promise<void> {
-  const field = page.getByLabel('直接ジャンプ 月', { exact: true });
+  const field = page.getByLabel(RAIL_STRINGS.jumpFieldMonthLabel(RAIL_STRINGS.jumpFieldTitle), { exact: true });
   if (!(await field.isVisible())) await page.getByTestId('rail-ymd-button').click();
-  const unset = page.getByLabel('直接ジャンプ 月 未指定', { exact: true });
+  const unset = page.getByLabel(RAIL_STRINGS.jumpFieldMonthUnsetLabel(RAIL_STRINGS.jumpFieldTitle), { exact: true });
   if ((await unset.getAttribute('aria-pressed')) === 'true') await unset.click();
   await field.fill(String(month));
-  await page.getByRole('button', { name: 'ジャンプ', exact: true }).click();
+  await page.getByTestId('rail-jump').click();
 }
 
 test.describe('B43 — 作図中に月だけが動いても、下書きを次の月へ持ち越さない', () => {

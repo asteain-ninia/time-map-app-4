@@ -1,6 +1,6 @@
 // U30 結合の世界シーム整列テスト (audit root cause A の横展開).
 //
-// unionLeafShapes / reparentByContainment.ringContains はいずれも resolveLeafShape の
+// unionLeafShapes / nestRingsByContainment.ringContains はいずれも resolveLeafShape の
 // RAW representative 座標を消費する。シームをまたいで隣接する 2 末端 (+179 付近 と −179
 // 付近) は representative 空間で ~360° 離れて格納され得るため、整列せず U06 union に
 // 渡すと「逆回り ~358°」で別片に散らばる。共有ヘルパ alignMultiPolygon /
@@ -257,8 +257,8 @@ describe('U30 結合 — 世界シーム整列 (root cause A 横展開)', () => 
     expect(territoryRingCount(proposal.nextFeatures, proposal.resultFeatureId)).toBe(2);
   });
 
-  it('シームをまたぐドーナツ領土の穴が再親付けで外環の下へ正しく階層化される (reparentByContainment 整列巻き上げの回帰)', () => {
-    // bughunt2 回帰: reparentByContainment は各リングペアの整列を内側ループから巻き上げ、
+  it('シームをまたぐドーナツ領土の穴が再親付けで外環の下へ正しく階層化される (nestRingsByContainment 整列巻き上げの回帰)', () => {
+    // bughunt2 回帰: nestRingsByContainment は各リングペアの整列を内側ループから巻き上げ、
     // 全リングを 1 つの共通アンカーへ一度だけ揃えてから素の包含走査を行うよう最適化した。
     // シームをまたぐドーナツ (外環が連続フレームで [170,190]、その内側に穴) を結合すると、
     // 外環と穴は representative 格納で別 turn に着地し得る。整列を正しく巻き上げていれば

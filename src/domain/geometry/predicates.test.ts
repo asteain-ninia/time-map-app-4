@@ -143,7 +143,7 @@ describe('ringStrictlyContains (boundary-robust nesting — U06 holes / U26 re-p
   // fragile because, after a split, a seam vertex of a genuinely-nested enclave/
   // hole frequently lands exactly ON the candidate's shared boundary, where
   // pointInPolygon returns Boundary (not Inside). A lone inner[0] probe would
-  // then report "not contained" and reparentByContainment would mis-promote the
+  // then report "not contained" and nestRingsByContainment would mis-promote the
   // ring to a top-level territory (FR-91). The robust predicate must still see
   // the ring as contained because it has real interior strictly inside.
   it('an inner ring nested but with its FIRST vertex ON the outer boundary is contained', () => {

@@ -166,7 +166,7 @@ describe('複数片の保持 (受け入れ8 / 教訓5.1)', () => {
 
   it('proposal 側で複数領土ピースが個別の領土リングとして materialise される (受け入れ8)', () => {
     // The geometry's multi-piece飛び地 must survive into the assembled proposal as
-    // SEPARATE territory rings — reparentByContainment must NOT fold them into one
+    // SEPARATE territory rings — nestRingsByContainment must NOT fold them into one
     // another (top-level outer pieces have no container ⇒ each stays a territory).
     const { feature, store } = unitSquare();
     const bar = [

@@ -45,14 +45,11 @@ import { buildForest, directChildIds, hasChildren, type Forest } from '../hierar
 import { resolveLeafShape } from '../hierarchy/resolve-shape';
 import { asFeatureId, asRingId, asVertexId, type FeatureId, type RingId, type VertexId } from '../ids';
 import {
-  createHoleRing,
   createShape,
-  createTerritoryRing,
   isAlternationValid,
-  type Ring,
   type Shape,
 } from '../ring';
-import { ringStrictlyContains } from '../geometry/index';
+import { nestRingsByContainment, type RawRing } from '../promotion/direct-domain';
 import { createVertex, getVertex, type Vertex, type VertexStore } from '../vertex';
 import type { VertexRemap } from '../shared-vertex';
 import { type WorldCoordinate } from '../coordinate';
@@ -208,96 +205,6 @@ function coordKey(c: WorldCoordinate): string {
   return vertexCoordKey(c);
 }
 
-interface RawRing {
-  readonly id: RingId;
-  readonly vertexIds: readonly VertexId[];
-  readonly coords: GeoRing;
-  /** 多角形片の index 0 リング (外周/領土境界) なら true。 */
-  readonly isOuter: boolean;
-}
-
-/** リングの符号付き面積の絶対値 (最小包含リング選択用)。 */
-function ringAreaAbs(ring: GeoRing): number {
-  let sum = 0;
-  const n = ring.length;
-  for (let i = 0; i < n; i += 1) {
-    const a = ring[i];
-    const b = ring[(i + 1) % n];
-    if (a === undefined || b === undefined) continue;
-    sum += a.lon * b.lat - b.lon * a.lat;
-  }
-  return Math.abs(sum) / 2;
-}
-
-/**
- * `inner` リング (連続フレーム済み) が `outer` リング (連続フレーム済み) の厳密内部に
- * あるか。共有 {@link ringStrictlyContains} 述語へ委譲する (単一の真実源, U06 の穴↔外環
- * 不変条件・U26 split 再親付け (knife/proposal)・直轄領昇格 (promotion/direct-domain) と
- * 同一の境界堅牢な入れ子判定)。
- *
- * 両オペランドは和の出力のままの、1 つの連続の枠の座標であることを前提とする (B106)。
- *
- * bughunt2: 旧実装は単一頂点 (inner[0]) プローブだった。量子化後、ドーナツ状 union の穴
- * リング先頭頂点はシーム接合や共有辺で外環境界上へ落ちやすく、そこでは pointInPolygon が
- * Boundary (Inside ではない) を返すため、本当に入れ子の穴を「非包含」と誤判定していた。
- * 誤判定すると穴が最上位領土へ降格され (proposal.ts), 交互不変条件が崩れて結合が
- * 'hierarchy' / MSG_MERGE_INTERNAL で不当に拒否されていた。境界堅牢な述語は
- * vertex-outside なし + edge-stretch-outside なし + 内部実体ありを判定するため、境界上の
- * シーム頂点に騙されない。
- */
-function alignedRingContains(outer: GeoRing, inner: GeoRing): boolean {
-  return ringStrictlyContains(outer, inner);
-}
-
-/**
- * 生リング群を包含関係で領土→穴→領土→… の交互階層へ再親付けする (FR-24)。各リングの
- * 親は「自身を厳密に含む反対種別の最小面積リング」。包含親がなければ最上位領土。これに
- * より穴あき和 (ドーナツ状) でも交互不変条件を保つ。純粋・入力非破壊。
- *
- * **入れ子は和の出力のままの連続の座標で見て、寄せ直さない**（B106。分け残しの B90 と同じ）。
- * 和の出力の輪はもともと 1 つの連続の枠にある。ここで輪を 1 本ずつ先頭の片の基準へ寄せ直すと、
- * 先頭の片から 180 度前後の片で外周と穴の平均が境の両側に分かれ、穴だけ 1 周ずれて最上位の
- * 領土になる。候補親は面積昇順に走査して最小包含親を最初に見つけた時点で打ち切る。
- */
-function reparentByContainment(raws: readonly RawRing[]): Ring[] {
-  const areaOf = new Map<RingId, number>();
-  for (const r of raws) areaOf.set(r.id, ringAreaAbs(r.coords));
-
-  // 候補親を面積昇順に並べた索引 (最小包含親を最初の一致で確定し打ち切るため)。
-  const candidatesByAreaAsc = [...raws].sort(
-    (x, y) =>
-      (areaOf.get(x.id) ?? Number.POSITIVE_INFINITY) -
-      (areaOf.get(y.id) ?? Number.POSITIVE_INFINITY),
-  );
-
-  const rings: Ring[] = [];
-  for (const r of raws) {
-    let bestParent: RawRing | undefined;
-    for (const cand of candidatesByAreaAsc) {
-      if (cand.id === r.id) continue;
-      if (cand.isOuter === r.isOuter) continue; // 親は種別が交互。
-      if (!alignedRingContains(cand.coords, r.coords)) continue;
-      // 面積昇順走査なので最初に見つかった包含親が最小面積親。即確定して打ち切る。
-      bestParent = cand;
-      break;
-    }
-    if (r.isOuter) {
-      rings.push(
-        bestParent === undefined
-          ? createTerritoryRing(r.id, r.vertexIds)
-          : createTerritoryRing(r.id, r.vertexIds, bestParent.id),
-      );
-    } else {
-      rings.push(
-        bestParent === undefined
-          ? createTerritoryRing(r.id, r.vertexIds) // 孤立穴は領土へ降格 (片落とし禁止)。
-          : createHoleRing(r.id, r.vertexIds, bestParent.id),
-      );
-    }
-  }
-  return rings;
-}
-
 /**
  * 論理和の GeoMultiPolygon から {@link Shape} を構築する。リングごとに頂点 ID とリング
  * ID を採番し、包含で交互階層へ再親付けする。全片・全リングを採用する (教訓 5.1)。同一
@@ -337,7 +244,9 @@ function buildShapeFromMultiPolygon(mp: GeoMultiPolygon, ids: MergeIdPorts): Bui
       });
     });
   }
-  const rings = reparentByContainment(raws);
+  // 入れ子は和の出力のままの連続の座標で見て、寄せ直さない（B106。和の出力の輪はもともと 1 つの
+  // 連続の枠にある。輪を 1 本ずつ寄せ直すと、外周と穴が境の両側に分かれて穴が 1 周ずれる）。
+  const rings = nestRingsByContainment(raws);
   return { shape: createShape(rings), vertices, byCoord };
 }
 
@@ -848,7 +757,7 @@ export { MERGE_REJECT };
 export type { MergeRejectKind };
 export type { LeafFeature };
 
-// テスト専用エクスポート: reparentByContainment の境界堅牢な包含判定 (bughunt2) を、
+// テスト専用エクスポート: 入れ子の境界堅牢な包含判定 (bughunt2) を、
 // boolean-op による頂点再並びに依存せず決定的に検証するため、整列済みリングから直接
 // Shape を組む段だけを公開する (sibling の promotion/direct-domain が buildDirectDomainShape
 // を公開しているのと同じ意図)。

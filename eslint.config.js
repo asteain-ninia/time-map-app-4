@@ -13,7 +13,9 @@ import {
   DEV_DEPENDENCY_FILES,
   RAW_TEXT_READ_EXEMPT_FILES,
   RAW_TEXT_READ_FILES,
+  RING_NESTING_OWNER_FILE,
   rawTextReadRestrictedSyntax,
+  ringNestingRestrictedSyntax,
 } from './scripts/test-lesson-rules.mjs';
 
 // Layer dependency direction is fixed inward toward `domain`.
@@ -143,6 +145,14 @@ export default tseslint.config(
     // 単体の走査（src/ui/shell/ui-text-tables.test.ts）も同じものを読む。
     files: ['src/**/*.{ts,tsx}'],
     ignores: [...UI_TEXT_TABLE_FILES, ...UI_TEXT_EXEMPT_FILES],
+    rules: {
+      // 入れ子の写しの禁止（§5.44）も同じ規則の条件に足す。規則は後の設定が丸ごと上書きする。
+      'no-restricted-syntax': ['error', ...uiTextRestrictedSyntax(), ...ringNestingRestrictedSyntax()],
+    },
+  },
+  {
+    // 入れ子を決める唯一の置き場（§5.44）。
+    files: [RING_NESTING_OWNER_FILE],
     rules: {
       'no-restricted-syntax': ['error', ...uiTextRestrictedSyntax()],
     },

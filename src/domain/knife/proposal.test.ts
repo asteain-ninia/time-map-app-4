@@ -251,7 +251,7 @@ describe('bughunt2 — degenerate (<3 vertex) ring guard at proposal assembly (F
   // The geometry layer's everyOuterRingHasMinVertices only inspects each piece's
   // OUTER ring, so a quantization-collapsed HOLE ring (index >= 1) is NOT caught
   // there. Inside buildShapeFromSide, ringStrictlyContains returns false for any
-  // length<3 ring, so reparentByContainment finds no containing parent for the
+  // length<3 ring, so nestRingsByContainment finds no containing parent for the
   // degenerate hole and silently DEMOTES it to a top-level territory — a phantom,
   // area≈0 piece that passes isAlternationValid (a parentless territory is valid
   // alternation). The proposal-gate guard must surface this as a loud rejection.

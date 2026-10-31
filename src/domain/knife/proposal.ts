@@ -31,15 +31,12 @@ import {
   type LeafFeature,
 } from '../feature';
 import { createEditProposal, type EditProposal } from '../consistency/index';
-import { ringStrictlyContains } from '../geometry/index';
+import { nestRingsByContainment, type RawRing } from '../promotion/direct-domain';
 import type { TimePoint } from '../time/time-point';
 import type { FeatureId, RingId, VertexId } from '../ids';
 import {
-  createHoleRing,
   createShape,
-  createTerritoryRing,
   isAlternationValid,
-  type Ring,
   type Shape,
 } from '../ring';
 import { containerKey, type SharedEdgeCutSpec, type VertexRemap } from '../shared-vertex';
@@ -143,16 +140,6 @@ function coordKey(c: WorldCoordinate): string {
   return vertexCoordKey(c);
 }
 
-/** A raw ring carried from the boolean output with its minted id + coordinates. */
-interface RawRing {
-  readonly id: RingId;
-  readonly vertexIds: readonly VertexId[];
-  /** The coordinate ring (for containment tests during re-parenting). */
-  readonly coords: GeoMultiPolygon[number][number];
-  /** True for a polygon piece's index-0 ring (an outer/territory boundary). */
-  readonly isOuter: boolean;
-}
-
 /**
  * Build a {@link Shape} from a side's GeoMultiPolygon, minting a vertex per ring
  * coordinate and a ring id per ring, then RE-PARENTING the rings into a valid
@@ -238,92 +225,8 @@ function buildShapeFromSide(side: SplitSide, ids: SplitIdPorts, pool: VertexPool
   }
 
   // 2. Re-parent by containment into the alternating hierarchy (FR-24 / FR-91).
-  const rings = reparentByContainment(raws);
+  const rings = nestRingsByContainment(raws);
   return { shape: createShape(rings), byCoord };
-}
-
-/** Signed-area magnitude of a coordinate ring (for "smallest enclosing" choice). */
-function ringAreaAbs(ring: GeoMultiPolygon[number][number]): number {
-  let sum = 0;
-  const n = ring.length;
-  for (let i = 0; i < n; i += 1) {
-    const a = ring[i];
-    const b = ring[(i + 1) % n];
-    if (a === undefined || b === undefined) continue;
-    sum += a.lon * b.lat - b.lon * a.lat;
-  }
-  return Math.abs(sum) / 2;
-}
-
-/**
- * True iff `inner` ring lies strictly inside `outer` ring.
- *
- * Delegates to the shared {@link ringStrictlyContains} predicate (单一真实源,
- * same logic that backs U06's hole↔outer invariant). A lone `inner[0]` vertex
- * probe was fragile: after a split, ring vertices are quantized and an
- * enclave/hole's first vertex frequently lands exactly ON a shared seam boundary
- * of the candidate outer/hole, where `pointInPolygon` returns Boundary (not
- * Inside) — so the old probe reported "not contained" for a genuinely nested
- * ring, and {@link reparentByContainment} would wrongly promote/demote it to a
- * top-level territory (mis-classifying an untouched enclave/hole, FR-91). The
- * robust predicate tests no-vertex-outside + no-edge-stretch-outside + has-real-
- * interior-inside, so an on-boundary seam vertex no longer fools it.
- */
-function ringContains(
-  outer: GeoMultiPolygon[number][number],
-  inner: GeoMultiPolygon[number][number],
-): boolean {
-  return ringStrictlyContains(outer, inner);
-}
-
-/**
- * Re-parent raw rings into a valid alternating hierarchy by containment. Each
- * ring's parent is the SMALLEST-area ring of the OPPOSITE kind that contains it;
- * an outer ring contained in a hole becomes an enclave territory parented to that
- * hole, a hole contained in a territory is parented to that territory, and a ring
- * with no opposite-kind container is a top-level territory (FR-91 一段昇格 falls out
- * of "no surviving hole contains me"). Pure; no mutation of inputs.
- */
-function reparentByContainment(raws: readonly RawRing[]): Ring[] {
-  const areaOf = new Map<RingId, number>();
-  for (const r of raws) areaOf.set(r.id, ringAreaAbs(r.coords));
-
-  const rings: Ring[] = [];
-  for (const r of raws) {
-    // Find the smallest-area OPPOSITE-kind ring that strictly contains r.
-    let bestParent: RawRing | undefined;
-    let bestArea = Number.POSITIVE_INFINITY;
-    for (const cand of raws) {
-      if (cand.id === r.id) continue;
-      if (cand.isOuter === r.isOuter) continue; // parent must alternate kind.
-      if (!ringContains(cand.coords, r.coords)) continue;
-      const a = areaOf.get(cand.id) ?? Number.POSITIVE_INFINITY;
-      if (a < bestArea) {
-        bestArea = a;
-        bestParent = cand;
-      }
-    }
-
-    if (r.isOuter) {
-      // An outer ring is a territory: top-level, or an enclave inside a hole.
-      if (bestParent === undefined) {
-        rings.push(createTerritoryRing(r.id, r.vertexIds));
-      } else {
-        rings.push(createTerritoryRing(r.id, r.vertexIds, bestParent.id));
-      }
-    } else {
-      // A hole must sit inside a territory; the smallest containing outer.
-      if (bestParent === undefined) {
-        // No containing territory (should not happen for U06 output): demote to a
-        // top-level territory rather than emit an orphan hole (keeps alternation
-        // valid; 教訓5.1 片落とし禁止 — never drop the ring).
-        rings.push(createTerritoryRing(r.id, r.vertexIds));
-      } else {
-        rings.push(createHoleRing(r.id, r.vertexIds, bestParent.id));
-      }
-    }
-  }
-  return rings;
 }
 
 /**
@@ -335,7 +238,7 @@ function reparentByContainment(raws: readonly RawRing[]): Ring[] {
  * The geometry层's check is partial — `everyOuterRingHasMinVertices` only inspects
  * each piece's OUTER ring (index 0). A degenerate HOLE ring (quantized down to <3
  * vertices) that slips through is silently mis-handled by {@link
- * reparentByContainment}: {@link ringStrictlyContains} returns false for any
+ * nestRingsByContainment}: {@link ringStrictlyContains} returns false for any
  * length<3 ring, so the degenerate ring finds no containing parent and is demoted
  * to a TOP-LEVEL territory (a phantom, area≈0 piece) rather than dropped or
  * rejected — and {@link isAlternationValid} cannot catch it because a parentless

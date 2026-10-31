@@ -3,6 +3,7 @@
 //   - §5.64 要素を探す言葉に日本語を直書きしない
 //   - §5.39 オブジェクトリテラルをドメイン型へキャストしない
 //   - §5.65 見た目のベースラインの置き場と名前が変わっていない
+//   - §5.44 輪の包含を先頭の頂点 1 点で判定しない
 //
 // 設定値と対象の一覧は `scripts/test-lesson-rules.mjs` の 1 か所にある。§5.64 と §5.39 は
 // 既存の違反が多いので、件数をそこの上限と比べる。
@@ -18,6 +19,8 @@ import { describe, expect, it } from 'vitest';
 import { readSourceText } from './read-source-text';
 import {
   CAST_NOTE,
+  FIRST_VERTEX_PROBE_NOTE,
+  POINT_CONTAINMENT_PREDICATES,
   SCAN_FIXTURE_FILE_PATTERN,
   SCAN_TEST_FILE_PATTERN,
   SNAPSHOT_FILES,
@@ -168,6 +171,67 @@ function findDomainLiteralCasts(file: string, text: string): Finding[] {
   return out;
 }
 
+/** `x[0]`／`x[0]!`／`x.at(0)` か。 */
+function isFirstElement(node: ts.Expression): boolean {
+  let e = unwrapParens(node);
+  if (ts.isNonNullExpression(e)) e = unwrapParens(e.expression);
+  if (ts.isElementAccessExpression(e)) {
+    return ts.isNumericLiteral(e.argumentExpression) && e.argumentExpression.text === '0';
+  }
+  return (
+    ts.isCallExpression(e) &&
+    ts.isPropertyAccessExpression(e.expression) &&
+    e.expression.name.text === 'at' &&
+    e.arguments.length === 1 &&
+    e.arguments[0]!.getText() === '0'
+  );
+}
+
+/**
+ * §5.44: 点の包含の述語に、配列の先頭の要素（またはそれを入れた変数）を渡している所。
+ * 変数は同じ関数の中の `const p = x[0]` を追う（B109 の写しがこの形だった）。
+ */
+function findFirstVertexProbes(file: string, text: string): Finding[] {
+  const sf = parseSource(file, text);
+  const lines = text.split('\n');
+  const out: Finding[] = [];
+  const firstElementVars = (fn: ts.Node): ReadonlySet<string> => {
+    const names = new Set<string>();
+    const walk = (n: ts.Node): void => {
+      if (
+        ts.isVariableDeclaration(n) &&
+        ts.isIdentifier(n.name) &&
+        n.initializer !== undefined &&
+        isFirstElement(n.initializer)
+      ) {
+        names.add(n.name.text);
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(fn);
+    return names;
+  };
+  const visit = (node: ts.Node, vars: ReadonlySet<string>): void => {
+    const scope = ts.isFunctionLike(node) ? firstElementVars(node) : vars;
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      POINT_CONTAINMENT_PREDICATES.includes(node.expression.text)
+    ) {
+      const first = node.arguments[0];
+      const probing =
+        first !== undefined &&
+        (isFirstElement(first) || (ts.isIdentifier(first) && scope.has(first.text)));
+      if (probing && !hasNoteAbove(lines, lineOf(sf, node), FIRST_VERTEX_PROBE_NOTE)) {
+        out.push({ file, line: lineOf(sf, node) + 1, text: node.getText(sf).slice(0, 60) });
+      }
+    }
+    ts.forEachChild(node, (child) => visit(child, scope));
+  };
+  visit(sf, new Set());
+  return out;
+}
+
 function trackedFiles(): readonly string[] {
   return execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', 'src', 'e2e'], {
     cwd: repoRoot,
@@ -258,6 +322,41 @@ describe('§5.39 オブジェクトリテラルのドメイン型へのキャス
         found.length,
         limitMessage('リテラルのドメイン型へのキャスト', 'domainLiteralCasts', limit, found),
       ).toBe(limit);
+    },
+    60_000,
+  );
+});
+
+describe('§5.44 輪の包含を先頭の頂点 1 点で判定しない', () => {
+  const finds = (body: string): number => findFirstVertexProbes('src/domain/x.ts', body).length;
+
+  it('走査の道具が B109 の形を拾い、点そのものの判定と注記つきの例外を通す', () => {
+    // B109 の写しの形そのまま。
+    expect(
+      finds(`function ringContains(outer, inner) {
+        const probe = inner[0];
+        if (probe === undefined) return false;
+        return pointInPolygon(probe, [outer]) === POINT_LOCATION.Inside;
+      }`),
+    ).toBe(1);
+    expect(finds(`const a = pointInPolygon(ring[0], poly);`)).toBe(1);
+    expect(finds(`const a = pointInPolygon(ring[0]!, poly);`)).toBe(1);
+    expect(finds(`const a = pointInPolygon(ring.at(0), poly);`)).toBe(1);
+    expect(finds(`function f() { const p = rings[0]!; return pointInPolygon(p, poly); }`)).toBe(1);
+    // 全部の頂点を回す・利用者の点を聞く形は通す。
+    expect(finds(`for (const v of inner) pointInPolygon(v, poly);`)).toBe(0);
+    expect(finds(`function f(p) { return pointInPolygon(p, poly); }`)).toBe(0);
+    expect(finds(`function f(p) { const first = rings[0]; return pointInPolygon(p, first); }`)).toBe(0);
+    expect(
+      finds(`// ${FIRST_VERTEX_PROBE_NOTE} 互いに交わらないと分かっている輪の代表点\nconst a = pointInPolygon(ring[0], poly);`),
+    ).toBe(0);
+  });
+
+  it(
+    '本体のコードに無い',
+    () => {
+      const found = scan((f) => f.startsWith('src/') && !/\.test(-d)?\.tsx?$/.test(f), findFirstVertexProbes);
+      expect(found.map((f) => `${f.file}:${String(f.line)} ${f.text}`)).toEqual([]);
     },
     60_000,
   );
