@@ -230,13 +230,14 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
 
   // --- 時刻を動かす（すべて `useTimeline` の 1 本を通る） ---------------------
   const jumpTo = useCallback(
-    (point: TimePoint) => {
+    // `andThen` は移動の続き。下書きの板で止まったら走らず、［捨てる］で走る（B112）。
+    (point: TimePoint, andThen?: () => void) => {
       const message = t.outOfRangeMessage(point);
       if (message !== null) {
         refuse(message);
         return;
       }
-      t.jumpToTime(point);
+      t.jumpToTime(point, undefined, andThen);
       announceMove(point);
     },
     [t, refuse, announceMove],
@@ -267,8 +268,10 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
           refuse(RAIL_STRINGS.alreadyAtEdge(formatYear(edge.year)));
           return;
         }
-        t.jumpToTime(edge);
-        refuse(RAIL_STRINGS.stepClampedTo(formatYear(edge.year)));
+        // 下書きの板で止まったら、動いたとは言わない（B112）。
+        t.jumpToTime(edge, undefined, () => {
+          refuse(RAIL_STRINGS.stepClampedTo(formatYear(edge.year)));
+        });
         return;
       }
       t.jumpToTime(next);
@@ -311,8 +314,10 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
       }
       const entry = lane.entries[index];
       if (entry === undefined) return;
-      rail.revealTime(entry.start);
-      jumpTo(entry.start);
+      // レールの見える範囲も移動の続き（下書きの板のあいだ視点を動かさない。B112）。
+      jumpTo(entry.start, () => {
+        rail.revealTime(entry.start);
+      });
     },
     [lane, t, rail, jumpTo, refuse],
   );
@@ -365,14 +370,18 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
   }, [playback.isPlaying, pushHistory]);
 
   const goBack = useCallback(() => {
-    const previous = historyRef.current.pop();
+    const previous = historyRef.current.at(-1);
     if (previous === undefined) {
       refuse(RAIL_STRINGS.noBackHistory);
       return;
     }
-    suppressPushRef.current = true;
-    rail.revealTime(previous);
-    t.jumpToTime(previous);
+    // 履歴を減らすのも、レールの見える範囲を動かすのも移動の続き ―― 下書きの板で［続ける］と
+    // 答えられたら、どちらも起きていない（B112）。
+    t.jumpToTime(previous, undefined, () => {
+      historyRef.current.pop();
+      suppressPushRef.current = true;
+      rail.revealTime(previous);
+    });
     announceMove(previous);
   }, [t, rail, refuse, announceMove]);
 
@@ -610,8 +619,9 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
           return;
         case RAIL_MENU_ITEM.ChangeAnchorStart:
           if (request.kind === 'anchor') {
-            jumpTo(request.entry.start);
-            onRequestAnchorStartEdit?.(request.entry);
+            jumpTo(request.entry.start, () => {
+              onRequestAnchorStartEdit?.(request.entry);
+            });
           }
           return;
         case RAIL_MENU_ITEM.DeleteAnchor:
@@ -622,12 +632,10 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
           return;
         case RAIL_MENU_ITEM.CreateAnchorHere:
           if (request.kind !== 'empty') return;
-          jumpTo(request.time);
-          // **年が本当に動いたときだけ**作る ―― 下書きの「捨てますか」が年を戻したら、
-          // 戻った年に錨を作ってはいけない（教訓 5.71）。作る側の可否と断りの文は
-          // Ctrl+K と同じコマンド 1 本が持つ。
-          if (compare(store.getState().currentTime, request.time, t.calendar) !== 0) return;
-          {
+          // **年が本当に動いたときだけ**作る ―― 移動の続きなので、下書きの「捨てますか」で
+          // ［続ける］なら作らず、［捨てる］なら年と一緒に作る（教訓 5.71 / B112）。作る側の
+          // 可否と断りの文は Ctrl+K と同じコマンド 1 本が持つ。
+          jumpTo(request.time, () => {
             // 作った（または断られた）文を、移動の知らせの後ろへ続ける（バグ狩り 2-4: 移動の
             // 文で上書きされ、押しても何も起きなかったように見えていた）。
             const before = statusMessages?.get() ?? null;
@@ -636,7 +644,7 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
             if (after !== null && after !== before) {
               statusMessages?.stageMoveTrailer(moveTrailerKey(request.time), after.text);
             }
-          }
+          });
           return;
         case RAIL_MENU_ITEM.MakeLeftEdge:
           if (request.kind === 'empty') rail.scrollByPixels(request.px);

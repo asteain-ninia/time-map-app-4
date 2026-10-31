@@ -57,7 +57,8 @@ import {
   confirmBlocksToolKey,
   type DiscardReason,
 } from '../shell/DraftDiscardConfirm';
-import { useDraftTimeGate } from '../shell/useDraftTimeGate';
+import { DRAFT_DISCARD_STRINGS } from '../shell/strings';
+import { DRAFT_LOSS_CAUSE, useDraftTimeGate, type DraftLostHandler } from '../shell/useDraftTimeGate';
 
 import { AddDraftStore } from './add-draft-store';
 import { SnapOptions } from './SnapOptions';
@@ -167,7 +168,9 @@ export interface AddToolControllerProps<S> {
    * （差し止めは書き込みの手前に関門を置く仕事＝増分 5）。**せめて黙って消さない**
    * ため、捨てた頂点の数をここから報せて状態行に出す。`count` は捨てた頂点の数。
    */
-  readonly onDraftDiscarded?: ((count: number, timeMoved?: boolean) => void) | undefined;
+  readonly onDraftDiscarded?: ((count: number) => void) | undefined;
+  /** 年の移動・設定の補正・読み込みで捨てたものを報せる口（B112）。 */
+  readonly onDraftLost?: DraftLostHandler | undefined;
   /**
    * 一覧から地物を選んだあと、**下書きを片付けてから**視点をその地物へ合わせる口
    * （増分 3 の手直し 2 回目 / D1。設計書 §D.2）。作図中は視点を飛ばさない（バグ狩り #7）
@@ -254,6 +257,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     style,
   } = props;
   const onDraftDiscarded = props.onDraftDiscarded;
+  const onDraftLost = props.onDraftLost;
   const onFocusSelection = props.onFocusSelection;
   const mapCameraInput = props.mapCameraInput ?? NOOP_MAP_CAMERA_INPUT;
 
@@ -310,7 +314,42 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   // 道具を持ち替える前の道具（「このままにする」で戻す先）。`activeKind` は面／線／点の
   // 3 値しか持たないので、戻すには `ToolId` そのものが要る。
   const prevToolRef = useRef<ToolId | null>(activeTool);
+  // 素性欄の打ちかけ（年の移動・読み込みで捨てたものを言うときに読む）。局面を離れたら忘れる。
+  const propertiesDirtyRef = useRef(false);
+  const onPropertiesDirtyChange = useCallback((dirty: boolean) => {
+    propertiesDirtyRef.current = dirty;
+  }, []);
   useEffect(() => {
+    if (add.phase !== ADD_PHASE.PropertyForm) propertiesDirtyRef.current = false;
+  }, [add.phase]);
+  /** いま捨てると失うものの文。確定したあとの形は頂点の数で言わない。 */
+  const describeDraft = (): string => {
+    if (add.phase === ADD_PHASE.PropertyForm) {
+      return propertiesDirtyRef.current
+        ? DRAFT_DISCARD_STRINGS.discardedShapeAndTyped
+        : DRAFT_DISCARD_STRINGS.discardedShape;
+    }
+    return draftSizeRef.current > 0 ? DRAFT_DISCARD_STRINGS.discarded(draftSizeRef.current) : '';
+  };
+  const projectLoadNonce = useStore(store, (s) => s.projectLoadNonce);
+  const loadNonceRef = useRef(projectLoadNonce);
+  useEffect(() => {
+    // **ファイルを開いた・新規にした**（B112）。読み込みは道具と鍵を同じコミットで畳むので、この下の
+    // 枝には鍵を閉じたのと同じに見える。世代の印で先に見分け、聞かずに捨てて言う（教訓 5.96）。
+    if (loadNonceRef.current !== projectLoadNonce) {
+      loadNonceRef.current = projectLoadNonce;
+      const what = describeDraft();
+      setPendingDiscard(null);
+      prevKindRef.current = activeKind;
+      prevToolRef.current = activeTool;
+      prevActiveRef.current = store.getState().activeFeature;
+      if (activeKind === null) add.resetForSwitch();
+      else add.start(activeKind);
+      if (what !== '') {
+        onDraftLost?.(what, DRAFT_LOSS_CAUSE.ProjectSwitched, store.getState().currentTime);
+      }
+      return;
+    }
     const prev = prevKindRef.current;
     if (activeKind === prev) return;
     // **道具の持ち替え・鍵の開け閉めでも、確定できる打ちかけは黙って捨てない**
@@ -380,7 +419,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     }
     // We key on the resolved kind only so the start/reset fires exactly on a kind
     // transition, never on every render (`add`'s callbacks are stable enough here).
-  }, [activeKind]);
+  }, [activeKind, projectLoadNonce]);
 
   // --- 保存のあとは **待機（構えているが描いていない）** に戻す（増分 3 の手直し D3 / GPT #9）。
   //
@@ -445,12 +484,19 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
       });
     },
     onDiscardSilently: () => {
-      const lost = draftSizeRef.current;
+      const what = describeDraft();
       cancelAction();
-      return lost;
+      return what;
     },
-    onMovedAfterDiscard: (lost) => {
-      if (lost > 0) onDraftDiscarded?.(lost, true);
+    onMovedAfterDiscard: (what) => {
+      if (what !== '') onDraftLost?.(what, DRAFT_LOSS_CAUSE.TimeMoved, store.getState().currentTime);
+    },
+    onRangeClamped: (time) => {
+      const what = describeDraft();
+      setPendingDiscard(null);
+      cancelAction();
+      if (activeKind !== null) add.start(activeKind);
+      if (what !== '') onDraftLost?.(what, DRAFT_LOSS_CAUSE.RangeClamped, time);
     },
   });
 
@@ -993,6 +1039,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
         chooseParent(featureId === null ? PARENT_TOP_LEVEL : parentSelection(featureId)),
       onSave: runSave,
       onCancel: cancel,
+      onDirtyChange: onPropertiesDirtyChange,
       busyLabel: saveBusy ? ADD_STRINGS.saving : null,
     });
     // 道具が外れる・下書きが消える全経路で必ず閉じる（教訓 5.2）。
@@ -1008,6 +1055,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     runSave,
     saveBusy,
     cancel,
+    onPropertiesDirtyChange,
   ]);
 
   // Render the provisional-add chrome plus the transient map-input layer, which sits
@@ -1029,6 +1077,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
       }}
       onDiscardDraft={() => {
         const lost = draftSizeRef.current;
+        const what = describeDraft();
         const reason = pendingDiscard?.reason;
         const proceed = pendingDiscard?.proceed;
         setPendingDiscard(null);
@@ -1051,7 +1100,9 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
         if (proceed !== undefined) {
           proceed();
           // 年を動かしたときは動いたあとで言う（移動の知らせの後ろに続く。B112）。
-          if (lost > 0 && timeMoved) onDraftDiscarded?.(lost, true);
+          if (timeMoved && what !== '') {
+            onDraftLost?.(what, DRAFT_LOSS_CAUSE.TimeMoved, store.getState().currentTime);
+          }
           return;
         }
         if (activeKind !== null) add.start(activeKind);

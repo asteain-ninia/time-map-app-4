@@ -8,6 +8,7 @@ import type { MutableRefObject } from 'react';
 
 import type { AddHostPorts } from '../../add/host-ports';
 import { createLiveShapeEditBinding } from '../../consistency-binding';
+import { featuresAt } from '../../live-lookup';
 import {
   promotesOnContextMenu,
   suspendsContextMenu,
@@ -74,9 +75,11 @@ import {
 } from '../../../domain/editing/index';
 import { reportVertexCarryForward } from '../../../domain/editing/apply-proposal';
 import { surveyLinesAt } from '../../../domain/survey/index';
+import { FEATURE_KIND } from '../../../domain/feature';
 import { getCalendar } from '../../../domain/time/calendar';
 import type { FeatureId, RingId, VertexId } from '../../../domain/ids';
 import {
+  HIT_KIND,
   replaceVertices,
   withActiveFeature,
   type NextTargetPreference,
@@ -129,6 +132,11 @@ export interface MountHitTestOptions {
    * **無反応にしない**（設計書 §H.5 の「消えない結果表示」へ出す）。App.tsx が入れる。
    */
   readonly announceEditRefusalRef?: MutableRefObject<((reason: EditRefusalKind) => void) | null>;
+  /**
+   * ［動かす］でまとめ役を引いて離したことを画面へ出す口。まとめ役は自分の頂点を持たないので、
+   * 引いても形は変わらない。理由を出さないと「離したのに何も起きない」になる。
+   */
+  readonly announceAggregateMoveRef?: MutableRefObject<(() => void) | null>;
   /**
    * 共有頂点の移動を **その年より後ろの記録へも反映した**ことを画面へ出す口
    * （増分 3 の手直し 2 回目 / A1）。1 回目の手直しで引き継ぎ自体は入れたが、
@@ -560,8 +568,17 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
   // 増分 8A の手直し（反証 重 3）: 一覧から選んだ直後の左ドラッグ 1 回だけ、選んだ頂点を
   // 最寄りより優先して掴む（`preferListPick`。条件はそちらの注記）。印はこの押下の
   // `hitTest` で既に消えているので、2 回目の押下には効かない。
+  // この押下が［動かす］でまとめ役を掴んだか（離したときに理由を言う）。
+  let pressedAggregateMove = false;
   const editSession: EditSessionPort = {
     begin: (hit, point, modifiers) => {
+      const s = store.getState();
+      pressedAggregateMove =
+        hit.kind === HIT_KIND.FeatureBody &&
+        s.activeTool === TOOL_ID.EditMove &&
+        s.selection.activeFeature === hit.featureId &&
+        featuresAt(s.domain, s.currentTime).find((f) => f.id === hit.featureId)?.kind ===
+          FEATURE_KIND.Aggregate;
       const pick = pressPick;
       pressPick = null;
       const preferred = preferListPick(
@@ -574,8 +591,16 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
       return editSessionInner.begin(preferred, point, modifiers);
     },
     update: (point) => editSessionInner.update(point),
-    release: (point, wasDrag) => editSessionInner.release(point, wasDrag),
-    cancel: () => editSessionInner.cancel(),
+    release: (point, wasDrag) => {
+      const aggregate = pressedAggregateMove;
+      pressedAggregateMove = false;
+      editSessionInner.release(point, wasDrag);
+      if (aggregate && wasDrag) options.announceAggregateMoveRef?.current?.();
+    },
+    cancel: () => {
+      pressedAggregateMove = false;
+      editSessionInner.cancel();
+    },
   };
   // BUGHUNT2 ROOT FIX — the LIVE right-click context-menu port (FR-96). On a
   // right-button press the dispatcher calls this port (dispatch.ts:「Right button

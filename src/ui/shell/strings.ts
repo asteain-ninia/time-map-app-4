@@ -87,6 +87,9 @@ export const APP_STRINGS = {
   markCount: (count: number): string =>
     count === 0 ? '対象の印を全部外しました。' : `対象 ${String(count)} 件`,
   /** 時刻を動かしてその年に居なくなった印を外した（Fable #5 / 決定 (10)）。 */
+  /** ［動かす］でまとめ役を引いたとき。自分の形を持たないので動かない。 */
+  moveAggregateRefused:
+    'まとめ役は自分の形を持たないので動かせません。動かすには下位領域を選んでください。',
   /** 道具が掴んでいた面がいまの年に居なくなり、手放したとき（B112）。 */
   toolTargetGoneByTime: '掴んでいた面はこの年にありません。対象から外しました。',
   markDroppedByTime: (count: number): string =>
@@ -327,6 +330,20 @@ export const DRAFT_DISCARD_STRINGS = {
   no: '続ける',
   /** 捨てたことの報せ（状態行の「直前の結果」）。 */
   discarded: (n: number): string => `描きかけの頂点 ${String(n)} 個を捨てました`,
+  /** 移動の知らせの後ろへ続けるときの形（次の文と続けて読めるよう句点で閉じる）。 */
+  trailer: (what: string): string => `${what}。`,
+  /** 確定のあとの局面で捨てたものの報せ（頂点の数では言えない。B112）。 */
+  discardedCut: '切った線を捨てました',
+  discardedCutAndTyped: '切った線と打った内容を捨てました',
+  discardedRegion: 'くり抜く形を捨てました',
+  discardedRegionAndTyped: 'くり抜く形と打った内容を捨てました',
+  discardedShape: '描いた形を捨てました',
+  discardedShapeAndTyped: '描いた形と打った内容を捨てました',
+  /** 設定で表示年の範囲を変えて、いまの年が範囲の外へ出たとき（聞かずに捨てる。B112）。 */
+  rangeClampedDiscarded: (year: string, what: string): string =>
+    `表示年の範囲に合わせて ${year} へ移動したので、${what}。`,
+  /** ファイルを開いた・新規にしたとき（聞かずに捨てる。B112）。 */
+  projectSwitchedDiscarded: (what: string): string => `前の書類を閉じたので、${what}。`,
 } as const;
 
 /**

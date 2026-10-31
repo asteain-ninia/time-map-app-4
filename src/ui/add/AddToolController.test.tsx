@@ -25,6 +25,7 @@
 
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { DRAFT_DISCARD_STRINGS } from '../shell/strings';
 import type { StoreApi } from 'zustand/vanilla';
 
 import { type AddProposal } from '../../domain/add/index';
@@ -112,6 +113,7 @@ function mountApp(
   resultFor: () => ProcessResult<S> = () => committed,
   extra: {
     readonly onDraftDiscarded?: (count: number) => void;
+    readonly onDraftLost?: (what: string) => void;
     readonly onFocusSelection?: () => void;
     /** 確認の板の開閉を受ける口（増分 5 の手直し A3 / A4）。 */
     readonly onModalChange?: (open: boolean) => void;
@@ -174,6 +176,7 @@ function mountApp(
             hostCommit(store)(result, id);
           }}
           {...(extra.onDraftDiscarded ? { onDraftDiscarded: extra.onDraftDiscarded } : {})}
+          {...(extra.onDraftLost ? { onDraftLost: extra.onDraftLost } : {})}
           {...(extra.onFocusSelection ? { onFocusSelection: extra.onFocusSelection } : {})}
           {...(extra.onModalChange ? { onModalChange: extra.onModalChange } : {})}
         />
@@ -1147,8 +1150,8 @@ describe('U23 手直し 2 回目 D1: 年が動いたときの下書き', () => {
   });
 
   it('確定できる点数に届いていなければ、聞かずに捨てて報せる', () => {
-    const discarded: number[] = [];
-    const h = mountApp(undefined, { onDraftDiscarded: (n) => discarded.push(n) });
+    const discarded: string[] = [];
+    const h = mountApp(undefined, { onDraftLost: (what) => discarded.push(what) });
     selectTool('tool-add.area');
     clickMap(0, 0);
     clickMap(5, 0); // 2 点＝まだ確定できない
@@ -1157,7 +1160,7 @@ describe('U23 手直し 2 回目 D1: 年が動いたときの下書き', () => {
     });
     expect(screen.queryByTestId('add-draft-discard-confirm')).toBeNull();
     expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
-    expect(discarded).toEqual([2]);
+    expect(discarded).toEqual([DRAFT_DISCARD_STRINGS.discarded(2)]);
     // 年は進んだまま（利用者がやりたかったのは年を動かすことである）。
     expect(h.store.getState().currentTime.year).toBe(1800);
   });

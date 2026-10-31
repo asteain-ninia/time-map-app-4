@@ -26,6 +26,10 @@
 //
 // **年の移動も同じ 2 択**（B112。設計書 §D.2 の☆☆）。関門は `useDraftTimeGate` の 1 本で、
 // 年はストアの入口で止まるので、ここには戻す動きが無い。
+//
+// **ファイルを開く・新規は聞かない**（B112）。読み込みは道具と鍵を同じコミットで畳むので、見張りには
+// 鍵を閉じたのと同じに見える。世代の印（`projectLoadNonce`。教訓 5.96）で先に見分け、下書きを
+// 捨てて状態行で言う。板を出すと、新しい書類の上で前の点列を確定できてしまう。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from 'zustand';
@@ -35,7 +39,8 @@ import { EDIT_MODE, type ToolId } from '../state/session';
 import type { SessionStore } from '../state/store';
 
 import { DISCARD_REASON, type DiscardReason } from './DraftDiscardConfirm';
-import { useDraftTimeGate } from './useDraftTimeGate';
+import { DRAFT_DISCARD_STRINGS } from './strings';
+import { DRAFT_LOSS_CAUSE, useDraftTimeGate, type DraftLostHandler } from './useDraftTimeGate';
 
 /** 「捨てる」と答えられて初めて実行する切替先。 */
 interface ToolSwitchIntent {
@@ -75,8 +80,20 @@ export interface DraftSwitchGuardOptions<S> {
    * 答えられたときに走る ―― 設計書 §D.4.1 の表の 1 行目が言う 1 段ぶんである。
    */
   readonly onDiscardPoints: () => void;
+  /**
+   * 年の移動の［捨てる］（B112）。Escape の 1 段戻りとは別の処理で、**どの局面からでも対象を掴んだ
+   * まま描き直せる局面へ戻す**。省略すると {@link onDiscardPoints}（局面が点列だけの道具）。
+   */
+  readonly onDiscardForTimeMove?: (() => void) | undefined;
+  /**
+   * いま捨てると失うものの文（空文字は何も失わない）。省略すると頂点の数で言う。確定のあとの
+   * 局面は頂点の数で言えない道具が渡す。
+   */
+  readonly describeDraft?: (() => string) | undefined;
   /** 捨てた頂点の数を報せる口（状態行の「直前の結果」）。 */
-  readonly onDraftDiscarded?: ((count: number, timeMoved?: boolean) => void) | undefined;
+  readonly onDraftDiscarded?: ((count: number) => void) | undefined;
+  /** 年の移動・設定の補正・読み込みで捨てたものを報せる口（状態行の言い方が理由で変わる）。 */
+  readonly onDraftLost?: DraftLostHandler | undefined;
 }
 
 export interface DraftSwitchGuard {
@@ -124,10 +141,35 @@ export function useDraftSwitchGuard<S>(
   discardPointsRef.current = options.onDiscardPoints;
   const discardedRef = useRef(options.onDraftDiscarded);
   discardedRef.current = options.onDraftDiscarded;
+  const discardForTimeMoveRef = useRef(options.onDiscardForTimeMove ?? options.onDiscardPoints);
+  discardForTimeMoveRef.current = options.onDiscardForTimeMove ?? options.onDiscardPoints;
+  const describeRef = useRef<() => string>(() => '');
+  describeRef.current =
+    options.describeDraft ??
+    (() => (vertexCount > 0 ? DRAFT_DISCARD_STRINGS.discarded(vertexCount) : ''));
+  const lostRef = useRef(options.onDraftLost);
+  lostRef.current = options.onDraftLost;
+
+  const loadNonce = useStore(store, (s) => s.projectLoadNonce);
+  const loadNonceRef = useRef(loadNonce);
 
   const prevArmedRef = useRef(false);
   useEffect(() => {
     const prev = prevArmedRef.current;
+    if (loadNonceRef.current !== loadNonce) {
+      // ファイルを開いた・新規にした ―― 聞かずに捨てて言う（冒頭の注記）。
+      loadNonceRef.current = loadNonce;
+      const what = prev ? describeRef.current() : '';
+      intentRef.current = null;
+      setPending(null);
+      prevArmedRef.current = armed;
+      if (prev) disarmRef.current();
+      if (armed) armRef.current();
+      if (what !== '') {
+        lostRef.current?.(what, DRAFT_LOSS_CAUSE.ProjectSwitched, store.getState().currentTime);
+      }
+      return;
+    }
     if (armed === prev) return;
     if (prev && !armed && (pendingRef.current !== null || draftRef.current.has)) {
       // **切替先を構えないまま聞く。** 戻したあとは `armed` がまた真になるので、
@@ -153,7 +195,7 @@ export function useDraftSwitchGuard<S>(
     else disarmRef.current();
     // 鍵は `armed`（道具 × モード）だけを見る。中で読む残りは ref 越しなので、
     // 頂点を打つたびに構え直しが走ることはない。
-  }, [armed, store, toolId]);
+  }, [armed, loadNonce, store, toolId]);
 
   useDraftTimeGate({
     store,
@@ -165,12 +207,19 @@ export function useDraftSwitchGuard<S>(
       setPending(DISCARD_REASON.Time);
     },
     onDiscardSilently: () => {
-      const lost = draftRef.current.count;
-      discardPointsRef.current();
-      return lost;
+      const what = describeRef.current();
+      discardForTimeMoveRef.current();
+      return what;
     },
-    onMovedAfterDiscard: (lost) => {
-      if (lost > 0) discardedRef.current?.(lost, true);
+    onMovedAfterDiscard: (what) => {
+      if (what !== '') lostRef.current?.(what, DRAFT_LOSS_CAUSE.TimeMoved, store.getState().currentTime);
+    },
+    onRangeClamped: (time) => {
+      const what = describeRef.current();
+      intentRef.current = null;
+      setPending(null);
+      discardForTimeMoveRef.current();
+      if (what !== '') lostRef.current?.(what, DRAFT_LOSS_CAUSE.RangeClamped, time);
     },
   });
 
@@ -190,10 +239,14 @@ export function useDraftSwitchGuard<S>(
     setPending(null);
     const lost = draftRef.current.count;
     if (intent !== null && 'moveTime' in intent) {
-      // 年の移動 ―― 点列だけ捨てて年を動かす。道具も、その年に居る対象も保つ。
-      discardPointsRef.current();
+      // 年の移動 ―― 下書きだけ捨てて年を動かす。道具も、その年に居る対象も保つ。Escape の
+      // 1 段戻りを使わない（素性の局面で対象まで手放す）。居ない年なら宿主の見張りが手放す。
+      const what = describeRef.current();
+      discardForTimeMoveRef.current();
       intent.moveTime();
-      if (lost > 0) discardedRef.current?.(lost, true);
+      if (what !== '') {
+        lostRef.current?.(what, DRAFT_LOSS_CAUSE.TimeMoved, store.getState().currentTime);
+      }
       return;
     }
     if (intent === null) {

@@ -48,7 +48,9 @@ import {
   DraftDiscardConfirm,
   confirmBlocksToolKey,
 } from '../shell/DraftDiscardConfirm';
+import { DRAFT_DISCARD_STRINGS } from '../shell/strings';
 import { useDraftSwitchGuard, type DraftSwitchGuard } from '../shell/useDraftSwitchGuard';
+import type { DraftLostHandler } from '../shell/useDraftTimeGate';
 import { useTargetStillThere } from '../shell/useTargetStillThere';
 import type { OptionBarStore } from '../shell/option-bar';
 import { useOptionBarEpoch, useToolBarChrome } from '../shell/useToolBarChrome';
@@ -141,7 +143,9 @@ export interface DrillToolControllerProps<S> {
    * **打ちかけの形を捨てたことを伝える口**（増分 5 の手直し 2 回目。追加の道具の
    * `onDraftDiscarded` と同じ役割）。捨てた頂点の数を状態行へ出すために要る。
    */
-  readonly onDraftDiscarded?: ((count: number, timeMoved?: boolean) => void) | undefined;
+  readonly onDraftDiscarded?: ((count: number) => void) | undefined;
+  /** 年の移動・設定の補正・読み込みで捨てたものを報せる口（B112）。 */
+  readonly onDraftLost?: DraftLostHandler | undefined;
   /** 掴んでいた面がいまの年に居なくなり、手放したことを伝える口（B112）。 */
   readonly onTargetGone?: (() => void) | undefined;
   /**
@@ -281,6 +285,10 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
   // 言うと、失われるのが頂点だと読めてしまう（ナイフは「打ちかけの入力があります」）。
   const drillDrawingRegion = drill.flow === DRILL_FLOW.DrawingRegion;
   const drillDraftPoints = drillDrawingRegion ? drill.region.length : 0;
+  // **素性欄の打ちかけ**（増分 8B の手直し）。右パネルの欄が「名前か種別に何か打った」を
+  // 変わったときだけ知らせてくる（`AddDraftPrompt.onDirtyChange`）。Escape と、年の移動で
+  // 捨てたものを言うときに読む。
+  const propertiesDirtyRef = useRef(false);
   const drillGuard: DraftSwitchGuard = useDraftSwitchGuard({
     store,
     toolId: TOOL_ID.EditDrill,
@@ -307,7 +315,18 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
       drill.releaseTarget();
       unpromoteOwnTarget();
     },
+    // 年の移動の［捨てる］は下書きだけ。対象を掴んだまま（居ない年なら下の見張りが手放す）。
+    onDiscardForTimeMove: drill.discardForTimeMove,
+    describeDraft: () => {
+      if (drill.flow === DRILL_FLOW.EnteringProperties) {
+        return propertiesDirtyRef.current
+          ? DRAFT_DISCARD_STRINGS.discardedRegionAndTyped
+          : DRAFT_DISCARD_STRINGS.discardedRegion;
+      }
+      return drillDraftPoints > 0 ? DRAFT_DISCARD_STRINGS.discarded(drillDraftPoints) : '';
+    },
     onDraftDiscarded: props.onDraftDiscarded,
+    onDraftLost: props.onDraftLost,
   });
 
   // **掴んでいる面がいまの年に居なくなったら手放す**（B112）。残しておくと、居ない面に点を打ち、
@@ -315,8 +334,9 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
   const onTargetGone = props.onTargetGone;
   const drillTargetPresent = useTargetStillThere(store, drill.targetId, resolveFeature);
   const releaseDrillTarget = drill.releaseTarget;
+  // 道具を降りるコミットでは見ない（読み込みで対象が消えても、手放したとは言わない）。
   const drillWatchesTarget =
-    drill.flow !== DRILL_FLOW.Idle && drill.flow !== DRILL_FLOW.ConflictPaused;
+    drillGuard.armed && drill.flow !== DRILL_FLOW.Idle && drill.flow !== DRILL_FLOW.ConflictPaused;
   useEffect(() => {
     if (!drillWatchesTarget || drillTargetPresent) return;
     releaseDrillTarget();
@@ -332,9 +352,6 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
     );
   }, [drill.region, drill.preview, drawSink, style]);
 
-  // **素性欄の打ちかけ**（増分 8B の手直し）。右パネルの欄が「名前か種別に何か打った」を
-  // 変わったときだけ知らせてくる（`AddDraftPrompt.onDirtyChange`）。Escape はこれを見る。
-  const propertiesDirtyRef = useRef(false);
   // N-13: 素性を入れている間に地図（幕）が押されたか（押されたら次の一手で理由を言う）。
   // 局面を離れたら忘れる（下の effect）。
   const [mapLockedHint, setMapLockedHint] = useState(false);

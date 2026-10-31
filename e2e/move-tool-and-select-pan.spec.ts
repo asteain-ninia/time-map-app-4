@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { test, expect, type Page } from '@playwright/test';
 
 import { SYNTHETIC_NEST_PARENT_ID } from '../src/ui/e2e/synthetic-project';
+import { APP_STRINGS } from '../src/ui/shell/strings';
 import {
   addInputLayerBox,
   armVertexTool,
@@ -353,6 +354,10 @@ test.describe('［動かす］とまとめ役', () => {
       expect(await projectStats(page)).toEqual(stats);
       expect(await liveCamera(page)).toEqual(cam);
       await expect(page.getByTestId('app-active-feature')).toHaveText(SYNTHETIC_NEST_PARENT_ID);
+      // 黙らず、動かない理由を状態行で言う。
+      await expect(page.getByTestId('statusbar-result')).toContainText(
+        APP_STRINGS.moveAggregateRefused,
+      );
     } finally {
       await app.close();
     }

@@ -46,6 +46,7 @@ import {
   confirmBlocksToolKey,
 } from '../shell/DraftDiscardConfirm';
 import { useDraftSwitchGuard, type DraftSwitchGuard } from '../shell/useDraftSwitchGuard';
+import type { DraftLostHandler } from '../shell/useDraftTimeGate';
 import { useTargetStillThere } from '../shell/useTargetStillThere';
 import type { OptionBarStore } from '../shell/option-bar';
 import { useOptionBarEpoch, useToolBarChrome } from '../shell/useToolBarChrome';
@@ -144,7 +145,9 @@ export interface RingEditToolControllerProps<S> {
    * **打ちかけの輪郭を捨てたことを伝える口**（増分 5 の手直し 2 回目。追加の道具の
    * `onDraftDiscarded` と同じ役割）。捨てた頂点の数を状態行へ出すために要る。
    */
-  readonly onDraftDiscarded?: ((count: number, timeMoved?: boolean) => void) | undefined;
+  readonly onDraftDiscarded?: ((count: number) => void) | undefined;
+  /** 年の移動・設定の補正・読み込みで捨てたものを報せる口（B112）。 */
+  readonly onDraftLost?: DraftLostHandler | undefined;
   /** 掴んでいた面がいまの年に居なくなり、手放したことを伝える口（B112）。 */
   readonly onTargetGone?: (() => void) | undefined;
   /** Provisional draw style override. */
@@ -283,7 +286,10 @@ export function RingEditToolController<S>(
       ring.releaseTarget();
       unpromoteOwnTarget();
     },
+    // 年の移動の［捨てる］は頂点列だけ。対象を掴んだまま（居ない年なら下の見張りが手放す）。
+    onDiscardForTimeMove: ring.discardDraftVertices,
     onDraftDiscarded: props.onDraftDiscarded,
+    onDraftLost: props.onDraftLost,
   });
 
   // **掴んでいる面がいまの年に居なくなったら手放す**（B112）。残しておくと、居ない面に点を打ち、
@@ -291,8 +297,11 @@ export function RingEditToolController<S>(
   const onTargetGone = props.onTargetGone;
   const ringTargetPresent = useTargetStillThere(store, ring.targetId, resolveFeature);
   const releaseRingTarget = ring.releaseTarget;
+  // 道具を降りるコミットでは見ない（読み込みで対象が消えても、手放したとは言わない）。
   const ringWatchesTarget =
-    ring.flow !== RING_EDIT_FLOW.Idle && ring.flow !== RING_EDIT_FLOW.ConflictPaused;
+    ringGuard.armed &&
+    ring.flow !== RING_EDIT_FLOW.Idle &&
+    ring.flow !== RING_EDIT_FLOW.ConflictPaused;
   useEffect(() => {
     if (!ringWatchesTarget || ringTargetPresent) return;
     releaseRingTarget();

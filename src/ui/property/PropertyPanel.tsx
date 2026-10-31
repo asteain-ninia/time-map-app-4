@@ -490,10 +490,13 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
 
   // 教訓 5.6 / 5.15: anchor selection syncs the session current time to the
   // anchor START via the SAME setCurrentTime action every time path uses.
+  // 印は移動の続きとして渡す ―― 下書きの板で年が止まったら、印も動かない（B112）。
   const handleSelectAnchor = useCallback(
-    (entry: AnchorEntry) => {
-      setSelectedAnchorId(entry.anchor.id);
-      store.getState().setCurrentTime(entry.start, TIME_CHANGE_SOURCE.AnchorSync);
+    (entry: AnchorEntry, andThen?: () => void) => {
+      store.getState().setCurrentTime(entry.start, TIME_CHANGE_SOURCE.AnchorSync, () => {
+        setSelectedAnchorId(entry.anchor.id);
+        andThen?.();
+      });
     },
     [store],
   );
@@ -515,12 +518,13 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     return anchorStartEdit.subscribe((anchorId) => {
       const row = anchorRowsRef.current.find((r) => r.entry.anchor.id === anchorId);
       if (row === undefined) return;
-      handleSelectAnchor(row.entry);
-      setStartEditorSignal((prev) => ({
-        anchorId,
-        n: (prev?.n ?? 0) + 1,
-        featureId: targetFeatureIdRef.current,
-      }));
+      handleSelectAnchor(row.entry, () => {
+        setStartEditorSignal((prev) => ({
+          anchorId,
+          n: (prev?.n ?? 0) + 1,
+          featureId: targetFeatureIdRef.current,
+        }));
+      });
     });
   }, [anchorStartEdit, handleSelectAnchor]);
 
@@ -760,9 +764,9 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     const origin = pendingDiscard;
     setPendingDiscard(null);
     if (origin === null) return;
-    const state = store.getState();
-    if (origin.featureId !== targetFeatureId) state.setActiveFeature(origin.featureId);
-    state.setCurrentTime(origin.time, TIME_CHANGE_SOURCE.AnchorSync);
+    store.getState().setCurrentTime(origin.time, TIME_CHANGE_SOURCE.AnchorSync, () => {
+      if (origin.featureId !== targetFeatureId) store.getState().setActiveFeature(origin.featureId);
+    });
   }, [pendingDiscard, store, targetFeatureId]);
 
   // --- 保存 ------------------------------------------------------------------

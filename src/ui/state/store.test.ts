@@ -2946,3 +2946,60 @@ describe('A7: 頂点の選択が落ちるのは「掴める道具から出ると
     expect(store.getState().activeFeature).toBe(f('A'));
   });
 });
+
+describe('setCurrentTime の続き（年を動かして、続きをする。B112）', () => {
+  it('動いたら、年のあとで 1 回走る', () => {
+    const store = makeStore();
+    const years: number[] = [];
+    store.getState().setCurrentTime(timePointYear(500), TIME_CHANGE_SOURCE.NumericJump, () => {
+      years.push(store.getState().currentTime.year);
+    });
+    expect(years).toEqual([500]);
+  });
+
+  it('同じ年でも走る（いまの年の一覧の行でも選べる）', () => {
+    const store = makeStore();
+    const now = store.getState().currentTime;
+    const andThen = vi.fn();
+    store.getState().setCurrentTime(now, TIME_CHANGE_SOURCE.NumericJump, andThen);
+    expect(andThen).toHaveBeenCalledTimes(1);
+  });
+
+  it('関門に止められたら走らず、関門へ渡る', () => {
+    const store = makeStore();
+    const andThen = vi.fn();
+    const gate = vi.fn(() => true);
+    store.getState().addTimeChangeGate(gate);
+    store.getState().setCurrentTime(timePointYear(500), TIME_CHANGE_SOURCE.NumericJump, andThen);
+    expect(andThen).not.toHaveBeenCalled();
+    expect(gate).toHaveBeenCalledTimes(1);
+    expect(gate.mock.calls[0]).toEqual([timePointYear(500), TIME_CHANGE_SOURCE.NumericJump, andThen]);
+  });
+});
+
+describe('年を直接書く経路も関門へ知らせる（書き込みの出口の 1 か所。B112）', () => {
+  it('表示年の範囲の補正は止められず、関門へ補正として届く。setCurrentTime は補正として届かない', () => {
+    const store = makeStore();
+    store.getState().setProjectTimelineRangeYears(0, 2000);
+    store.getState().setCurrentTime(timePointYear(1500), TIME_CHANGE_SOURCE.NumericJump);
+    const sources: string[] = [];
+    store.getState().addTimeChangeGate((_time, source) => {
+      sources.push(source);
+      return true; // 真を返しても補正は止まらない。
+    });
+
+    store.getState().updateProjectSetting('timelineMaxYear', 1400);
+    expect(store.getState().currentTime.year).toBe(1400);
+    expect(sources).toEqual([TIME_CHANGE_SOURCE.RangeClamp]);
+
+    store.getState().setProjectTimelineRangeYears(0, 1300);
+    expect(store.getState().currentTime.year).toBe(1300);
+    expect(sources).toEqual([TIME_CHANGE_SOURCE.RangeClamp, TIME_CHANGE_SOURCE.RangeClamp]);
+
+    store.getState().hydrateSettings({
+      projectSettings: { ...store.getState().projectSettings, timelineMaxYear: 1200 },
+    });
+    expect(store.getState().currentTime.year).toBe(1200);
+    expect(sources).toHaveLength(3);
+  });
+});

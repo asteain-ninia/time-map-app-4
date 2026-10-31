@@ -155,6 +155,8 @@ export interface UseDrillToolActions {
    * オプションバーの［1 つ戻す］（{@link UseDrillToolActions.undoLastVertex}）の役目。
    */
   discardRegion(): void;
+  /** 年の移動の［捨てる］。どの局面からでも、対象を掴んだまま空の形へ戻す（B112）。 */
+  discardForTimeMove(): void;
   /**
    * **Esc の階段 2 段目**（設計書 §D.4）: 掴んでいる対象だけを離して対象選びへ戻す。
    * **道具は持ったまま**。選択への昇格を戻すのはコントローラの持ち場である。
@@ -230,6 +232,18 @@ export function useDrillTool<S>(options: UseDrillToolOptions<S>): UseDrillTool {
   const discardRegion = useCallback(() => {
     setRegion([]);
     setPreview(null);
+    setMessage(null);
+  }, []);
+
+  /**
+   * 年の移動の［捨てる］（B112）。どの局面からでも、対象を掴んだまま空の形へ戻す。Escape の
+   * 1 段戻りとは別の処理である ―― 素性の局面の Escape は対象を離す段まで戻る。対象がその年に
+   * 居なければ、手放すのは宿主の見張りの持ち場。
+   */
+  const discardForTimeMove = useCallback(() => {
+    setRegion([]);
+    setPreview(null);
+    setEntering(false);
     setMessage(null);
   }, []);
 
@@ -410,6 +424,7 @@ export function useDrillTool<S>(options: UseDrillToolOptions<S>): UseDrillTool {
     confirmRegion,
     save,
     discardRegion,
+    discardForTimeMove,
     releaseTarget,
     cancel,
   };

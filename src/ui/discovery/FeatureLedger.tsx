@@ -1439,12 +1439,17 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
                         : {})}
                       onClick={() => {
                         if (row.hidden) return;
-                        const s = store.getState();
                         // **年を先に動かす**（手直し G3）。いま存在しない地物でも、
-                        // その錨の年へ移れば居るので選べる。
-                        s.setCurrentTime(row.start, TIME_CHANGE_SOURCE.AnchorSync);
-                        s.setActiveFeature(row.featureId);
-                        onFocusFeatureCamera?.(row.featureId);
+                        // その錨の年へ移れば居るので選べる。選択と視点は移動の続きとして
+                        // 渡す ―― 下書きの板で年が止まったら、どちらも動かない（B112）。
+                        store.getState().setCurrentTime(
+                          row.start,
+                          TIME_CHANGE_SOURCE.AnchorSync,
+                          () => {
+                            store.getState().setActiveFeature(row.featureId);
+                            onFocusFeatureCamera?.(row.featureId);
+                          },
+                        );
                       }}
                     >
                       <span className="ledger__name-text">{row.label}</span>

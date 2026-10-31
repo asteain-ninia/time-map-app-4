@@ -42,7 +42,11 @@ export interface TimelineBinding {
   /** Commit a slider fraction: converts to a complete value via U02. */
   readonly jumpToFraction: (fraction: number) => void;
   /** Commit a complete TimePoint from the direct-jump field. */
-  readonly jumpToTime: (point: TimePoint, source?: TimeChangeSource) => void;
+  readonly jumpToTime: (
+    point: TimePoint,
+    source?: TimeChangeSource,
+    andThen?: () => void,
+  ) => void;
   /** Advance by one step unit in a direction, clamped to the range. */
   readonly step: (unit: StepUnit, direction: StepDirection) => void;
   /**
@@ -78,9 +82,13 @@ export function useTimeline<S>(store: StoreApi<SessionStore<S>>): TimelineBindin
   );
 
   const jumpToTime = useCallback(
-    (point: TimePoint, source: TimeChangeSource = TIME_CHANGE_SOURCE.NumericJump) => {
+    (
+      point: TimePoint,
+      source: TimeChangeSource = TIME_CHANGE_SOURCE.NumericJump,
+      andThen?: () => void,
+    ) => {
       const clamped = clampToRange(point, timelineMin, timelineMax, calendar);
-      store.getState().setCurrentTime(clamped, source);
+      store.getState().setCurrentTime(clamped, source, andThen);
     },
     [store, timelineMin, timelineMax, calendar],
   );

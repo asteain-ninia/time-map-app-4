@@ -142,6 +142,11 @@ export const TIME_CHANGE_SOURCE = {
   NumericJump: 'numericJump',
   AnchorSync: 'anchorSync',
   Playback: 'playback',
+  /**
+   * 設定で表示年の範囲が変わり、いまの年が補正された。`setCurrentTime` を通らないので**関門へ
+   * 知らせるだけで止められない**（店の書き込みの出口が 1 か所で呼ぶ。B112）。
+   */
+  RangeClamp: 'rangeClamp',
 } as const;
 
 export type TimeChangeSource =
@@ -167,8 +172,15 @@ export interface SettingsChange {
  * settings. Generic over the opaque domain-state root `S` (owned by U03/U12);
  * this store never reaches into it (spec 依存: ルート状態を不変に受け渡す).
  */
-/** 時刻の変更を差し止める関門。真を返すと差し止める。 */
-export type TimeChangeGate = (time: TimePoint, source: TimeChangeSource) => boolean;
+/**
+ * 時刻の変更を差し止める関門。真を返すと差し止める。`andThen` は移動の続き（一覧の行の選択など）で、
+ * 差し止めたら関門が預かる。`source` が `RangeClamp` のときは止められない（戻り値は読まない）。
+ */
+export type TimeChangeGate = (
+  time: TimePoint,
+  source: TimeChangeSource,
+  andThen?: () => void,
+) => boolean;
 
 export interface SessionStoreState<S> {
   // -- domain state reference (the bridge slot; NOT a copy of the truth) ------
@@ -448,7 +460,12 @@ export interface SessionStoreActions<S> {
   setActiveTool(tool: ToolId | null, preserveSelection?: SelectionState): void;
 
   // time (every path goes through setCurrentTime -> re-validation)
-  setCurrentTime(time: TimePoint, source: TimeChangeSource): void;
+  /**
+   * `andThen` は「年を動かして、続きをする」の続き（教訓 5.71）。年が動いたあと（同じ年なら
+   * そのまま）に走る。関門に止められたら走らず、関門が預かって［捨てる］と一緒に走らせる。
+   * 呼ぶ側は**続きをこの外へ書かない**（年だけ止まって続きが走る）。
+   */
+  setCurrentTime(time: TimePoint, source: TimeChangeSource, andThen?: () => void): void;
   /**
    * 時刻の変更を差し止める関門を足す（`shell/useDraftTimeGate`。教訓 5.71 / 5.75）。関門が
    * 真を返すと、その変更は無かったことになる（選択の洗い直しも走らない）。同じ時刻への
@@ -1061,6 +1078,8 @@ export function createSessionStore<S>(
   const calendar = options.calendar ?? getCalendar('gregorian');
   // 時刻の変更を差し止める関門（`addTimeChangeGate`。B112）。
   const timeChangeGates = new Set<TimeChangeGate>();
+  // `setCurrentTime` が関門を通したあとの書き込み中（出口でもう一度知らせない）。
+  let committingTimeMove = false;
   const domainEquals = options.domainEquals ?? Object.is;
   const init = options.initial ?? {};
 
@@ -1153,6 +1172,17 @@ export function createSessionStore<S>(
   return createStore<SessionStore<S>>((rawSet, get) => {
     // **この店の書き込みはすべてここを通る**（頂点の選択の不変条件。{@link keepVertexRule}）。
     const set = (patch: Partial<SessionStore<S>>): void => {
+      // **`setCurrentTime` を通らずに年が動く書き込みも、関門へ知らせる**（B112）。表示年の範囲の
+      // 補正がこれに当たる。写しを作らないよう、経路ごとでなくこの出口の 1 か所で見る。読み込み・
+      // 新規は世代の印で別に片付く（`useDraftSwitchGuard`。教訓 5.96）。
+      if (
+        !committingTimeMove &&
+        patch.currentTime !== undefined &&
+        patch.projectLoadNonce === undefined &&
+        timePointKey(patch.currentTime) !== timePointKey(get().currentTime)
+      ) {
+        for (const gate of timeChangeGates) gate(patch.currentTime, TIME_CHANGE_SOURCE.RangeClamp);
+      }
       rawSet(keepVertexRule(get(), patch));
     };
     // Capture the CURRENT (live) domain + settings as the saved / clean baseline.
@@ -1745,7 +1775,7 @@ export function createSessionStore<S>(
     },
 
     // -- time (single re-validation funnel, 教訓 5.5 / 5.6) -----------------
-    setCurrentTime(time, source) {
+    setCurrentTime(time, source, andThen) {
       // 教訓 5.5/5.6: re-validate via U22 against the injected existence port.
       // The store resolves no time itself; every path funnels through here.
       //
@@ -1765,7 +1795,7 @@ export function createSessionStore<S>(
       // 選択が外れると、あとから取り返せない。
       if (timePointKey(clamped) !== timePointKey(currentTime)) {
         for (const gate of timeChangeGates) {
-          if (gate(clamped, source)) return;
+          if (gate(clamped, source, andThen)) return;
         }
       }
       const next = revalidateForTime(
@@ -1780,11 +1810,17 @@ export function createSessionStore<S>(
       // Re-validate against the display owners at the CLAMPED time + current control,
       // in the SAME set() (root unchanged on this branch, so pre-set is safe).
       const healed = revalidateDisplay(next, clamped, get().displayControl);
-      set({
-        currentTime: clamped,
-        lastTimeChangeSource: source,
-        ...selectionPatch(healed),
-      });
+      committingTimeMove = true;
+      try {
+        set({
+          currentTime: clamped,
+          lastTimeChangeSource: source,
+          ...selectionPatch(healed),
+        });
+      } finally {
+        committingTimeMove = false;
+      }
+      andThen?.();
     },
 
     addTimeChangeGate(gate) {

@@ -181,6 +181,8 @@ export interface UseKnifeToolActions {
    * DrawingCut 以外では何もしない（冪等）。
    */
   discardCutLine(): void;
+  /** 年の移動の［捨てる］。どの局面からでも、対象を掴んだまま空の分断線へ戻す（B112）。 */
+  discardForTimeMove(): void;
   /**
    * **Esc の階段 2 段目**（設計書 §D.4）: 掴んでいる対象だけを離して対象選択へ戻る。
    * **道具は持ったまま**で、下書きも選択も道具側では触らない ―― 対象を選択へ昇格させた
@@ -433,6 +435,20 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
     setMessage(null);
   }, []);
 
+  /**
+   * 年の移動の［捨てる］（B112）。どの局面からでも、対象を掴んだまま空の分断線へ戻す。Escape の
+   * 1 段戻りとは別の処理である ―― 素性の局面の Escape は対象を離す段まで戻る。対象がその年に
+   * 居なければ、手放すのは宿主の見張りの持ち場。
+   */
+  const discardForTimeMove = useCallback(() => {
+    setState((s) =>
+      s.phase === KNIFE_PHASE.Inactive || s.phase === KNIFE_PHASE.SelectingTarget
+        ? s
+        : selectTargetTx(startKnife(), s.targetId),
+    );
+    setMessage(null);
+  }, []);
+
   /** 2 段目: 対象だけを離して対象選択へ戻す（道具は持ったまま・断りは出さない）。 */
   const releaseTarget = useCallback(() => {
     if (
@@ -491,6 +507,7 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
     save,
     dropTarget,
     discardCutLine,
+    discardForTimeMove,
     releaseTarget,
     cancel,
     resetForSwitch,

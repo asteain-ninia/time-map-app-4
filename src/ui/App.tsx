@@ -21,7 +21,8 @@ import { useStore } from 'zustand';
 import { createSessionStore } from './state/store';
 import { EDIT_MODE, type ToolId } from './state/session';
 import { TOOL_ID, isSelectTool } from './shell/tools';
-import { APP_STRINGS, MENU_ITEM_LABELS } from './shell/strings';
+import { APP_STRINGS, DRAFT_DISCARD_STRINGS, MENU_ITEM_LABELS } from './shell/strings';
+import { DRAFT_LOSS_CAUSE, type DraftLossCause } from './shell/useDraftTimeGate';
 import { AppShell, SIDEBAR_SECTION } from './shell';
 import { buildSidebarContent } from './shell/SidebarContent';
 import { keepPanelsPresent } from './property/detail-panels';
@@ -769,23 +770,48 @@ export function App(): JSX.Element {
   const statusMessageStoreRef = useRef<StatusMessageStore | null>(null);
   statusMessageStoreRef.current ??= new StatusMessageStore();
   const statusMessageStore = statusMessageStoreRef.current;
-  // 打ちかけを黙って消さない（設計書 §D.4.1 / §H.5 の「直前の結果」）。年の移動に伴って捨てた
-  // ときは、移動の知らせに上書きされないよう後ろへ続ける文としても控える（B112）。
+  // 打ちかけを黙って消さない（設計書 §D.4.1 / §H.5 の「直前の結果」）。
   const onToolDraftDiscarded = useCallback(
-    (count: number, timeMoved?: boolean) => {
-      const text = ADD_STRINGS.draftDiscarded(count);
-      statusMessageStore.notice(text);
-      if (timeMoved === true) {
-        statusMessageStore.stageMoveTrailer(moveTrailerKey(store.getState().currentTime), text);
+    (count: number) => {
+      statusMessageStore.notice(ADD_STRINGS.draftDiscarded(count));
+    },
+    [statusMessageStore],
+  );
+  // 設定の補正で出した文（手放したことを同じ文の後ろへ続けるために覚える）。
+  const rangeClampNoticeRef = useRef<string | null>(null);
+  // 年の移動・設定の補正・読み込みで捨てたものを言う（B112）。年の移動は、移動の知らせに上書き
+  // されないよう後ろへ続ける文としても控える。ほかの 2 つに移動の知らせは来ないので、1 文で言い切る。
+  const onToolDraftLost = useCallback(
+    (what: string, cause: DraftLossCause, time: TimePoint) => {
+      switch (cause) {
+        case DRAFT_LOSS_CAUSE.TimeMoved:
+          statusMessageStore.notice(what);
+          statusMessageStore.stageMoveTrailer(moveTrailerKey(time), DRAFT_DISCARD_STRINGS.trailer(what));
+          return;
+        case DRAFT_LOSS_CAUSE.RangeClamped: {
+          const text = DRAFT_DISCARD_STRINGS.rangeClampedDiscarded(formatTimePoint(time), what);
+          rangeClampNoticeRef.current = text;
+          statusMessageStore.notice(text);
+          return;
+        }
+        case DRAFT_LOSS_CAUSE.ProjectSwitched:
+          statusMessageStore.notice(DRAFT_DISCARD_STRINGS.projectSwitchedDiscarded(what));
+          return;
       }
     },
-    [statusMessageStore, store],
+    [statusMessageStore],
   );
   // 道具が掴んでいた面がいまの年に居なくなり、手放したことを言う（B112）。移動の知らせに上書き
   // されないよう、印を外したときと同じく移動の知らせの後ろへ続ける文としても控える。
   const onToolTargetGone = useCallback(() => {
     const text = APP_STRINGS.toolTargetGoneByTime;
-    statusMessageStore.notice(text);
+    // 設定の補正で捨てたことの直後なら、読めるように同じ文の後ろへ続ける。
+    const clampNotice = rangeClampNoticeRef.current;
+    statusMessageStore.notice(
+      clampNotice !== null && statusMessageStore.get()?.text === clampNotice
+        ? `${clampNotice}${text}`
+        : text,
+    );
     statusMessageStore.stageMoveTrailer(moveTrailerKey(store.getState().currentTime), text);
   }, [statusMessageStore, store]);
 
@@ -930,6 +956,8 @@ export function App(): JSX.Element {
   // `recordCommitRef` と同じく ref に置く ―― 編集セッションの口は地図マウント時に 1 度だけ
   // 組み立てられるので、毎レンダーの関数を直接渡すと地図を組み直すことになる（技術方針 2.3）。
   const announceEditRefusalRef = useRef<((reason: EditRefusalKind) => void) | null>(null);
+  // ［動かす］でまとめ役を引いたとき、動かない理由を状態行へ出す口。上と同じく ref に置く。
+  const announceAggregateMoveRef = useRef<(() => void) | null>(null);
   // 増分 8E（G-14）: 確定の手続きが編集を断ったとき（穴・飛び地の形を壊す編集など）の理由を
   // 状態行へ出す口。上と同じく ref に置く（地図マウント時に 1 度だけ組み立てるため）。
   const announceEditRejectionRef = useRef<((rejected: RejectedResult) => void) | null>(null);
@@ -1054,6 +1082,7 @@ export function App(): JSX.Element {
       nextRingIdRef,
       recordCommitRef,
       announceEditRefusalRef,
+      announceAggregateMoveRef,
       announceCarryForwardRef,
       announceEditRejectionRef,
       openEditConflictRef,
@@ -1568,6 +1597,9 @@ export function App(): JSX.Element {
     statusMessageStore.failure(editRejectionMessage(rejected));
   };
 
+  announceAggregateMoveRef.current = (): void => {
+    statusMessageStore.failure(APP_STRINGS.moveAggregateRefused);
+  };
   announceEditRefusalRef.current = (reason: EditRefusalKind): void => {
     statusMessageStore.failure(
       reason === EDIT_REFUSAL.LongDrag
@@ -4258,6 +4290,7 @@ export function App(): JSX.Element {
               onModalChange={toolModalChange('add-discard-confirm')}
               onSnapPopoverOpenChange={popoverOpenChange('snap')}
               onDraftDiscarded={onToolDraftDiscarded}
+              onDraftLost={onToolDraftLost}
               onFocusSelection={focusCameraOnSelection}
             />
             <KnifeToolController<DomainRoot>
@@ -4281,6 +4314,7 @@ export function App(): JSX.Element {
               onModalChange={toolModalChange('knife')}
               onTargetGone={onToolTargetGone}
               onDraftDiscarded={onToolDraftDiscarded}
+              onDraftLost={onToolDraftLost}
             />
             {/* U30 INTEGRATION (教訓 5.7 / 5.2): the merge-tool controller, bound to the
                 SAME store. Selecting 編集モード→結合 starts a session; map-input clicks
@@ -4361,6 +4395,7 @@ export function App(): JSX.Element {
               onTargetGone={onToolTargetGone}
               onImpactModalChange={toolModalChange('ring-delete-impact')}
               onDraftDiscarded={onToolDraftDiscarded}
+              onDraftLost={onToolDraftLost}
             />
             {/* U27 INTEGRATION (教訓 5.7 / 5.2): the drill (穴あけによる新地物生成)
                 controller, bound to the SAME store. Selecting 編集モード→穴あけ arms a
@@ -4389,6 +4424,7 @@ export function App(): JSX.Element {
               onModalChange={toolModalChange('drill')}
               onTargetGone={onToolTargetGone}
               onDraftDiscarded={onToolDraftDiscarded}
+              onDraftLost={onToolDraftLost}
             />
           </>
         }
