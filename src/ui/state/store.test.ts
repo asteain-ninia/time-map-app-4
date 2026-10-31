@@ -2319,6 +2319,11 @@ const TOOL_MODE_OPERATIONS: Readonly<Record<string, OperationEntry>> = {
     run: (s) => s.getState().setActiveTool(TOOL_ID.AddArea),
   },
   // -- 時刻 -----------------------------------------------------------------
+  addTimeChangeGate: {
+    group: 'invariant',
+    why: '時刻の変更を止める関門を足すだけ。道具・鍵には触らない。',
+    run: (s) => s.getState().addTimeChangeGate(() => false)(),
+  },
   setCurrentTime: {
     group: 'invariant',
     why: '年は別の軸。動かしても道具・鍵は変わらない。',

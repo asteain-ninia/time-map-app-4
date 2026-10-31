@@ -40,11 +40,8 @@ import {
 import type { WorldCoordinate } from '../../domain/coordinate';
 import { type ProcessResult } from '../../domain/consistency/index';
 import type { FeatureId, RingId } from '../../domain/ids';
-import { timePointKey } from '../../domain/anchor-id';
-import type { TimePoint } from '../../domain/time/time-point';
 import type { SessionStore } from '../state/store';
 import { EDIT_MODE, type SnapSettings, type ToolId } from '../state/session';
-import { TIME_CHANGE_SOURCE } from '../state/store';
 
 import { coerceGridSpacing } from '../../domain/basemap/grid';
 import { buildAddPrimitives, type AddStyle } from '../../render/add-batch';
@@ -60,6 +57,7 @@ import {
   confirmBlocksToolKey,
   type DiscardReason,
 } from '../shell/DraftDiscardConfirm';
+import { useDraftTimeGate } from '../shell/useDraftTimeGate';
 
 import { AddDraftStore } from './add-draft-store';
 import { SnapOptions } from './SnapOptions';
@@ -169,7 +167,7 @@ export interface AddToolControllerProps<S> {
    * （差し止めは書き込みの手前に関門を置く仕事＝増分 5）。**せめて黙って消さない**
    * ため、捨てた頂点の数をここから報せて状態行に出す。`count` は捨てた頂点の数。
    */
-  readonly onDraftDiscarded?: ((count: number) => void) | undefined;
+  readonly onDraftDiscarded?: ((count: number, timeMoved?: boolean) => void) | undefined;
   /**
    * 一覧から地物を選んだあと、**下書きを片付けてから**視点をその地物へ合わせる口
    * （増分 3 の手直し 2 回目 / D1。設計書 §D.2）。作図中は視点を飛ばさない（バグ狩り #7）
@@ -403,13 +401,8 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   // どちらも **作図の外側で起きる遷移**で、打ちかけの下書きはその年・その選択のもとで
   // 打たれている。年が変われば吸着した相手が居ないかもしれないし（GPT #8）、一覧で
   // 選び直したなら利用者の関心はもう別の地物にある。**黙って残さない・黙って消さない。**
-  // **月・日まで見る**（B43）。年と細かさだけを見ていたので、同じ年の中で 3 月 → 9 月と動いても
-  // 見張りが働かず、下書きと吸着した頂点 id がそのまま 9 月の記録になった。
-  const currentTimeKey = timePointKey(currentTime);
-  const prevTimeRef = useRef<{ key: string; value: TimePoint }>({
-    key: currentTimeKey,
-    value: currentTime,
-  });
+  // **年は月・日まで見る**（B43）。同じ年の中で 3 月 → 9 月と動いても、下書きと吸着した頂点 id は
+  // 持ち越さない。年の関門は輪郭・穴あけ・分けると共有の `useDraftTimeGate`（B112）。
   const activeFeature = useStore(store, (s) => s.activeFeature);
   const prevActiveRef = useRef<FeatureId | null>(activeFeature);
 
@@ -424,47 +417,42 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     add.phase !== ADD_PHASE.ConflictPaused &&
     ((add.session?.vertices.length ?? 0) > 0 || add.phase === ADD_PHASE.PropertyForm);
 
-  useEffect(() => {
-    const prev = prevTimeRef.current;
-    if (prev.key === currentTimeKey) return;
-    const before = prev.value;
-    // **板が出ている間は「前の年」を進めない**（3 回目の手直し。実測 r2d）。
-    //
-    // 進めてしまうと、「続ける」で年を戻したときに **その戻り自体が新しい変化に見え**、
-    // 板が閉じないまま年が 0 ⇄ 1500 を往復し、抜け道が「捨てる」しか残らなかった
-    // （見張りが自分の後始末を新しい出来事と読む、という型の欠陥）。基準は
-    // **板を開く前の年**に留め、閉じる／捨てるまで動かさない。
-    if (pendingRef.current !== null) return;
-    if (hasDraftNow && canCompleteNow) {
-      // **板に答えてから年を動かす**（2026-09-07 の手直し。教訓 5.71「確認は行動の前」）。
-      //
-      // 旧版は年が動いたあとに聞いていたので、板が出ているあいだ読み取りも地図も
-      // **もう新しい年**になっていた（実測: 1500 年で 3 点打って 5000 年の目盛りを押すと、
-      // 板の後ろで 5000 年の地図が見えている）。「続ける」を押すと年が戻るので、
-      // **画面が一度嘘をついてから訂正する**形になっていた。ここで先に戻し、
-      // 「捨てる」と答えられて初めて頼まれた年へ動かす。
-      const requested = currentTime;
-      // 元の年へ戻す。**数値ジャンプと同じ入口**を通すので、選択の再検証も
-      // 今までどおり走る（教訓 5.29: 時刻を動かす経路を増やさない）。
-      store.getState().setCurrentTime(before, TIME_CHANGE_SOURCE.NumericJump);
+  // 捨てる前の確認（D1。増分 2 の N-04（素性欄の下書き）と同じ器の形）。
+  //
+  // **閾値は「確定できる点数」**（設計書 §D.2）。それ以上なら聞く（作り直すのに手間が
+  // かかる形なので）、以下なら黙って捨てずに **報せて**片付ける。
+  //
+  // `keep` は「このままにする」を選んだときに元へ戻す動き（選択を戻す等）。無ければ
+  // 何も戻さない（Escape のように、そもそも何も変わっていない経路）。
+  const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null);
+  const pendingRef = useRef<PendingDiscard | null>(null);
+  pendingRef.current = pendingDiscard;
+
+  useDraftTimeGate({
+    store,
+    isBoardOpen: () => pendingRef.current !== null,
+    hasDraft: hasDraftNow,
+    asks: hasDraftNow && canCompleteNow,
+    // 「このままにする」は何もしない（年はまだ動いていない）。下書きは打った年のものなので、
+    // 年だけ進めて残すと「別の年の頂点で作った形」を保存することになる（GPT #8）。
+    onAsk: (moveTime) => {
       setPendingDiscard({
         reason: DISCARD_REASON.Time,
-        // 「このままにする」＝もう戻してあるので何もしない。下書きは打った年のもの
-        // なので、年だけ進めて残すと「別の年の頂点で作った形」を保存することになる
-        // （GPT #8）。
         proceed: () => {
-          store.getState().setCurrentTime(requested, TIME_CHANGE_SOURCE.NumericJump);
+          moveTime();
           if (activeKind !== null) add.start(activeKind);
         },
       });
-      return; // ここでは `prevTimeRef` を進めない（戻したときに素通りさせるため）。
-    }
-    prevTimeRef.current = { key: currentTimeKey, value: currentTime };
-    if (!hasDraftNow) return;
-    const lost = draftSizeRef.current;
-    cancelAction();
-    if (lost > 0) onDraftDiscarded?.(lost);
-  }, [currentTimeKey, currentTime, hasDraftNow, canCompleteNow, cancelAction, onDraftDiscarded, store]);
+    },
+    onDiscardSilently: () => {
+      const lost = draftSizeRef.current;
+      cancelAction();
+      return lost;
+    },
+    onMovedAfterDiscard: (lost) => {
+      if (lost > 0) onDraftDiscarded?.(lost, true);
+    },
+  });
 
   useEffect(() => {
     const prev = prevActiveRef.current;
@@ -489,7 +477,18 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     cancelAction();
     if (lost > 0) onDraftDiscarded?.(lost);
     onFocusSelection?.();
-  }, [activeFeature, hasDraftNow, canCompleteNow, cancelAction, onDraftDiscarded, onFocusSelection, store]);
+    // **板が閉じたら見直す**（`pendingDiscard`）。保存の途中で選択が移ると板が 1 コミットだけ開いて
+    // 畳まれ、基準が古いまま残る。残すと次の 1 点目が「別の地物を選んだ」と読まれて捨てられる。
+  }, [
+    activeFeature,
+    hasDraftNow,
+    canCompleteNow,
+    pendingDiscard,
+    cancelAction,
+    onDraftDiscarded,
+    onFocusSelection,
+    store,
+  ]);
 
   // --- 教訓 5.5: re-validate the chosen face parent when the candidate set changes
   // (a time change can drop a covering parent). Runs only while a session exists.
@@ -735,16 +734,6 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   // **帯は 1 つの道具だけが持つ**（`OptionBarStore.claim`）。道具を構えた瞬間に持ち、
   // 降りた瞬間に手放す。手放しは自分が持っているときだけ効くので、別の道具が先に
   // 持っていたら空振りする（増分 1 の申し送り「reset を誰がいつ呼ぶか」への答え）。
-  // 捨てる前の確認（D1。増分 2 の N-04（素性欄の下書き）と同じ器の形）。
-  //
-  // **閾値は「確定できる点数」**（設計書 §D.2）。それ以上なら聞く（作り直すのに手間が
-  // かかる形なので）、以下なら黙って捨てずに **報せて**片付ける。
-  //
-  // `keep` は「このままにする」を選んだときに元へ戻す動き（年を戻す等）。無ければ
-  // 何も戻さない（Escape のように、そもそも何も変わっていない経路）。
-  const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null);
-  const pendingRef = useRef<PendingDiscard | null>(null);
-  pendingRef.current = pendingDiscard;
   useEffect(() => {
     // 局面が変わったら確認は畳む（教訓 5.2: 一時状態は全経路で破棄する）。
     if (add.phase === ADD_PHASE.Idle) setPendingDiscard(null);
@@ -1044,7 +1033,8 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
         const proceed = pendingDiscard?.proceed;
         setPendingDiscard(null);
         add.cancel();
-        if (lost > 0) onDraftDiscarded?.(lost);
+        const timeMoved = reason === DISCARD_REASON.Time;
+        if (lost > 0 && !timeMoved) onDraftDiscarded?.(lost);
         // **見張りの基準を、捨てたあとの今へ合わせ直す**（増分 5 の手直し A3）。
         //
         // 板を開いているあいだ、見張りは基準（`prevKindRef` ほか）を **わざと進めて
@@ -1054,13 +1044,14 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
         // 見張りは二度と走らないため）。
         prevKindRef.current = activeKind;
         prevToolRef.current = activeTool;
-        prevTimeRef.current = { key: currentTimeKey, value: currentTime };
         prevActiveRef.current = activeFeature;
         // **切替先はここで初めて構える**（増分 5 の手直し 2 回目）。板が出ているあいだは
         // 元の道具のままだったので、捨てると答えられた今、頼まれていた持ち替え（鍵）を
         // 実行する。見張りは上で基準を今へ合わせてあるので、この遷移は素通りする。
         if (proceed !== undefined) {
           proceed();
+          // 年を動かしたときは動いたあとで言う（移動の知らせの後ろに続く。B112）。
+          if (lost > 0 && timeMoved) onDraftDiscarded?.(lost, true);
           return;
         }
         if (activeKind !== null) add.start(activeKind);

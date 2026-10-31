@@ -46,6 +46,7 @@ import {
   confirmBlocksToolKey,
 } from '../shell/DraftDiscardConfirm';
 import { useDraftSwitchGuard, type DraftSwitchGuard } from '../shell/useDraftSwitchGuard';
+import { useTargetStillThere } from '../shell/useTargetStillThere';
 import type { OptionBarStore } from '../shell/option-bar';
 import { useOptionBarEpoch, useToolBarChrome } from '../shell/useToolBarChrome';
 import { describeOptionBarTarget } from '../shell/ToolOptionBar';
@@ -143,7 +144,9 @@ export interface RingEditToolControllerProps<S> {
    * **打ちかけの輪郭を捨てたことを伝える口**（増分 5 の手直し 2 回目。追加の道具の
    * `onDraftDiscarded` と同じ役割）。捨てた頂点の数を状態行へ出すために要る。
    */
-  readonly onDraftDiscarded?: ((count: number) => void) | undefined;
+  readonly onDraftDiscarded?: ((count: number, timeMoved?: boolean) => void) | undefined;
+  /** 掴んでいた面がいまの年に居なくなり、手放したことを伝える口（B112）。 */
+  readonly onTargetGone?: (() => void) | undefined;
   /** Provisional draw style override. */
   readonly style?: RingEditStyle | undefined;
 }
@@ -282,6 +285,20 @@ export function RingEditToolController<S>(
     },
     onDraftDiscarded: props.onDraftDiscarded,
   });
+
+  // **掴んでいる面がいまの年に居なくなったら手放す**（B112）。残しておくと、居ない面に点を打ち、
+  // 確定を押しても何も記録されず、状態行にも何も出ない（実機で確認）。
+  const onTargetGone = props.onTargetGone;
+  const ringTargetPresent = useTargetStillThere(store, ring.targetId, resolveFeature);
+  const releaseRingTarget = ring.releaseTarget;
+  const ringWatchesTarget =
+    ring.flow !== RING_EDIT_FLOW.Idle && ring.flow !== RING_EDIT_FLOW.ConflictPaused;
+  useEffect(() => {
+    if (!ringWatchesTarget || ringTargetPresent) return;
+    releaseRingTarget();
+    unpromoteOwnTarget();
+    onTargetGone?.();
+  }, [ringWatchesTarget, ringTargetPresent, releaseRingTarget, unpromoteOwnTarget, onTargetGone]);
 
   // --- Feed the provisional ring-edit primitives to the render sink on every draft
   // change (FR-22). An idle draft yields [] so the overlay vanishes on reset (教訓 5.2).

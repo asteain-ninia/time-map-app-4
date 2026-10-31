@@ -52,6 +52,7 @@ import {
 } from '../../domain/survey/index';
 import type { WorldCoordinate } from '../../domain/coordinate';
 import { getCalendar, type Calendar } from '../../domain/time/calendar';
+import { timePointKey } from '../../domain/anchor-id';
 import { compareNormalized, normalize } from '../../domain/time/normalized';
 import { type TimePoint, timePointYear } from '../../domain/time/time-point';
 
@@ -166,6 +167,9 @@ export interface SettingsChange {
  * settings. Generic over the opaque domain-state root `S` (owned by U03/U12);
  * this store never reaches into it (spec 依存: ルート状態を不変に受け渡す).
  */
+/** 時刻の変更を差し止める関門。真を返すと差し止める。 */
+export type TimeChangeGate = (time: TimePoint, source: TimeChangeSource) => boolean;
+
 export interface SessionStoreState<S> {
   // -- domain state reference (the bridge slot; NOT a copy of the truth) ------
   /**
@@ -445,6 +449,12 @@ export interface SessionStoreActions<S> {
 
   // time (every path goes through setCurrentTime -> re-validation)
   setCurrentTime(time: TimePoint, source: TimeChangeSource): void;
+  /**
+   * 時刻の変更を差し止める関門を足す（`shell/useDraftTimeGate`。教訓 5.71 / 5.75）。関門が
+   * 真を返すと、その変更は無かったことになる（選択の洗い直しも走らない）。同じ時刻への
+   * 書き込みは動きではないので関門を通らない。戻り値は取り外す関数。
+   */
+  addTimeChangeGate(gate: TimeChangeGate): () => void;
   setTimelineRange(min: TimePoint, max: TimePoint): void;
 
   // camera / longitude
@@ -1049,6 +1059,8 @@ export function createSessionStore<S>(
   // never reaches into the opaque domain to read a palette itself; FR-109 follow-up).
   const readDomainPalette = options.readDomainPalette;
   const calendar = options.calendar ?? getCalendar('gregorian');
+  // 時刻の変更を差し止める関門（`addTimeChangeGate`。B112）。
+  const timeChangeGates = new Set<TimeChangeGate>();
   const domainEquals = options.domainEquals ?? Object.is;
   const init = options.initial ?? {};
 
@@ -1747,8 +1759,15 @@ export function createSessionStore<S>(
       // All shipped UI callers already clamp (useTimeline / bounded playback), so
       // this is a no-op on every live path; it only closes the asymmetry for a
       // future non-UI caller or a playback edge that overshoots a bound.
-      const { selection, timelineMin, timelineMax } = get();
+      const { selection, timelineMin, timelineMax, currentTime } = get();
       const clamped = clampTimeToRange(time, timelineMin, timelineMax, calendar);
+      // **打ちかけの下書きを守る関門**（B112）。洗い直しより前に見る ―― 差し止めた変更で
+      // 選択が外れると、あとから取り返せない。
+      if (timePointKey(clamped) !== timePointKey(currentTime)) {
+        for (const gate of timeChangeGates) {
+          if (gate(clamped, source)) return;
+        }
+      }
       const next = revalidateForTime(
         selection,
         clamped,
@@ -1766,6 +1785,13 @@ export function createSessionStore<S>(
         lastTimeChangeSource: source,
         ...selectionPatch(healed),
       });
+    },
+
+    addTimeChangeGate(gate) {
+      timeChangeGates.add(gate);
+      return () => {
+        timeChangeGates.delete(gate);
+      };
     },
 
     setTimelineRange(min, max) {

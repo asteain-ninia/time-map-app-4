@@ -49,6 +49,7 @@ import {
   confirmBlocksToolKey,
 } from '../shell/DraftDiscardConfirm';
 import { useDraftSwitchGuard, type DraftSwitchGuard } from '../shell/useDraftSwitchGuard';
+import { useTargetStillThere } from '../shell/useTargetStillThere';
 import type { OptionBarStore } from '../shell/option-bar';
 import { useOptionBarEpoch, useToolBarChrome } from '../shell/useToolBarChrome';
 import { describeOptionBarTarget } from '../shell/ToolOptionBar';
@@ -140,7 +141,9 @@ export interface DrillToolControllerProps<S> {
    * **打ちかけの形を捨てたことを伝える口**（増分 5 の手直し 2 回目。追加の道具の
    * `onDraftDiscarded` と同じ役割）。捨てた頂点の数を状態行へ出すために要る。
    */
-  readonly onDraftDiscarded?: ((count: number) => void) | undefined;
+  readonly onDraftDiscarded?: ((count: number, timeMoved?: boolean) => void) | undefined;
+  /** 掴んでいた面がいまの年に居なくなり、手放したことを伝える口（B112）。 */
+  readonly onTargetGone?: (() => void) | undefined;
   /**
    * 新しい地物の素性入力を **右パネルの「新規の姿」**へ渡す口（司令塔の決定 (5) /
    * 設計書 §B.5 の台帳 #9 / §C.2 の 27）。追加の道具・分ける道具と同じ 1 本の橋である。
@@ -283,6 +286,8 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
     toolId: TOOL_ID.EditDrill,
     // 面をくり抜く形は **3 点で確定できる**（`useDrillTool` の `canConfirm` と同じ一線）。
     hasCommittableDraft: drillDraftPoints >= 3,
+    // 素性を入れている局面の形も打った年のもの。年を動かすときは聞く（`asksOnTimeMove` の注記）。
+    asksOnTimeMove: drillDraftPoints >= 3 || drill.flow === DRILL_FLOW.EnteringProperties,
     vertexCount: drillDraftPoints,
     onArm: () => {
       drill.start();
@@ -304,6 +309,20 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
     },
     onDraftDiscarded: props.onDraftDiscarded,
   });
+
+  // **掴んでいる面がいまの年に居なくなったら手放す**（B112）。残しておくと、居ない面に点を打ち、
+  // 確定を押すと素性入力まで進んでしまう（実機で確認）。
+  const onTargetGone = props.onTargetGone;
+  const drillTargetPresent = useTargetStillThere(store, drill.targetId, resolveFeature);
+  const releaseDrillTarget = drill.releaseTarget;
+  const drillWatchesTarget =
+    drill.flow !== DRILL_FLOW.Idle && drill.flow !== DRILL_FLOW.ConflictPaused;
+  useEffect(() => {
+    if (!drillWatchesTarget || drillTargetPresent) return;
+    releaseDrillTarget();
+    unpromoteOwnTarget();
+    onTargetGone?.();
+  }, [drillWatchesTarget, drillTargetPresent, releaseDrillTarget, unpromoteOwnTarget, onTargetGone]);
 
   // --- Feed the provisional drill primitives to the render sink on every draft change
   // (FR-45). An empty region yields [] so the overlay vanishes on reset (教訓 5.2).

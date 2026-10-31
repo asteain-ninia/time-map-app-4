@@ -181,7 +181,9 @@ export interface KnifeToolControllerProps<S> {
    * `onDraftDiscarded` と同じ役割）。捨てた頂点の数を状態行へ出すために要る ――
    * 黙って消さないのがこの増分の規律である（設計書 §D.4.1）。
    */
-  readonly onDraftDiscarded?: ((count: number) => void) | undefined;
+  readonly onDraftDiscarded?: ((count: number, timeMoved?: boolean) => void) | undefined;
+  /** 掴んでいた面がいまの年に居なくなり、手放したことを伝える口（B112）。 */
+  readonly onTargetGone?: (() => void) | undefined;
   /**
    * 非継承側の素性入力を **右パネルの「新規の姿」**へ渡す口（司令塔の決定 (5) /
    * 設計書 §B.5 の台帳 #9 / §C.2 の 27）。追加の道具（`AddToolController`）と同じ橋で、
@@ -435,6 +437,7 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   // ConflictPaused (the host's conflict flow owns the session until it commits / cancels).
   const dropTarget = knife.dropTarget;
   const knifeFlow = knife.flow;
+  const onTargetGone = props.onTargetGone;
   useEffect(() => {
     if (resolveLeafShape === undefined) return;
     if (knifeFlow === KNIFE_FLOW.Idle || knifeFlow === KNIFE_FLOW.ConflictPaused) return;
@@ -446,7 +449,9 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     }
     if (targetShape !== undefined) return;
     dropTarget();
-  }, [knifeState, knifeFlow, targetShape, resolveLeafShape, dropTarget]);
+    // 手放した理由を言う（B112）。隠しただけなら面は居るので言わない（§D.6 の状態行が別に言う）。
+    if (resolveFeature(knifeState.targetId) === undefined) onTargetGone?.();
+  }, [knifeState, knifeFlow, targetShape, resolveLeafShape, dropTarget, resolveFeature, onTargetGone]);
 
   // --- 教訓 5.2 全経路で破棄 ＋ 設計書 §D.4.1 の 3「確定できる点数まで来ている下書きは
   // 捨てる前に確認」。道具・鍵の出入りは共有の見張り（`shell/useDraftSwitchGuard`）が
@@ -460,6 +465,12 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     toolId: TOOL_ID.EditKnife,
     // 分断線は **2 点で確定できる**（1 本の線分になる）。それ未満は聞かずに捨てる。
     hasCommittableDraft: cutPoints >= 2,
+    // 継承先を選ぶ・素性を入れる局面の切った形も打った年のもの。年を動かすときは聞く
+    // （`asksOnTimeMove` の注記）。
+    asksOnTimeMove:
+      cutPoints >= 2 ||
+      knife.flow === KNIFE_FLOW.ChoosingInheritor ||
+      knife.flow === KNIFE_FLOW.EnteringProperties,
     vertexCount: cutPoints,
     onArm: () => {
       knife.start();
@@ -1232,6 +1243,9 @@ function KnifeToolChrome<S>(props: KnifeToolChromeProps<S>): JSX.Element | null 
 
   return (
     <div className="knife-tool" data-testid="knife-tool" data-flow={knife.flow}>
+      <span data-testid="knife-point-count" hidden>
+        {knife.state.phase === KNIFE_PHASE.DrawingCut ? knife.state.line.points.length : 0}
+      </span>
       {/* The map input bridge: a transparent layer ABOVE the map (教訓 5.14) ONLY
           while selecting / drawing, so it never steals input otherwise. The
           overlay drawn underneath does NOT capture clicks — this layer does, and

@@ -87,6 +87,8 @@ export const APP_STRINGS = {
   markCount: (count: number): string =>
     count === 0 ? '対象の印を全部外しました。' : `対象 ${String(count)} 件`,
   /** 時刻を動かしてその年に居なくなった印を外した（Fable #5 / 決定 (10)）。 */
+  /** 道具が掴んでいた面がいまの年に居なくなり、手放したとき（B112）。 */
+  toolTargetGoneByTime: '掴んでいた面はこの年にありません。対象から外しました。',
   markDroppedByTime: (count: number): string =>
     `この年に居ない ${String(count)} 件の印を外しました。`,
   /**

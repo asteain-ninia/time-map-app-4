@@ -23,6 +23,9 @@
 //
 // 見張りが「基準を進めない」のは追加の道具と同じ理由である（板が出ているあいだに基準を
 // 進めると、戻した動きそのものが新しい変化に見えて板が閉じなくなる）。
+//
+// **年の移動も同じ 2 択**（B112。設計書 §D.2 の☆☆）。関門は `useDraftTimeGate` の 1 本で、
+// 年はストアの入口で止まるので、ここには戻す動きが無い。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from 'zustand';
@@ -32,6 +35,7 @@ import { EDIT_MODE, type ToolId } from '../state/session';
 import type { SessionStore } from '../state/store';
 
 import { DISCARD_REASON, type DiscardReason } from './DraftDiscardConfirm';
+import { useDraftTimeGate } from './useDraftTimeGate';
 
 /** 「捨てる」と答えられて初めて実行する切替先。 */
 interface ToolSwitchIntent {
@@ -41,12 +45,25 @@ interface ToolSwitchIntent {
   readonly tool: ToolId | null;
 }
 
+/** 「捨てる」と答えられて初めて動かす年。道具は降りない。 */
+interface TimeMoveIntent {
+  readonly moveTime: () => void;
+}
+
+type GuardIntent = ToolSwitchIntent | TimeMoveIntent;
+
 export interface DraftSwitchGuardOptions<S> {
   readonly store: StoreApi<SessionStore<S>>;
   /** この道具の id。構えているかの判定と、板を出したときに戻す先。 */
   readonly toolId: ToolId;
   /** **確定できる点数**まで来ている下書きを持っているか（聞く価値のある下書き）。 */
   readonly hasCommittableDraft: boolean;
+  /**
+   * 年を動かす前に聞く下書きか。省略すると {@link hasCommittableDraft} と同じ。道具の持ち替えと
+   * 違い、**素性を入れている局面でも聞く**ので分けてある ―― 切った形・くり抜く形は打った年の
+   * 形から作ったもので、年だけ進めると別の年の形を記録することになる。
+   */
+  readonly asksOnTimeMove?: boolean | undefined;
   /** 打ちかけの頂点の数（板の文言と、捨てたことの報せに出す）。 */
   readonly vertexCount: number;
   /** 構えたときに走らせる（道具の `start()`）。 */
@@ -59,7 +76,7 @@ export interface DraftSwitchGuardOptions<S> {
    */
   readonly onDiscardPoints: () => void;
   /** 捨てた頂点の数を報せる口（状態行の「直前の結果」）。 */
-  readonly onDraftDiscarded?: ((count: number) => void) | undefined;
+  readonly onDraftDiscarded?: ((count: number, timeMoved?: boolean) => void) | undefined;
 }
 
 export interface DraftSwitchGuard {
@@ -84,6 +101,7 @@ export function useDraftSwitchGuard<S>(
   options: DraftSwitchGuardOptions<S>,
 ): DraftSwitchGuard {
   const { store, toolId, hasCommittableDraft, vertexCount } = options;
+  const asksOnTimeMove = options.asksOnTimeMove ?? hasCommittableDraft;
 
   const mode = useStore(store, (s) => s.mode);
   const activeTool = useStore(store, (s) => s.activeTool);
@@ -93,7 +111,7 @@ export function useDraftSwitchGuard<S>(
   // 見張りの中から「いま板が出ているか」を読む（effect の閉包は 1 コミット古いことがある）。
   const pendingRef = useRef<DiscardReason | null>(null);
   pendingRef.current = pending;
-  const intentRef = useRef<ToolSwitchIntent | null>(null);
+  const intentRef = useRef<GuardIntent | null>(null);
   // 下書きの量は毎レンダー変わる。見張りの effect は `armed` だけを鍵にするので、
   // 中で読む値は ref 越しにする（依存に入れると打つたびに張り替わる）。
   const draftRef = useRef({ has: hasCommittableDraft, count: vertexCount });
@@ -137,6 +155,25 @@ export function useDraftSwitchGuard<S>(
     // 頂点を打つたびに構え直しが走ることはない。
   }, [armed, store, toolId]);
 
+  useDraftTimeGate({
+    store,
+    isBoardOpen: () => pendingRef.current !== null,
+    hasDraft: armed && (asksOnTimeMove || vertexCount > 0),
+    asks: asksOnTimeMove,
+    onAsk: (moveTime) => {
+      intentRef.current = { moveTime };
+      setPending(DISCARD_REASON.Time);
+    },
+    onDiscardSilently: () => {
+      const lost = draftRef.current.count;
+      discardPointsRef.current();
+      return lost;
+    },
+    onMovedAfterDiscard: (lost) => {
+      if (lost > 0) discardedRef.current?.(lost, true);
+    },
+  });
+
   const askOnEscape = useCallback(() => {
     intentRef.current = null;
     setPending(DISCARD_REASON.Escape);
@@ -152,6 +189,13 @@ export function useDraftSwitchGuard<S>(
     intentRef.current = null;
     setPending(null);
     const lost = draftRef.current.count;
+    if (intent !== null && 'moveTime' in intent) {
+      // 年の移動 ―― 点列だけ捨てて年を動かす。道具も、その年に居る対象も保つ。
+      discardPointsRef.current();
+      intent.moveTime();
+      if (lost > 0) discardedRef.current?.(lost, true);
+      return;
+    }
     if (intent === null) {
       // 利用者自身の Escape ―― 1 段ぶん（点列だけ）を捨てる。対象も道具も保つ。
       discardPointsRef.current();

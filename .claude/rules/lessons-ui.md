@@ -141,7 +141,7 @@ paths:
 ### 5.71 確認を出すなら、その原因になった遷移を先に済ませてはいけない
 - 正しい道: 「捨てますか」の板を出す瞬間に道具・鍵・年・選択を元へ戻し、遷移は意図だけ覚えて「捨てる」と答えられてから実行する。［続ける］は何もしない。板は `*-modal-root` / `*-backdrop` / `*-dialog` の作法で本物のモーダルにし、背面の覆いで入力を遮る（遷移の種類が増えても規則は 1 つ）。
 - 誤った道の兆候: 先に切り替えてから板を出し、［続ける］で戻す形。切替先の入力ブリッジ（`knife-input-layer` は `z-index: 1`）が板に乗ってマウスで押せない、板の後ろがもう新しい年の地図、読むだけなのに下書きが生きている。板の外のクリックが下書きに刺さる形も危ない。
-- 確かめ方: 板が出た状態で (1) ボタンの座標の `elementFromPoint` が自分 (2) 前倒しした状態が未変更 (3) 板の外が覆いに当たる、を見る。(2) は単体、(1)(3) は E2E（jsdom で測れない）。`e2e/inc5-shell.spec.ts`、`e2e/snap-share-fixes.spec.ts`（年）、`src/ui/add/AddToolController.test.tsx`。実装は `src/ui/shell/useDraftSwitchGuard.ts`。
+- 確かめ方: 板が出た状態で (1) ボタンの座標の `elementFromPoint` が自分 (2) 前倒しした状態が未変更 (3) 板の外が覆いに当たる、を見る。(2) は単体、(1)(3) は E2E（jsdom で測れない）。`e2e/inc5-shell.spec.ts`、`e2e/snap-share-fixes.spec.ts`（年）、`src/ui/add/AddToolController.test.tsx`。実装は `src/ui/shell/useDraftSwitchGuard.ts`。年は入口で止める（`src/ui/shell/useDraftTimeGate.ts`、`e2e/b112-draft-time.spec.ts`）。「動いてから戻す」は、年を動かした瞬間に外れた選択と印を取り返せない。
 
 ### 5.72 effect の中で自分の状態を畳む部品の後片付けは、1 コミット遅れて次の持ち主を踏み消す
 - 正しい道: 器へ押し込む部品が「降りた」ことを effect で知る作り（道具・タブ・パネル・通知欄）では、後片付けが 1 コミット遅れる前提で書く。入れた側のローカルな印では「いま誰が持つか」が分からないので、守りの印は器の側に置く（現在の形は 5.77 の「書いた人」）。

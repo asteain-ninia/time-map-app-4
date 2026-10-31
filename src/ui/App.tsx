@@ -769,6 +769,25 @@ export function App(): JSX.Element {
   const statusMessageStoreRef = useRef<StatusMessageStore | null>(null);
   statusMessageStoreRef.current ??= new StatusMessageStore();
   const statusMessageStore = statusMessageStoreRef.current;
+  // 打ちかけを黙って消さない（設計書 §D.4.1 / §H.5 の「直前の結果」）。年の移動に伴って捨てた
+  // ときは、移動の知らせに上書きされないよう後ろへ続ける文としても控える（B112）。
+  const onToolDraftDiscarded = useCallback(
+    (count: number, timeMoved?: boolean) => {
+      const text = ADD_STRINGS.draftDiscarded(count);
+      statusMessageStore.notice(text);
+      if (timeMoved === true) {
+        statusMessageStore.stageMoveTrailer(moveTrailerKey(store.getState().currentTime), text);
+      }
+    },
+    [statusMessageStore, store],
+  );
+  // 道具が掴んでいた面がいまの年に居なくなり、手放したことを言う（B112）。移動の知らせに上書き
+  // されないよう、印を外したときと同じく移動の知らせの後ろへ続ける文としても控える。
+  const onToolTargetGone = useCallback(() => {
+    const text = APP_STRINGS.toolTargetGoneByTime;
+    statusMessageStore.notice(text);
+    statusMessageStore.stageMoveTrailer(moveTrailerKey(store.getState().currentTime), text);
+  }, [statusMessageStore, store]);
 
   /**
    * **直前に消した測量の線を戻す**（増分 8C の手直し / 反証 #2）。状態行の［戻す］と、
@@ -4238,10 +4257,7 @@ export function App(): JSX.Element {
               onDrawingChange={setAddDrawing}
               onModalChange={toolModalChange('add-discard-confirm')}
               onSnapPopoverOpenChange={popoverOpenChange('snap')}
-              onDraftDiscarded={(count) => {
-                // D1: 打ちかけを黙って消さない（設計書 §H.5 の「直前の結果」へ報せる）。
-                statusMessageStore.notice(ADD_STRINGS.draftDiscarded(count));
-              }}
+              onDraftDiscarded={onToolDraftDiscarded}
               onFocusSelection={focusCameraOnSelection}
             />
             <KnifeToolController<DomainRoot>
@@ -4263,10 +4279,8 @@ export function App(): JSX.Element {
               onConflicts={onKnifeConflicts}
               onDrawingChange={setKnifeDrawing}
               onModalChange={toolModalChange('knife')}
-              onDraftDiscarded={(count) => {
-                // 打ちかけを黙って消さない（設計書 §D.4.1 / §H.5 の「直前の結果」）。
-                statusMessageStore.notice(ADD_STRINGS.draftDiscarded(count));
-              }}
+              onTargetGone={onToolTargetGone}
+              onDraftDiscarded={onToolDraftDiscarded}
             />
             {/* U30 INTEGRATION (教訓 5.7 / 5.2): the merge-tool controller, bound to the
                 SAME store. Selecting 編集モード→結合 starts a session; map-input clicks
@@ -4344,10 +4358,9 @@ export function App(): JSX.Element {
               onConflicts={onRingEditConflicts}
               onDrawingChange={setRingEditDrawing}
               onModalChange={toolModalChange('ring-edit')}
+              onTargetGone={onToolTargetGone}
               onImpactModalChange={toolModalChange('ring-delete-impact')}
-              onDraftDiscarded={(count) => {
-                statusMessageStore.notice(ADD_STRINGS.draftDiscarded(count));
-              }}
+              onDraftDiscarded={onToolDraftDiscarded}
             />
             {/* U27 INTEGRATION (教訓 5.7 / 5.2): the drill (穴あけによる新地物生成)
                 controller, bound to the SAME store. Selecting 編集モード→穴あけ arms a
@@ -4374,9 +4387,8 @@ export function App(): JSX.Element {
               onConflicts={onDrillConflicts}
               onDrawingChange={setDrillDrawing}
               onModalChange={toolModalChange('drill')}
-              onDraftDiscarded={(count) => {
-                statusMessageStore.notice(ADD_STRINGS.draftDiscarded(count));
-              }}
+              onTargetGone={onToolTargetGone}
+              onDraftDiscarded={onToolDraftDiscarded}
             />
           </>
         }
