@@ -8,7 +8,9 @@
 // (INV-5). This path is reachable from persistence repair (normalizeHistories)
 // and applyPastEdit, not just from hand-built series.
 
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'vitest';
+
+import { expect } from '../../test-support/fast-expect';
 import fc from 'fast-check';
 
 import {

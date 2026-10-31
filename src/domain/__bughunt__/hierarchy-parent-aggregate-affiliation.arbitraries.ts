@@ -49,7 +49,7 @@
 // ここには各ファイルが共有する生成器・補助だけを置く。
 
 import fc from 'fast-check';
-import { expect } from 'vitest';
+import { expect } from '../../test-support/fast-expect';
 import { createBasicAttributes, createColorInfo } from '../attributes';
 import { createCoordinate } from '../coordinate';
 import { createAggregateFeature, createLeafFeature, type Feature } from '../feature';

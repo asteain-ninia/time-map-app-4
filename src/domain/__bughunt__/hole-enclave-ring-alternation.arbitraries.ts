@@ -23,7 +23,7 @@
 // ここには各ファイルが共有する生成器・補助だけを置く。
 
 import fc from 'fast-check';
-import { expect } from 'vitest';
+import { expect } from '../../test-support/fast-expect';
 import { createCoordinate } from '../coordinate';
 import { asRingId, asVertexId, type RingId, type VertexId } from '../ids';
 import { createHoleRing, createShape, createTerritoryRing, isAlternationValid, RING_KIND, type Ring, type Shape } from '../ring';

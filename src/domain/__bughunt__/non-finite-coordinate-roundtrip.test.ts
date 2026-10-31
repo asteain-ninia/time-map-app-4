@@ -22,7 +22,9 @@
 //
 // These tests now ASSERT THE FIXED BEHAVIOUR and are the regression anchor.
 
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'vitest';
+
+import { expect } from '../../test-support/fast-expect';
 
 import { createAnchor, createAnchorSnapshot } from '../anchor';
 import { createAnchorEntry, normalizeSeries } from '../anchor-series';

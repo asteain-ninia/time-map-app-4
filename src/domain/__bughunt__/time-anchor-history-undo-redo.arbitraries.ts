@@ -30,7 +30,7 @@
 // vitest はファイル単位でしか並列に分配しないので、1 本に詰めると全件の待ち時間がその 1 本で決まる。
 // ここには各ファイルが共有する生成器・補助だけを置く。
 
-import { expect } from 'vitest';
+import { expect } from '../../test-support/fast-expect';
 import fc from 'fast-check';
 import { createAnchor, type Anchor, type AnchorSnapshot } from '../anchor';
 import { changeStart, createAnchorEntry, deleteAnchor, normalizeSeries, resolveAt, setEnd, validateSeries, type AnchorEntry, type AnchorSeries, type SeriesResult } from '../anchor-series';

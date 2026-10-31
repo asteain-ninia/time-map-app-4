@@ -32,7 +32,7 @@
 // ここには各ファイルが共有する生成器・補助だけを置く。
 
 import fc from 'fast-check';
-import { expect } from 'vitest';
+import { expect } from '../../test-support/fast-expect';
 import { createCoordinate, type WorldCoordinate } from '../coordinate';
 import { type IdGeneratorState } from '../id-generator';
 import { asFeatureId, asVertexId, type VertexId } from '../ids';

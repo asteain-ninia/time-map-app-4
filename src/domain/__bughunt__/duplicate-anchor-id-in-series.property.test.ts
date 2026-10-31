@@ -17,7 +17,9 @@
 // is repaired, and adds a featureHistorySchema refinement rejecting duplicate
 // anchor ids at the persistence boundary.
 
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'vitest';
+
+import { expect } from '../../test-support/fast-expect';
 import fc from 'fast-check';
 
 import {

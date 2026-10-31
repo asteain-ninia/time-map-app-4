@@ -21,7 +21,9 @@
 // any apply, and the serialized manifest dropped its `ui` block). Run ONLY this file:
 //   npx vitest run src/domain/__bughunt__/apply-proposal-preserves-ui-settings.property.test.ts
 
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'vitest';
+
+import { expect } from '../../test-support/fast-expect';
 
 import {
   applyAddProposal,

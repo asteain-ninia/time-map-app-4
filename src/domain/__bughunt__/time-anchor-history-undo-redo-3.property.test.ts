@@ -1,7 +1,9 @@
 // time-anchor-history-undo-redo の検査 3/3。全体の説明と共有の生成器は time-anchor-history-undo-redo.arbitraries.ts。
 // ファイル単位でしか並列に分配されないので割ってある（開発ガイド「テストの速さ」）。
 
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'vitest';
+
+import { expect } from '../../test-support/fast-expect';
 import fc from 'fast-check';
 import { changeStart } from '../anchor-series';
 import { createHistory, execute, executeIfChanged, undo } from '../command/history';

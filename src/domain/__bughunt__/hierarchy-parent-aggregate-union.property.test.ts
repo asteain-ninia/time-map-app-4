@@ -28,7 +28,9 @@
 // paint a broken behaviour green.
 
 import fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'vitest';
+
+import { expect } from '../../test-support/fast-expect';
 
 import { createBasicAttributes, createColorInfo } from '../attributes';
 import { createCoordinate } from '../coordinate';

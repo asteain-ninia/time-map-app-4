@@ -2,7 +2,9 @@
 // ファイル単位でしか並列に分配されないので割ってある（開発ガイド「テストの速さ」）。
 
 import fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'vitest';
+
+import { expect } from '../../test-support/fast-expect';
 import { projectsEqual } from '../persistence/serialize';
 import {
   RUNS_41001,

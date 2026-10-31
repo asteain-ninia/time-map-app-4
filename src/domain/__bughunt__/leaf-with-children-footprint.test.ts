@@ -20,7 +20,9 @@
 // display pipeline draws the parent's area, not just the child), AND a pure
 // aggregate's area is still exactly the union of children (no regression).
 
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'vitest';
+
+import { expect } from '../../test-support/fast-expect';
 
 import { createBasicAttributes, createColorInfo } from '../attributes';
 import { createCoordinate } from '../coordinate';

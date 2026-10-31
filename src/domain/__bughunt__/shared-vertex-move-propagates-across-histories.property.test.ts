@@ -25,7 +25,9 @@
 // concat surfaced it; nothing was reported). Run ONLY this file:
 //   npx vitest run src/domain/__bughunt__/shared-vertex-move-propagates-across-histories.property.test.ts
 
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'vitest';
+
+import { expect } from '../../test-support/fast-expect';
 
 import { applyAddProposal, applyEditProposal } from '../editing/apply-proposal';
 import { createEditProposal } from '../consistency/types';
