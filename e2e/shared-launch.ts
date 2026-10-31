@@ -14,7 +14,8 @@
 // 起動し直す条件:
 //   - 控えが起動直後と違う／控えを取れなかった
 //   - 検査が失敗した（Playwright が worker ごと捨てるので、アプリも一緒に消える）
-//   - 起動の引数や環境変数が前と違う（`E2E_SAVE_AS_PATH` は起動時にしか読まれない）
+//   - 起動の引数や、子プロセスへ渡す環境変数が前と違う（`E2E_SAVE_AS_PATH` は起動時にしか
+//     読まれない。`extraEnv` だけでなく、親から受け継ぐ分も比べる）
 //   - 同じ検査の中で 2 回目の launchApp を呼んだ（閉じて開き直す検査）
 //   - 検査に `FRESH_LAUNCH` の印がある（起動や終了そのものを確かめる検査）
 //   - 前の検査が app.close() を呼ばずに終わった
@@ -346,8 +347,17 @@ export interface LaunchPorts {
   /** 初回ガイドの扱い（`keepFirstRunGuide` を見て畳む）。 */
   readonly settleFirstRun: (page: Page) => Promise<void>;
   readonly userDataDir: string;
-  /** 起動の引数と環境変数の違いを見分ける文字列。 */
+  /** 起動の条件の違いを見分ける文字列（{@link launchKeyOf}）。 */
   readonly launchKey: string;
+}
+
+/**
+ * 起動の条件を見分ける文字列。**子プロセスへ実際に渡す環境変数の全部**で作る。`extraEnv` だけだと、
+ * 親の `process.env` を変えて起動する検査に、前の値で起動した本体が渡ってしまう。
+ */
+export function launchKeyOf(extraArgs: readonly string[], childEnv: Readonly<Record<string, string>>): string {
+  const entries = Object.entries(childEnv).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return JSON.stringify([extraArgs, entries]);
 }
 
 interface Slot {

@@ -38,7 +38,7 @@ import { expect } from '@playwright/test';
 // したときに **spec だけが古いまま緑で通る**（走らせている顔ぶれが減ったことに誰も
 // 気づけない）。`ALL_TOOLS` は `src/ui/shell/tools.ts` の並び順の単一の真実源である。
 import { ALL_TOOLS } from '../src/ui/shell/tools';
-import { launchMode, launchShared } from './shared-launch';
+import { launchKeyOf, launchMode, launchShared } from './shared-launch';
 
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -107,19 +107,20 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
   // 押す ―― 設定を書くと、設定そのものを見る検査が汚れる。
   // 既定はここで終わる（検査ごとに起動し直す）。使い回しは E2E_LAUNCH_MODE を指定したときだけ
   // （e2e/shared-launch.ts、開発ガイド §1.12）。
+  const childEnv = childEnvFor(options);
   if (launchMode() === 'fresh') {
-    const launched = await startElectron(options);
+    const launched = await startElectron(options, childEnv);
     if (options.keepFirstRunGuide !== true) await dismissFirstRunGuide(launched.page);
     return launched;
   }
   return launchShared({
-    start: () => startElectron(options),
+    start: () => startElectron(options, childEnv),
     waitForShell,
     settleFirstRun: async (page) => {
       if (options.keepFirstRunGuide !== true) await dismissFirstRunGuide(page);
     },
     userDataDir,
-    launchKey: JSON.stringify([options.extraArgs ?? [], options.extraEnv ?? {}]),
+    launchKey: launchKeyOf(options.extraArgs ?? [], childEnv),
   });
 }
 
@@ -141,7 +142,8 @@ async function waitForShell(page: Page): Promise<void> {
   });
 }
 
-async function startElectron(options: LaunchOptions): Promise<LaunchedApp> {
+/** 子プロセスへ渡す環境変数の全部（親から受け継ぐ分＋E2E_TEST＋`extraEnv`）。 */
+function childEnvFor(options: LaunchOptions): Record<string, string> {
   // Build the child env from the current one, then DELETE the run-as-node leak.
   // Electron treats ELECTRON_RUN_AS_NODE as set even when empty (""), which makes
   // `require('electron')` in main return a path string instead of the app — and
@@ -154,7 +156,10 @@ async function startElectron(options: LaunchOptions): Promise<LaunchedApp> {
   delete childEnv['ELECTRON_RUN_AS_NODE'];
   childEnv['E2E_TEST'] = '1';
   for (const [key, value] of Object.entries(options.extraEnv ?? {})) childEnv[key] = value;
+  return childEnv;
+}
 
+async function startElectron(options: LaunchOptions, childEnv: Record<string, string>): Promise<LaunchedApp> {
   const app = await electron.launch({
     args: [
       '.',
