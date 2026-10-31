@@ -142,4 +142,38 @@ describe('bakeVectorBaseMap — 焼き付けの手順', () => {
     bakeVectorBaseMap(target, prepared, rect, 720, 360);
     expect(created).toBe(3);
   });
+
+  it('継ぎ目をまたぐ矩形では、矩形にかかる周ごとにパスを塗る', () => {
+    // 経度 100〜260 を 320px に焼く（1 度 = 2px）。SVG の絵は -180〜180 の 1 周ぶんしか無いので、
+    // 180 より東（画像の x = 160 より右）は、次の周の -180〜-100 の絵で埋める。
+    const { target, rec } = fakeTarget();
+    const prepared = prepareVectorBaseMap(MAP, (d) => ({ d }));
+    bakeVectorBaseMap(target, prepared, { lonWest: 100, lonEast: 260, latNorth: 90, latSouth: -90 }, 320, 360);
+
+    // 2 周ぶん、同じパスを同じ順で塗る。
+    expect(rec.fills.map((f) => f.style)).toEqual([
+      '#00ff00', '#ff0000', '#ff0000',
+      '#00ff00', '#ff0000', '#ff0000',
+    ]);
+    // 1 周目: SVG x = 0（経度 -180）は x = -560px。2 周目はちょうど 720px（360 度 × 2px）ずれて 160px。
+    const moved = rec.transforms.filter((t) => t[0] !== 1);
+    expect(moved.map((t) => t[4])).toEqual([-560, 160]);
+    expect(rec.transforms[rec.transforms.length - 1]).toEqual([1, 0, 0, 1, 0, 0]);
+  });
+
+  it('西へまたぐ矩形でも、かかる周だけを塗る', () => {
+    // 経度 -200〜-100: -180 より西は前の周の 160〜180。
+    const { target, rec } = fakeTarget();
+    const prepared = prepareVectorBaseMap(MAP, (d) => ({ d }));
+    bakeVectorBaseMap(target, prepared, { lonWest: -200, lonEast: -100, latNorth: 90, latSouth: -90 }, 200, 360);
+    const moved = rec.transforms.filter((t) => t[0] !== 1);
+    expect(moved.map((t) => t[4])).toEqual([-680, 40]);
+  });
+
+  it('周の境に接するだけの矩形は、隣の周を塗らない', () => {
+    const { target, rec } = fakeTarget();
+    const prepared = prepareVectorBaseMap(MAP, (d) => ({ d }));
+    bakeVectorBaseMap(target, prepared, { lonWest: 100, lonEast: 180, latNorth: 90, latSouth: -90 }, 160, 360);
+    expect(rec.fills).toHaveLength(3);
+  });
 });

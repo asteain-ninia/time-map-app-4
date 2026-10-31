@@ -94,10 +94,20 @@ export function vectorBakeTransform(
   return { scaleX, scaleY, offsetX, offsetY };
 }
 
+/** `rect` に幅を持ってかかる周の番号（0 = 経度 -180〜180）。境に接するだけの周は入れない。 */
+function vectorBakeTurns(rect: EquirectangularMeta): number[] {
+  if (!Number.isFinite(rect.lonWest) || !Number.isFinite(rect.lonEast)) return [0];
+  const first = Math.floor((rect.lonWest - 180) / 360) + 1;
+  const last = Math.ceil((rect.lonEast + 180) / 360) - 1;
+  const turns: number[] = [];
+  for (let turn = first; turn <= last; turn += 1) turns.push(turn);
+  return turns;
+}
+
 /**
  * `rect` が覆う世界矩形ぶんを `widthPx × heightPx` の焼き付け先へ描く。
  *
- * 手順は「下地 (海) を全面に塗る → レイヤー順にパスを塗る」だけ。画面外のパスはブラウザ側で
+ * 手順は「下地 (海) を全面に塗る → かかる周ごとにレイヤー順にパスを塗る」だけ。画面外のパスはブラウザ側で
  * 捨てられるため、拡大するほど安くなる (実測: 世界全体 19.8ms / 10倍ズーム 5.6ms)。
  */
 export function bakeVectorBaseMap(
@@ -113,10 +123,15 @@ export function bakeVectorBaseMap(
   target.fillRect(0, 0, widthPx, heightPx);
 
   const t = vectorBakeTransform(prepared.map, rect, widthPx, heightPx);
-  target.setTransform(t.scaleX, 0, 0, t.scaleY, t.offsetX, t.offsetY);
-  for (const layer of prepared.layers) {
-    target.fillStyle = layer.fill;
-    for (const path of layer.paths) target.fill(path);
+  // 絵は 1 周ぶんしか無いので、矩形が継ぎ目をまたぐ（中心経度 180 の表示など）なら、かかる周ごとに
+  // ずらして塗る。描画側のシーム複製は焼いた画像ごとずらすだけで、画像の中の空きは埋まらない。
+  const turnPx = t.scaleX * prepared.map.viewBox.width;
+  for (const turn of vectorBakeTurns(rect)) {
+    target.setTransform(t.scaleX, 0, 0, t.scaleY, t.offsetX + turn * turnPx, t.offsetY);
+    for (const layer of prepared.layers) {
+      target.fillStyle = layer.fill;
+      for (const path of layer.paths) target.fill(path);
+    }
   }
   // 呼び出し側が続けて描く場合に備えて変換を戻す。
   target.setTransform(1, 0, 0, 1, 0, 0);
