@@ -57,7 +57,7 @@ test.describe('オプションバーの枠（設計書 §C.4）', () => {
   test('5 区画が全部あり、既定の中身が出る（対象欄は 0 件でも枠が残る）', async () => {
     const { app, page } = await launchApp();
     try {
-      await expect(page.getByTestId('option-bar-tool')).toHaveText('✦ 選ぶ');
+      await expect(page.getByTestId('option-bar-tool')).toHaveText('✦ 選択');
       await expect(page.getByTestId('option-bar-target')).toHaveText('（選んでいません）');
       await expect(page.getByTestId('option-bar-next-step')).toHaveText('地図か地物一覧から選ぶ');
       // 増分 4: 設定欄には **「表示 ▾」が常設** で載る（道具に属さない部品なので、

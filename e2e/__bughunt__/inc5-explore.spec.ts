@@ -162,8 +162,8 @@ test.describe('増分 5 の探索 — 実データで全部の道具を順に持
         //   （段の順序そのものは e2e/inc5-shell.spec.ts が固定している）。
         for (let i = 0; i < 4; i += 1) await page.keyboard.press('Escape');
         const toolAfter = ((await page.getByTestId('app-active-tool').textContent()) ?? '').trim();
-        // **素の状態は「選ぶ」である。** 道具を外した状態（空）と `edit.select` は
-        // どちらも「選ぶ」を意味するので、そこで止まっていれば階段は最後まで降りている
+        // **素の状態は「選択」である。** 道具を外した状態（空）と `edit.select` は
+        // どちらも「選択」を意味するので、そこで止まっていれば階段は最後まで降りている
         // （設計書 §D.4 の階段の最後は「『選ぶ』道具に戻る」であって「無になる」ではない）。
         if (toolAfter !== '' && toolAfter !== 'edit.select') {
           record('escape-stuck-tool', `${tool}: Esc を 4 回押しても道具が ${toolAfter} のまま`);

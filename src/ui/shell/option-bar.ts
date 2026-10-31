@@ -77,7 +77,7 @@ export interface OptionBarAction {
 
 /** オプションバーの表示状態のすべて。 */
 export interface OptionBarState {
-  /** 道具名（112px）。null なら既定の「選ぶ」。 */
+  /** 道具名（112px）。null なら既定の「選択」。 */
   readonly toolName: string | null;
   readonly target: OptionBarTarget;
   /** 次の一手（1fr）。null なら既定の案内文。 */
@@ -293,7 +293,7 @@ export class OptionBarStore {
    *
    * **押し込む側はこれを見て押し直す**（手直し 3 回目）。器は持ち直されると中身を空へ
    * 戻すので、押し込んだ側が黙っていると **帯が空のまま固まる** ―― 実測で、下書きを
-   * 持ったまま「選ぶ」や鍵へ行って板の［続ける］を選ぶと、道具も点も残っているのに
+   * 持ったまま「選択」や鍵へ行って板の［続ける］を選ぶと、道具も点も残っているのに
    * 対象欄が「（選んでいません）」のまま戻らなかった（1.5 秒待っても、1 点足しても）。
    * 押し込みの effect が代を依存に持てば、持ち直しのたびに押し直しが走る。
    */

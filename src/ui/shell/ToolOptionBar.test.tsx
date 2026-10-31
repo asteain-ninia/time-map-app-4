@@ -1,8 +1,8 @@
 // 編集道具の帯（{@link ToolOptionBar}）の単体テスト。
 //
-// 実測で見つかった欠陥を釘で留める: **ナイフを構えているのに帯が「✦ 選ぶ」のまま**
+// 実測で見つかった欠陥を釘で留める: **ナイフを構えているのに帯が「✦ 選択」のまま**
 // （編集モードの 8 つの道具が 1 つも押し込んでいなかった）。したがって固定するのは
-//   1. 構えた道具の名前が帯に出る（既定の「選ぶ」のままにならない）;
+//   1. 構えた道具の名前が帯に出る（既定の「選択」のままにならない）;
 //   2. 選んでいる地物の名前と種類が対象欄に出る（設計書 §C.4 の書式）;
 //   3. **追加モードでは帯を奪わない**（`AddToolController` が押し込んだ中身が残る）;
 //   4. 道具を外す・モードを離れると帯が空へ戻る（教訓 5.2 全経路で破棄）。
@@ -94,12 +94,12 @@ function mount(store: TestStore): OptionBarStore {
 }
 
 describe('ToolOptionBar — 道具名（112px）', () => {
-  it('ナイフを構えると帯の道具名がナイフになる（「選ぶ」のままにならない）', () => {
+  it('ナイフを構えると帯の道具名がナイフになる（「選択」のままにならない）', () => {
     const store = makeStore({ mode: EDIT_MODE.Edit, activeTool: TOOL_ID.EditKnife });
     const optionBar = mount(store);
 
     expect(optionBar.get().toolName).toBe(EDIT_TOOL_STRINGS.knife);
-    // 実測の欠陥そのもの: 既定の「✦ 選ぶ」が出たままになっていない。
+    // 実測の欠陥そのもの: 既定の「✦ 選択」が出たままになっていない。
     expect(optionBar.get().toolName).not.toBe(OPTION_BAR_STRINGS.defaultToolName);
   });
 
@@ -217,7 +217,7 @@ describe('ToolOptionBar — 道具を構えていなくても帯を持つ（穴 
     const store = makeStore({ mode: EDIT_MODE.Edit, activeTool: null });
     const optionBar = mount(store);
 
-    // 帯は持っている。道具名は押し込まず、器の既定（「✦ 選ぶ」）に任せる。
+    // 帯は持っている。道具名は押し込まず、器の既定（「✦ 選択」）に任せる。
     expect(optionBar.hasOwner()).toBe(true);
     expect(optionBar.get().toolName).toBeNull();
     expect(optionBar.get().target.name).toBeNull();
@@ -359,7 +359,7 @@ describe('ToolOptionBar — 追加の道具と喧嘩しない', () => {
     const store = makeStore({ mode: EDIT_MODE.View, activeFeature: AAWEN.id });
     const optionBar = mount(store);
 
-    // 道具は構えられない（鍵が閉じている）ので、道具名は器の既定（「✦ 選ぶ」）のまま。
+    // 道具は構えられない（鍵が閉じている）ので、道具名は器の既定（「✦ 選択」）のまま。
     expect(optionBar.get().toolName).toBeNull();
     expect(optionBar.get().target.name).toBe('アアウェン州（末端地物・州）');
     expect(optionBar.hasOwner()).toBe(true);

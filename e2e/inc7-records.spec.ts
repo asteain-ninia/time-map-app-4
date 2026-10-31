@@ -263,7 +263,7 @@ test.describe('増分 7 の手直し A — 記録の置き場（決定 (1)(2)）
       await federate('第二連邦');
       const afterThird = await projectStats(page);
 
-      // Ctrl+Z ×3 / Ctrl+Y ×3。打鍵の持ち主が地図側になるよう、先に選ぶ道具へ戻す。
+      // Ctrl+Z ×3 / Ctrl+Y ×3。打鍵の持ち主が地図側になるよう、先に「選択」の道具へ戻す。
       await page.getByTestId('tool-edit.select').click();
       await page.getByTestId('ledger-scroller').click({ position: { x: 5, y: 5 } });
       for (let i = 0; i < 3; i += 1) await page.keyboard.press('Control+z');

@@ -63,7 +63,7 @@ export function Toolbar<S>(props: ToolbarProps<S>): JSX.Element {
             {group.tools.map((tool) => {
               const label = TOOL_LABELS[tool as keyof typeof TOOL_LABELS] ?? tool;
               const tip = TOOLTIPS[tool] ?? label;
-              // 「選ぶ」は道具を外した状態（`activeTool === null`）でも押されて見える
+              // 「選択」は道具を外した状態（`activeTool === null`）でも押されて見える
               // ―― 利用者から見れば同じ状態だからである（設計書 §D.4 の階段の最後）。
               const pressed =
                 tool === TOOL_ID.EditSelect
@@ -79,9 +79,9 @@ export function Toolbar<S>(props: ToolbarProps<S>): JSX.Element {
                     // 読むだけのときは道具を構えられない（K-6。`canEdit` 1 本で判定する）。
                     disabled={!shell.editable}
                     onClick={() =>
-                      // **「選ぶ」は外れない。** 素の状態が「選ぶ」なので、押して
-                      // 外れる先が無い（外したら「選ぶ」になる＝同じところへ戻る）。
-                      // ほかの道具はもう一度押すと外れ、「選ぶ」へ戻る。
+                      // **「選択」は外れない。** 素の状態が「選択」なので、押して
+                      // 外れる先が無い（外したら「選択」になる＝同じところへ戻る）。
+                      // ほかの道具はもう一度押すと外れ、「選択」へ戻る。
                       shell.selectTool(
                         tool === TOOL_ID.EditSelect ? tool : pressed ? null : tool,
                       )

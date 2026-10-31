@@ -19,7 +19,7 @@
 //       ↓ 無ければ
 //     地物を選んでいる                           → 選択を解除（U-5）
 //       ↓ 無ければ
-//     道具が「選ぶ」以外                         → 「選ぶ」道具に戻る
+//     道具が「選択」以外                         → 「選択」道具に戻る
 //
 // **点列は 1 つずつではなく、まとめて捨てる**（設計書 §D.4.1 が下書きの捨て方の唯一の正
 // である）。1 つずつ戻すのは `Ctrl+Z` とオプションバーの［1 つ戻す］の役目で、Escape に
@@ -45,7 +45,7 @@ export const ESCAPE_STEP = {
   ClearVertices: 'clear-vertices',
   /** 地物の選択を外す（U-5）。 */
   ClearFeature: 'clear-feature',
-  /** 道具を「選ぶ」へ戻す（＝ 何も構えていない状態）。 */
+  /** 道具を「選択」へ戻す（＝ 何も構えていない状態）。 */
   ResetTool: 'reset-tool',
   /** もう戻るところが無い（素の状態）。 */
   None: 'none',
@@ -58,7 +58,7 @@ export interface EscapeLadderInput {
   readonly hasVertexSelection: boolean;
   /** 地物を選んでいる。 */
   readonly hasActiveFeature: boolean;
-  /** 「選ぶ」以外の道具を構えている。 */
+  /** 「選択」以外の道具を構えている。 */
   readonly hasNonSelectTool: boolean;
 }
 

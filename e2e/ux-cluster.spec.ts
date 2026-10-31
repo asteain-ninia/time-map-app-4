@@ -27,12 +27,12 @@ import { commitOneFace, launchApp } from './helpers';
  * (mode !== Add) → resetForSwitch → Idle → onDrawingChange(false), clearing the
  * suspension. **鍵は閉じない**: EditUndo/EditRedo are editing commands gated OFF in
  * view-only (permissions.canEdit === false), so the very Ctrl+Z/Ctrl+Y we are
- * exercising would be disabled there. 「選ぶ」道具へ持ち替えれば、直せるまま（canEdit
+ * exercising would be disabled there. 「選択」道具へ持ち替えれば、直せるまま（canEdit
  * true）作図の下書きだけが片付き、取り消しの履歴には触らない（履歴はモードに依らない）
  * ので、この検査の本題（Ctrl+Y / Ctrl+Shift+Z が redo を動かす）はそのまま残る。
  *
  * **増分 5b**: 旧版は「編集モードのボタンを押す」だった。モードのボタンは廃止され、
- * 内部の mode は道具から導出されるので、**「選ぶ」を押す**のが同じ導線である。
+ * 内部の mode は道具から導出されるので、**「選択」を押す**のが同じ導線である。
  */
 async function leaveAddSession(page: Page): Promise<void> {
   const selectTool = page.getByTestId('tool-edit.select');

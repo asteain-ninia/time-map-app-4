@@ -105,7 +105,7 @@ describe('OptionBar — 5 区画の器（K-3）', () => {
     expect(screen.getByTestId('option-bar-commit')).toBeEmptyDOMElement();
   });
 
-  it('既定の文言が出る（「選ぶ」／「（選んでいません）」／案内文／「（設定なし）」）', () => {
+  it('既定の文言が出る（「選択」／「（選んでいません）」／案内文／「（設定なし）」）', () => {
     render(<OptionBar store={new OptionBarStore()} />);
     expect(screen.getByTestId('option-bar-tool')).toHaveTextContent(
       OPTION_BAR_STRINGS.defaultToolName,

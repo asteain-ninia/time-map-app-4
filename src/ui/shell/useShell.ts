@@ -6,7 +6,7 @@
 //   - **鍵**（`locked`）: 読むだけ ⇄ 直せる。K-6 の唯一の判定点で、実体は
 //     `store.mode === View` かどうかである（`mode` という値そのものは残す ――
 //     `canEdit` / `resolveCommandEnabled` / `app-mode` の観測が全部そこを読む）。
-//   - **道具**（`activeTool`）: 常に 1 つ。既定は「選ぶ」＝ 何も構えていない状態。
+//   - **道具**（`activeTool`）: 常に 1 つ。既定は「選択」＝ 何も構えていない状態。
 //
 // **内部の `mode` は導出値である**（設計書 §D.1 / `tools.ts` の `modeForTool`）:
 //
@@ -37,12 +37,12 @@ export interface ShellBinding {
   /**
    * 鍵の開け閉め（設計書 §C.1 の 4）。閉めると `mode` は `view` になり、10 の変更経路が
    * 同時に止まる（K-6）。**選択は捨てない**（裁定 N-4: 読むだけでも選べる・読める・
-   * 直せない）。開けたときは「選ぶ」道具に戻す（設計書 §D.2）。
+   * 直せない）。開けたときは「選択」道具に戻す（設計書 §D.2）。
    */
   readonly setLocked: (locked: boolean) => void;
   /** Select / deselect a tool; the store derives `mode` from it (設計書 §D.1). */
   readonly selectTool: (tool: ToolId | null) => void;
-  /** 「選ぶ」道具を構えているか（道具を外した状態も「選ぶ」とみなす）。 */
+  /** 「選択」道具を構えているか（道具を外した状態も「選択」とみなす）。 */
   readonly isSelectToolActive: boolean;
 }
 
@@ -60,7 +60,7 @@ export function useShell<S>(store: StoreApi<SessionStore<S>>): ShellBinding {
         return;
       }
       if (s.mode !== EDIT_MODE.View) return;
-      // 開ける。道具は「選ぶ」＝ 何も構えていない状態から始める（設計書 §D.2）。
+      // 開ける。道具は「選択」＝ 何も構えていない状態から始める（設計書 §D.2）。
       s.setMode(EDIT_MODE.Edit);
     },
     [store],
@@ -68,13 +68,13 @@ export function useShell<S>(store: StoreApi<SessionStore<S>>): ShellBinding {
 
   const selectTool = useCallback(
     (tool: ToolId | null) => {
-      // 「選ぶ」も **押したとおりの値**（`edit.select`）で入れる。
+      // 「選択」も **押したとおりの値**（`edit.select`）で入れる。
       //
       // 一度は「選ぶ ＝ 道具を外した状態（`null`）」へ寄せたが、それだと
       // **`app-active-tool` の観測が空になる** ―― 利用者は道具を押したのに、
       // 観測の上では「何も構えていない」ことになる。逆に道具の取り消し（Escape）が
       // 戻ってくる先は `null` のままなので、**`null` と `edit.select` はどちらも
-      // 「選ぶ」を意味する**。押されて見えるかどうかは {@link isSelectTool} が
+      // 「選択」を意味する**。押されて見えるかどうかは {@link isSelectTool} が
       // 1 か所で判定するので、画面が 2 通りに割れることはない。
       store.getState().setActiveTool(tool);
     },

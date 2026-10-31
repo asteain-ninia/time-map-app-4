@@ -2601,7 +2601,7 @@ export function App(): JSX.Element {
             s.clearSelection();
             return;
           case ESCAPE_STEP.ResetTool:
-            // 「選ぶ」＝ 道具を外した状態。選択はもう空なので、ここで消えるものは無い。
+            // 「選択」＝ 道具を外した状態。選択はもう空なので、ここで消えるものは無い。
             s.setActiveTool(null);
             // **印は Escape では外さない**（司令塔の決定 (6)）。道具を降りても一覧に印が
             // 残っていることと、外し方を言う（黙って残さない。設計適合 指摘 1）。

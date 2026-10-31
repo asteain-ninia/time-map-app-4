@@ -192,7 +192,7 @@ export const TOOL_LABELS = {
   'add.line': '╱ 線',
   'add.area': '▱ 面',
   // 選ぶ・形を変える・関係を変える
-  'edit.select': '✦ 選ぶ',
+  'edit.select': '✦ 選択',
   'edit.vertex': '◇ 頂点',
   'edit.move': '✥ 動かす',
   'edit.knife': '✂ 分ける',
@@ -268,7 +268,7 @@ export const APP_IDENTITY_STRINGS = {
  */
 export const OPTION_BAR_STRINGS = {
   ariaLabel: 'オプションバー',
-  defaultToolName: '✦ 選ぶ',
+  defaultToolName: '✦ 選択',
   noTarget: '（選んでいません）',
   // 「台帳」は内部語。画面の第一表記は「地物一覧」（設計書 §H.1）。
   defaultNextStep: '地図か地物一覧から選ぶ',
@@ -333,7 +333,7 @@ export const DRAFT_DISCARD_STRINGS = {
  * **書き方は追加の道具に揃えた**（`ui/add/strings.ts` の `toolNameFace: '▱ 面を描く'`）:
  * 記号 1 文字 ＋ 半角空白 ＋ 短い動詞句。12px の文字なので全角 4 文字＋記号でも
  * 112px（＝全角 9 文字ぶん）に収まる。語そのものは設計書 §C.4 の表の呼び名を使う
- * （「選ぶ」「頂点」「分ける」「所属」「結ぶ」「輪郭」「穴あけ」）。表に載っていない
+ * （「選択」「頂点」「分ける」「所属」「結ぶ」「輪郭」「穴あけ」）。表に載っていない
  * 「地物移動」だけは、同じ調子で「動かす」と名付けた。
  *
  * **文言はここに置き、ToolId との対応表は `tools.ts` に置く**。`tools.ts` は道具の
@@ -343,8 +343,8 @@ export const DRAFT_DISCARD_STRINGS = {
  */
 export const EDIT_TOOL_STRINGS = {
   /**
-   * 「選ぶ」は帯の既定の道具名と同じ語である（道具を持っていないときの帯は
-   * 「選ぶ」を出す）。**同じ文言を 2 か所に書かない**ため定数を参照する（教訓 5.29）。
+   * 「選択」は帯の既定の道具名と同じ語である（道具を持っていないときの帯は
+   * 「選択」を出す）。**同じ文言を 2 か所に書かない**ため定数を参照する（教訓 5.29）。
    */
   select: OPTION_BAR_STRINGS.defaultToolName,
   vertex: '◇ 頂点',
@@ -497,7 +497,7 @@ export const TOOLTIPS: Readonly<Record<string, string>> = {
   'add.point': '地図を押して点を置きます',
   'add.line': '地図を押して線を描きます',
   'add.area': '地図を押して面を描きます',
-  'edit.select': '地物をまるごと選びます（塗りをドラッグすると動きます）',
+  'edit.select': '地物を選びます（動かすには［動かす］を使います）',
   'edit.vertex': '頂点と辺を選んで動かします（足す・消すもできます）',
   'edit.move': '地物をまるごと動かします',
   'edit.knife': '地物を分けます（分断線を引きます）',

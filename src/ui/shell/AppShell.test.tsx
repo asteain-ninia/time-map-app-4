@@ -164,9 +164,9 @@ describe('AppShell layout (FR-111, 受け入れ基準 1)', () => {
 //     mode = 鍵が閉じている ? 'view' : （面／線／点）? 'add' : 'edit'
 //
 // したがって旧テストの「追加を押すと編集が外れる」は「面の道具を持つと mode が add に
-// なり、選ぶ道具へ戻すと edit になる」に置き換わる。
+// なり、「選択」の道具へ戻すと edit になる」に置き換わる。
 describe('道具から mode を導出する（FR-75 の排他は導出で保つ / 設計書 §D.1）', () => {
-  it('面の道具を持つと mode が add になり、選ぶ道具へ戻すと edit になる', () => {
+  it('面の道具を持つと mode が add になり、「選択」の道具へ戻すと edit になる', () => {
     const store = makeStore(EDIT_MODE.Edit);
     render(<AppShell store={store} />);
 
@@ -178,8 +178,8 @@ describe('道具から mode を導出する（FR-75 の排他は導出で保つ 
     expect(store.getState().mode).toBe(EDIT_MODE.Edit);
     // 押したとおりの値が入る（観測 `app-active-tool` が空にならない）。
     expect(store.getState().activeTool).toBe(TOOL_ID.EditSelect);
-    // **道具を外した状態（`null`）も「選ぶ」を意味する** ―― 道具の取り消し（Escape）が
-    // 戻ってくる先がそこなので、どちらでも「選ぶ」が押されて見える。
+    // **道具を外した状態（`null`）も「選択」を意味する** ―― 道具の取り消し（Escape）が
+    // 戻ってくる先がそこなので、どちらでも「選択」が押されて見える。
     act(() => store.getState().setActiveTool(null));
     expect(pressedTools()).toEqual([TOOL_ID.EditSelect]);
   });
@@ -211,11 +211,11 @@ describe('道具から mode を導出する（FR-75 の排他は導出で保つ 
     expect(store.getState().activeTool).toBe(TOOL_ID.EditKnife);
     expect(pressedTools()).toEqual([TOOL_ID.EditKnife]);
 
-    // もう一度押すと外れ、「選ぶ」が押された状態へ戻る（＝素の状態）。
+    // もう一度押すと外れ、「選択」が押された状態へ戻る（＝素の状態）。
     fireEvent.click(screen.getByTestId(`tool-${TOOL_ID.EditKnife}`));
     expect(store.getState().activeTool).toBeNull();
     expect(pressedTools()).toEqual([TOOL_ID.EditSelect]);
-    // 「選ぶ」を押しても押された状態のまま（外れない ―― 素の状態が「選ぶ」だから）。
+    // 「選択」を押しても押された状態のまま（外れない ―― 素の状態が「選択」だから）。
     fireEvent.click(screen.getByTestId(`tool-${TOOL_ID.EditSelect}`));
     expect(pressedTools()).toEqual([TOOL_ID.EditSelect]);
   });
