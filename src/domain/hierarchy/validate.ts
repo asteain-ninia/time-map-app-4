@@ -35,6 +35,7 @@
 
 import { FEATURE_KIND, type Feature } from '../feature';
 import { alignMultiPolygon, referenceLonForMultiPolygon } from '../geo/index';
+import { subdivideLongEdges } from '../geo/long-edge';
 import { difference, isOk, union } from '../geometry/boolean-ops';
 import { isMultiPolygonEmpty, type GeoMultiPolygon, type GeoPolygon } from '../geometry/types';
 import type { FeatureId } from '../ids';
@@ -390,13 +391,14 @@ function commonRef(a: GeoMultiPolygon, b: GeoMultiPolygon): number {
 function alignedUnion(a: GeoMultiPolygon, b: GeoMultiPolygon): GeoMultiPolygon | undefined {
   const ref = commonRef(a, b);
   const merged = union(alignMultiPolygon(a, ref), alignMultiPolygon(b, ref));
-  return isOk(merged) ? merged.result : undefined;
+  // 結果の長い辺は次の整列で別の形になるので刻む（途中の和でも、隙間の差分の入力でも）。
+  return isOk(merged) ? subdivideLongEdges(merged.result) : undefined;
 }
 
 function alignedDifference(a: GeoMultiPolygon, b: GeoMultiPolygon): GeoMultiPolygon | undefined {
   const ref = commonRef(a, b);
   const diff = difference(alignMultiPolygon(a, ref), alignMultiPolygon(b, ref));
-  return isOk(diff) ? diff.result : undefined;
+  return isOk(diff) ? subdivideLongEdges(diff.result) : undefined;
 }
 
 /** Boolean union of a list of areas; undefined if any union is rejected. */

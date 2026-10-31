@@ -143,41 +143,42 @@ export function restoreDroppedPoints(
 ): GeoMultiPolygon {
   const wrap = (lon: number): number => ((lon % TURN_CELLS) + TURN_CELLS) % TURN_CELLS;
   const keyOf = (lon: number, lat: number): string => `${String(wrap(lon))},${String(lat)}`;
-  const present = new Set<string>();
   let minLon = Number.POSITIVE_INFINITY;
   let maxLon = Number.NEGATIVE_INFINITY;
   for (const polygon of mp) {
     for (const ring of polygon) {
       for (const c of ring) {
         const lon = toCell(c.lon);
-        present.add(keyOf(lon, toCell(c.lat)));
         if (lon < minLon) minLon = lon;
         if (lon > maxLon) maxLon = lon;
       }
     }
   }
-  const missing: CellPoint[] = [];
+  // 候補の全部を周ごとに並べる。ある輪に残っている点も、別の輪の辺の上で消えていることがあるので、
+  // 点の有無は輪ごとに見る（下の `ringHas`）。全部の輪で共通に見ると、その輪へ挿し直されない。
+  const seen = new Set<string>();
+  const points: CellPoint[] = [];
   for (const c of candidates) {
     const lat = toCell(c.lat);
     const stored = toCell(c.lon);
     const key = keyOf(stored, lat);
-    if (present.has(key)) continue;
-    present.add(key); // 同じ座標を 2 度数えない（+180 と -180 も同じ点）。
+    if (seen.has(key)) continue; // 同じ座標を 2 度数えない（+180 と -180 も同じ点）。
+    seen.add(key);
     const first = Math.ceil((minLon - stored) / TURN_CELLS);
     const last = Math.floor((maxLon - stored) / TURN_CELLS);
     for (let turn = first; turn <= last; turn += 1) {
-      missing.push({ lon: stored + turn * TURN_CELLS, lat });
+      points.push({ lon: stored + turn * TURN_CELLS, lat });
     }
   }
-  if (missing.length === 0) return mp;
-  missing.sort((p, q) => p.lon - q.lon);
+  if (points.length === 0) return mp;
+  points.sort((p, q) => p.lon - q.lon);
 
   const firstAtOrAbove = (lon: number): number => {
     let lo = 0;
-    let hi = missing.length;
+    let hi = points.length;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (missing[mid]!.lon < lon) lo = mid + 1;
+      if (points[mid]!.lon < lon) lo = mid + 1;
       else hi = mid;
     }
     return lo;
@@ -186,6 +187,12 @@ export function restoreDroppedPoints(
   const restoreOnRing = (ring: GeoRing): GeoRing => {
     const out: WorldCoordinate[] = [];
     let changed = false;
+    // この輪が持っている点。1 つの輪が同じ点を 2 度引かない（FR-32）。辺に当たったときだけ作る。
+    let own: Set<string> | undefined;
+    const ringHas = (p: CellPoint): boolean => {
+      own ??= new Set(ring.map((c) => keyOf(toCell(c.lon), toCell(c.lat))));
+      return own.has(keyOf(p.lon, p.lat));
+    };
     ring.forEach((a, i) => {
       out.push(a);
       const b = ring[(i + 1) % ring.length]!;
@@ -198,14 +205,17 @@ export function restoreDroppedPoints(
       const loY = Math.min(ay, by);
       const hiY = Math.max(ay, by);
       const hits: CellPoint[] = [];
-      for (let j = firstAtOrAbove(loX); j < missing.length; j += 1) {
-        const p = missing[j]!;
+      for (let j = firstAtOrAbove(loX); j < points.length; j += 1) {
+        const p = points[j]!;
         if (p.lon > hiX) break;
         if (p.lat < loY || p.lat > hiY) continue;
         if ((p.lon === ax && p.lat === ay) || (p.lon === bx && p.lat === by)) continue;
         const cross =
           BigInt(bx - ax) * BigInt(p.lat - ay) - BigInt(by - ay) * BigInt(p.lon - ax);
-        if (cross === 0n) hits.push(p);
+        if (cross !== 0n) continue;
+        if (ringHas(p)) continue;
+        own!.add(keyOf(p.lon, p.lat));
+        hits.push(p);
       }
       if (hits.length === 0) return;
       const along = (p: CellPoint): number => Math.abs(p.lon - ax) + Math.abs(p.lat - ay);

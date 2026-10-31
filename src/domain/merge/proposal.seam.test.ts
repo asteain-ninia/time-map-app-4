@@ -505,3 +505,54 @@ describe('B105 途中の和に長い辺ができても、次の和で形が崩�
     expect(Math.abs(doubled) / 2).toBeCloseTo(10_600, 5);
   });
 });
+
+describe('結合の順で結果が変わらない（途中の和の長い辺）', () => {
+  const box = (w: number, s: number, e: number, n: number): WorldCoordinate[] => [
+    createCoordinate(w, s),
+    createCoordinate(e, s),
+    createCoordinate(e, n),
+    createCoordinate(w, n),
+  ];
+
+  it.each([
+    ['A B C', ['a', 'b', 'c']],
+    ['C A B', ['c', 'a', 'b']],
+    ['A C B', ['a', 'c', 'b']],
+    ['C B A', ['c', 'b', 'a']],
+    ['B C A', ['b', 'c', 'a']],
+  ])('順 %s で結合でき、面積が足し算と合う', (_name, order) => {
+    const a = quadLeaf('a', box(0, 0, 120, 10));
+    const b = quadLeaf('b', box(120, 0, 240, 10));
+    const c = quadLeaf('c', box(170, -5, 250, 15));
+    const byName = new Map([['a', a], ['b', b], ['c', c]]);
+    const result = buildMergeProposal({
+      features: [a.feature, b.feature, c.feature],
+      vertices: storeOf(a, b, c),
+      targetIds: order.map((name) => byName.get(name)!.feature.id),
+      atTime: 50,
+      parentDecision: parentNone,
+      propertyDecision: propertyNew({
+        attributes: createBasicAttributes('merged', 0, 100),
+        color: COLOR,
+      }),
+      ids: makeIdPorts('wide'),
+    });
+    if (result.status !== MERGE_STATUS.Proposal) throw new Error(result.kind);
+    const merged = result.proposal.nextFeatures.find((f) => f.kind === 'leaf');
+    if (merged === undefined || merged.kind !== 'leaf') throw new Error('結果の末端が無い');
+    const mp = alignMultiPolygon(resolveLeafShape(merged.shape, result.proposal.nextVertices)!);
+    let area = 0;
+    for (const poly of mp) {
+      poly.forEach((ring, r) => {
+        let s = 0;
+        ring.forEach((p, i) => {
+          const q = ring[(i + 1) % ring.length]!;
+          s += p.lon * q.lat - q.lon * p.lat;
+        });
+        area += (r === 0 ? 1 : -1) * Math.abs(s / 2);
+      });
+    }
+    // A 1200 + B 1200 + C 80 × 20 − C と B の重なり 70 × 10。
+    expect(area).toBeCloseTo(1200 + 1200 + 1600 - 700, 6);
+  });
+});

@@ -23,7 +23,12 @@
 // generates the material, U11 owns the continuation rules (spec §依存 U11).
 
 import { coordinatesEqual, createCoordinate, type WorldCoordinate } from '../coordinate';
-import { LONGITUDE_PERIOD, unwrapRing } from '../geo/index';
+import {
+  alignMultiPolygon,
+  LONGITUDE_PERIOD,
+  referenceLonForMultiPolygon,
+  unwrapRing,
+} from '../geo/index';
 import { countLongEdgesInMultiPolygon } from '../geo/long-edge';
 import {
   difference,
@@ -931,16 +936,10 @@ function anchorLon(lon: number, ref: number): number {
 }
 
 /**
- * Make a ring self-continuous (U05 `unwrapRing`, R3 single source of truth) and
- * then shift the WHOLE ring by whole ±360° turns so its first vertex sits on the
- * branch of `ref`. This anchors every ring/line of the split onto ONE common
- * longitude branch (Codex M-antimeridian): `checkSplittable` previously unwrapped
- * only the cut line while the target kept its stored branch, so a target near
- * −180° and a cut drawn on the +180° replica were ~360° apart and the boolean ops
- * saw no overlap → a false 貫通せず / malformed result. Anchoring both to the same
- * reference lets intersection/difference operate in one continuous system. For
- * inputs already in a single representative branch (the common, non-seam case) the
- * unwrap is the identity and the anchor adds 0 turns, so behaviour is unchanged.
+ * 刃物の線を連続の経度にして、先頭の頂点を `ref` の周へ置く（Codex M-antimeridian）。線は開いた
+ * 列なので閉じた輪の展開（`unwrapRingAnchored`）を使わない。面の整列は `alignMultiPolygon` が
+ * 片ごとに行う（輪を 1 本ずつ先頭の頂点で寄せると、幅の広い面の穴が別の周へ行って埋まる）。
+ * 基準は面の範囲の中央なので、面の中を通る線の頂点は必ず同じ周に入る。
  */
 function unwrapAnchoredRing(ring: readonly WorldCoordinate[], ref: number): WorldCoordinate[] {
   const continuous = unwrapRing([...ring]);
@@ -949,22 +948,6 @@ function unwrapAnchoredRing(ring: readonly WorldCoordinate[], ref: number): Worl
   const shift = anchorLon(first.lon, ref) - first.lon;
   if (shift === 0) return continuous;
   return continuous.map((cc) => createCoordinate(cc.lon + shift, cc.lat));
-}
-
-/**
- * The reference longitude every input is anchored to: the first outer-ring vertex
- * of the target, made self-continuous. Defaults to 0 for an empty target.
- */
-function targetReferenceLon(mp: GeoMultiPolygon): number {
-  const outer = mp[0]?.[0];
-  if (outer === undefined || outer.length === 0) return 0;
-  const continuous = unwrapRing([...outer]);
-  return continuous[0]?.lon ?? 0;
-}
-
-/** Anchor every ring of a multi-polygon to a common reference branch (R3). */
-function anchorMultiPolygon(mp: GeoMultiPolygon, ref: number): GeoMultiPolygon {
-  return mp.map((poly) => poly.map((ring) => unwrapAnchoredRing(ring, ref)));
 }
 
 /** Axis-aligned bounding box of a multi-polygon's outer rings (clip-frame sizing). */
@@ -1115,8 +1098,8 @@ export function checkSplittable(
   // drawn on a different replica (target near −180°, cut near +180°) the two would
   // be ~360° apart and the boolean ops would see no overlap. Anchoring removes that
   // mismatch; for single-branch (non-seam) inputs it is the identity.
-  const refLon = targetReferenceLon(resolvedMp);
-  const targetMp = anchorMultiPolygon(resolvedMp, refLon);
+  const refLon = referenceLonForMultiPolygon(resolvedMp);
+  const targetMp = alignMultiPolygon(resolvedMp, refLon);
 
   // Seam-unwrap the cut line into a single continuous run before geometry (R3),
   // then SNAP every cut vertex onto the same integer grid U06 quantizes to
@@ -1469,12 +1452,12 @@ export function executeSplit(
   let edgeCuts: readonly EdgeCutPoint[] = [];
   if (target.kind === FEATURE_KIND.Leaf) {
     const resolvedMp = resolveLeafShape(target.shape, store);
-    const refLon = resolvedMp === undefined ? 0 : targetReferenceLon(resolvedMp);
+    const refLon = resolvedMp === undefined ? 0 : referenceLonForMultiPolygon(resolvedMp);
     // 集合演算が落とした一直線上の元の頂点を片へ戻す（継ぎ目の検証 2-2）。切り口の計算より
     // 前に戻す ―― 戻した点は元の頂点なので切り口には数えない（`computeEdgeCuts` は元の頂点の
     // 座標を除く）。
     if (resolvedMp !== undefined) {
-      pieces = restoreDroppedBoundaryVertices(anchorMultiPolygon(resolvedMp, refLon), pieces);
+      pieces = restoreDroppedBoundaryVertices(alignMultiPolygon(resolvedMp, refLon), pieces);
     }
     edgeCuts = computeEdgeCuts(
       target,

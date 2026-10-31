@@ -128,7 +128,7 @@ interface BuiltShape {
  * 量子化座標のキー。経度は representative 分岐 [-180,180) に畳んでから量子化する
  * (FR-95): split-geometry は target 外環の参照経度へ全入力を anchor して連続フレーム
  * (>180° を取り得る) で boolean 演算するため、シームを跨ぐ辺は boolean 出力上 190° の
- * ような連続値になり得る (split-geometry.ts targetReferenceLon / anchorMultiPolygon)。
+ * ような連続値になり得る (split-geometry.ts の alignMultiPolygon)。
  * 一方、旧頂点ストアは representative (例 −170°) で格納されている。periodic に同一の点
  * (190° と −170°) が同じキーに落ちるよう先に正規化することで、旧→新対応 (buildRemap)
  * と頂点重複集約が world-turn ズレで取りこぼされないようにする (merge/proposal.ts

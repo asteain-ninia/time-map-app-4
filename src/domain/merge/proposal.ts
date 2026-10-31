@@ -366,14 +366,12 @@ function unionLeafShapes(
     // leaf's own when the accumulator is empty) through the single alignment source
     // of truth before the op. For single-branch (non-seam) inputs this is the
     // identity, so the common case is unchanged.
-    const ref =
-      acc.length > 0 ? referenceLonForMultiPolygon(acc) : referenceLonForMultiPolygon(area);
-    // 途中の和に長い辺があると、整列で別の形になるので先に刻む（B105）。最後の和の長い辺は
-    // 刻まずに返す（呼び出し側が結合を断る）。
-    const merged = union(
-      alignMultiPolygon(subdivideLongEdges(acc), ref),
-      alignMultiPolygon(area, ref),
-    );
+    // 途中の和に長い辺があると、整列で別の形になるので先に刻む（B105）。基準も刻んだ形から決める
+    // （長い辺のままだと裏回りの範囲の中央になり、次の面が別の周へ行く）。最後の和の長い辺は刻まずに
+    // 返す（呼び出し側が結合を断る）。
+    const kept = subdivideLongEdges(acc);
+    const ref = acc.length > 0 ? referenceLonForMultiPolygon(kept) : referenceLonForMultiPolygon(area);
+    const merged = union(alignMultiPolygon(kept, ref), alignMultiPolygon(area, ref));
     if (merged.status === BOOLEAN_OP_STATUS.Rejected) return { ok: false };
     acc = merged.result;
   }
