@@ -44,6 +44,9 @@ import {
   openPreSaveBoard,
   openVertexCandidatesOnTinySquare,
   readControlMetrics,
+  controlProblems,
+  type ControlMetrics,
+  type LaunchedApp,
   type ScreenPoint,
 } from '../helpers';
 
@@ -69,6 +72,16 @@ const TOUR_SIZE = ((): { width: number; height: number } | null => {
   const m = /^(\d+)x(\d+)$/.exec(process.env['UI_TEXT_TOUR_SIZE'] ?? '');
   return m === null ? null : { width: Number(m[1]), height: Number(m[2]) };
 })();
+
+/**
+ * 窓の大きさを、地図の座標を取る前に決めて起動する。起動のあとで面を描いてから窓を縮めると、描いたときの
+ * 座標が地図の外になって、右クリックが地図へ届かない（C01・C04 が 800×600 で作れなかった原因）。
+ */
+async function launchSized(open: () => Promise<LaunchedApp>): Promise<LaunchedApp> {
+  const launched = await open();
+  if (TOUR_SIZE !== null) await launched.page.setViewportSize(TOUR_SIZE);
+  return launched;
+}
 
 interface Capture {
   readonly pageTitle: string;
@@ -109,7 +122,6 @@ async function scene(
 ): Promise<void> {
   const base = join(SCENE_DIR, id);
   try {
-    if (TOUR_SIZE !== null) await page.setViewportSize(TOUR_SIZE);
     await setup();
     await page.waitForTimeout(200);
     const captured = await captureText(page);
@@ -129,6 +141,13 @@ async function scene(
 async function closeOverlays(page: Page): Promise<void> {
   await page.keyboard.press('Escape');
   await page.keyboard.press('Escape');
+}
+
+/** 狭い窓で「≫」へ畳まれた部品を、開いてから押せるようにする。畳まれていなければ何もしない。 */
+async function unfoldIfNeeded(page: Page, testid: string, overflowTestid: string): Promise<void> {
+  if (await page.getByTestId(testid).isVisible()) return;
+  await page.getByTestId(overflowTestid).click();
+  await expect(page.getByTestId(testid)).toBeVisible();
 }
 
 async function openMenuCommand(page: Page, menu: string, commandId: string): Promise<void> {
@@ -154,7 +173,7 @@ test.describe('画面の文言の巡回（project: tour）', () => {
   });
 
   test('A. 起動直後・メニュー・設定・ヘルプ・道具', async () => {
-    const { app, page } = await launchApp({ keepFirstRunGuide: true });
+    const { app, page } = await launchSized(() => launchApp({ keepFirstRunGuide: true }));
     try {
       await scene(page, 'A01-first-run-guide', '初回起動のガイド', async () => {
         await expect(page.getByTestId('first-run-guide')).toBeVisible();
@@ -236,18 +255,24 @@ test.describe('画面の文言の巡回（project: tour）', () => {
         await expect(page.getByTestId('survey-toggle')).toHaveAttribute('aria-pressed', 'true');
       }, async () => undefined);
       await scene(page, 'A24-survey-coords', '測量の座標 ▾', async () => {
+        await unfoldIfNeeded(page, 'survey-coords-button', 'option-bar-overflow');
         await page.getByTestId('survey-coords-button').click();
       }, async () => {
         await closeOverlays(page);
-        await page.getByTestId('survey-toggle').click();
+        // Escape が測量まで降ろしたときに、押して測量へ戻してしまわない
+        const toggle = page.getByTestId('survey-toggle');
+        if ((await toggle.getAttribute('aria-pressed')) === 'true') await toggle.click();
       });
       await scene(page, 'A25-display', '表示 ▾', async () => {
+        await unfoldIfNeeded(page, 'option-display-button', 'option-bar-overflow');
         await page.getByTestId('option-display-button').click();
       });
       await scene(page, 'A26-depth', '深さ ▾', async () => {
+        await unfoldIfNeeded(page, 'option-depth-button', 'option-bar-overflow');
         await openDepthOptions(page);
       });
       await scene(page, 'A27-rail-ymd', '時刻レールの月日 ▾', async () => {
+        await unfoldIfNeeded(page, 'rail-ymd-button', 'rail-overflow-button');
         await page.getByTestId('rail-ymd-button').click();
         await expect(page.getByTestId('rail-ymd-panel')).toBeVisible();
       });
@@ -259,7 +284,7 @@ test.describe('画面の文言の巡回（project: tour）', () => {
   test('B. 実データ（デーレ界）を開いて選ぶ・道具を構える', async () => {
     test.skip(!existsSync(canonicalPath), `実データが無い (${canonicalPath})。DERLE_TMAP_DIR で置き場を指定する`);
     const copy = copyRealData();
-    const { app, page } = await launchAppWithProject(copy.path);
+    const { app, page } = await launchSized(() => launchAppWithProject(copy.path));
     try {
       await scene(page, 'B01-opened', '実データを開いた直後（読むだけ）', async () => {
         await expect(page.getByTestId('app-identity-file')).toHaveText(REAL_DATA_FILE);
@@ -326,7 +351,7 @@ test.describe('画面の文言の巡回（project: tour）', () => {
   });
 
   test('C. 合成データの面: 右クリック・未保存の確認', async () => {
-    const { app, page } = await launchApp();
+    const { app, page } = await launchSized(() => launchApp());
     try {
       const { cx, cy } = await commitOneFace(page);
       await enterEditMode(page);
@@ -356,7 +381,7 @@ test.describe('画面の文言の巡回（project: tour）', () => {
   });
 
   test('D. 頂点の候補の一覧', async () => {
-    const { app, page } = await launchApp();
+    const { app, page } = await launchSized(() => launchApp());
     try {
       await scene(page, 'D01-vertex-candidates', '頂点の候補の一覧', async () => {
         await openVertexCandidatesOnTinySquare(page);
@@ -367,7 +392,7 @@ test.describe('画面の文言の巡回（project: tour）', () => {
   });
 
   test('E. 保存の前の確認の板', async () => {
-    const { app, page } = await launchApp();
+    const { app, page } = await launchSized(() => launchApp());
     try {
       await scene(page, 'E01-pre-save', '保存の前の確認の板', async () => {
         await openPreSaveBoard(page);
@@ -378,7 +403,7 @@ test.describe('画面の文言の巡回（project: tour）', () => {
   });
 
   test('F. 重なりの解決', async () => {
-    const { app, page } = await launchApp();
+    const { app, page } = await launchSized(() => launchApp());
     try {
       await scene(page, 'F01-conflict', '重なりの解決の板', async () => {
         const rect = (cx: number, cy: number, hw: number, hh: number): readonly ScreenPoint[] => [
@@ -412,7 +437,7 @@ test.describe('画面の文言の巡回（project: tour）', () => {
     manifest.histories.push(manifest.histories[0]);
     entries['manifest.json'] = strToU8(JSON.stringify(manifest));
     writeFileSync(broken, zipSync(entries));
-    const { app, page } = await launchApp();
+    const { app, page } = await launchSized(() => launchApp());
     try {
       await scene(page, 'G01-repair', '読み込みの修復の板', async () => {
         void loadProject(page, broken).catch(() => undefined);
@@ -433,5 +458,18 @@ test.describe('画面の文言の巡回（project: tour）', () => {
       `${JSON.stringify({ scenes: files.length, ok: ok.length, sceneCountInThisRun: sceneCount }, null, 1)}\n`,
     );
     expect(ok.length, `作れた場面 ${ok.length} / ${files.length}`).toBeGreaterThanOrEqual(MIN_SCENES);
+  });
+
+  test('全部の場面の操作部品が見た目の決まりに沿う', () => {
+    const problems = new Set<string>();
+    for (const name of readdirSync(SCENE_DIR).filter((n) => n.endsWith('.json'))) {
+      // eslint-disable-next-line no-restricted-syntax -- この巡回が書き出した JSON を読む。ソースや CSS ではなく、改行に左右されない
+      const scene = JSON.parse(readFileSync(join(SCENE_DIR, name), 'utf8')) as {
+        id: string;
+        controls?: ControlMetrics[];
+      };
+      for (const problem of controlProblems(scene.controls ?? [])) problems.add(`${scene.id} ${problem}`);
+    }
+    expect([...problems]).toEqual([]);
   });
 });

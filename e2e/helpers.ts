@@ -1319,6 +1319,17 @@ export interface ControlMetrics {
   whiteSpace: string;
   /** 窓の外へ出ているか（スクロールの中に居るだけのものも真になる）。 */
   offscreen: boolean;
+  /** 実際にスクロールできる祖先の中に居るか（窓の外に居ても、送れば届く）。 */
+  inScroller: boolean;
+  disabled: boolean;
+  pressed: boolean;
+  /** 自分と祖先の `opacity` を掛けた値。 */
+  opacity: number;
+  /**
+   * 文字と実際の背景のコントラスト比（小数 1 桁）。中の文字ごとに、祖先の地と透明度を重ね合わせて計算した
+   * いちばん低い値。文字が無ければ null。
+   */
+  contrast: number | null;
 }
 
 /** 見えている見出し 1 個の実寸と計算済みのスタイル。 */
@@ -1356,6 +1367,91 @@ export async function readControlMetrics(
       }
       return lines;
     };
+    type Rgba = readonly [number, number, number, number];
+    const parseColor = (text: string): Rgba => {
+      const parts = /rgba?\(([^)]+)\)/.exec(text)?.[1]?.split(/[,\s/]+/).filter(Boolean).map(Number) ?? [];
+      return [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0, parts[3] ?? (parts.length === 0 ? 0 : 1)];
+    };
+    const over = (top: Rgba, under: Rgba): Rgba => {
+      const a = top[3];
+      return [
+        top[0] * a + under[0] * (1 - a),
+        top[1] * a + under[1] * (1 - a),
+        top[2] * a + under[2] * (1 - a),
+        1,
+      ];
+    };
+    const luminance = (c: Rgba): number => {
+      const channel = (v: number): number => {
+        const x = v / 255;
+        return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * channel(c[0]) + 0.7152 * channel(c[1]) + 0.0722 * channel(c[2]);
+    };
+    /**
+     * 要素の文字の色と地が画面でどんな色になるかを、根から順に重ねて計算する。各段の `opacity` はその段の
+     * 中身全体を 1 つ下の段の絵へ混ぜる（`background` の透明度と `opacity` の両方を効かせる）。
+     */
+    const contrastOf = (el: Element): number => {
+      const chain: Element[] = [];
+      for (let n: Element | null = el; n !== null; n = n.parentElement) chain.unshift(n);
+      const backdrops: Rgba[] = [];
+      let paint: Rgba = [255, 255, 255, 1];
+      for (const node of chain) {
+        backdrops.push(paint);
+        paint = over(parseColor(getComputedStyle(node).backgroundColor), paint);
+      }
+      const toScreen = (color: Rgba): Rgba => {
+        let c = color;
+        for (let i = chain.length - 1; i >= 0; i -= 1) {
+          const element = chain[i] as Element;
+          const o = Number(getComputedStyle(element).opacity);
+          c = over([c[0], c[1], c[2], o], backdrops[i] as Rgba);
+        }
+        return c;
+      };
+      const fg = toScreen(over(parseColor(getComputedStyle(el).color), paint));
+      const bg = toScreen(paint);
+      const a = luminance(fg);
+      const b = luminance(bg);
+      return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+    };
+    /** 中の文字を持つ要素ごとのコントラスト比のいちばん低い値。入力欄は自分の値。 */
+    const lowestContrast = (el: HTMLElement): number | null => {
+      const tag = el.tagName.toLowerCase();
+      if (tag === 'select' || tag === 'textarea' || tag === 'input') {
+        const type = el.getAttribute('type');
+        if (type === 'checkbox' || type === 'radio' || type === 'range' || type === 'color') return null;
+        return contrastOf(el);
+      }
+      let lowest: number | null = null;
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        if ((node.textContent ?? '').trim() === '') continue;
+        const parent = node.parentElement;
+        if (parent === null || parent.closest('[hidden]') !== null) continue;
+        if (parent.getBoundingClientRect().width === 0) continue;
+        const value = contrastOf(parent);
+        if (lowest === null || value < lowest) lowest = value;
+      }
+      return lowest;
+    };
+    const opacityOf = (el: Element): number => {
+      let o = 1;
+      for (let n: Element | null = el; n !== null; n = n.parentElement) {
+        o *= Number(getComputedStyle(n).opacity);
+      }
+      return o;
+    };
+    const inScroller = (el: Element): boolean => {
+      for (let n = el.parentElement; n !== null; n = n.parentElement) {
+        const y = getComputedStyle(n).overflowY;
+        if ((y === 'auto' || y === 'scroll') && n.scrollHeight > n.clientHeight + 1) return true;
+        const x = getComputedStyle(n).overflowX;
+        if ((x === 'auto' || x === 'scroll') && n.scrollWidth > n.clientWidth + 1) return true;
+      }
+      return false;
+    };
     const controls: ControlMetrics[] = [];
     for (const el of Array.from(
       document.querySelectorAll<HTMLElement>(
@@ -1387,6 +1483,12 @@ export async function readControlMetrics(
           rect.bottom > window.innerHeight + 1 ||
           rect.left < -1 ||
           rect.top < -1,
+        inScroller: inScroller(el),
+        disabled: (el as HTMLButtonElement).disabled === true,
+        pressed: el.getAttribute('aria-pressed') === 'true',
+        opacity: Math.round(opacityOf(el) * 100) / 100,
+        contrast: ((value: number | null): number | null =>
+          value === null ? null : Math.floor(value * 10) / 10)(lowestContrast(el)),
       });
     }
     const headings: HeadingMetrics[] = [];
@@ -1405,4 +1507,89 @@ export async function readControlMetrics(
     }
     return { controls, headings };
   });
+}
+
+/**
+ * いま見えている操作部品を **全部無効にしたとき** の測定（測ったらすぐ元へ戻す）。部品のクラスの色が土台の無効の
+ * 色の組に勝っていないかを、その局面で無効になれない部品も含めて見る。
+ */
+export async function readControlMetricsAllDisabled(page: Page): Promise<ControlMetrics[]> {
+  const MARK = 'data-probe-disabled';
+  await page.evaluate((mark) => {
+    for (const el of Array.from(document.querySelectorAll<HTMLButtonElement>('button,select,input,textarea'))) {
+      if (!el.disabled) {
+        el.setAttribute(mark, '');
+        el.disabled = true;
+      }
+    }
+  }, MARK);
+  try {
+    return (await readControlMetrics(page)).controls;
+  } finally {
+    await page.evaluate((mark) => {
+      for (const el of Array.from(document.querySelectorAll<HTMLButtonElement>(`[${mark}]`))) {
+        el.removeAttribute(mark);
+        el.disabled = false;
+      }
+    }, MARK);
+  }
+}
+
+/** 揃えた高さ（設計変数 24 / 28 / 32）と、道具のレール（32）・地図のズーム（40）。 */
+const ALLOWED_CONTROL_HEIGHTS = [24, 28, 32, 40];
+
+/**
+ * 揃えた高さに乗らないボタン（細い行の中で行の高さに従うもの、中身で高さが決まる選択肢）と、その下限。名指しに絞る（教訓 5.83）。
+ * 所属の候補と状態行のボタンはここへ入れない ―― 揃えた高さに乗っているので、普通の検査で見る。
+ */
+const ROW_BOUND_CONTROLS: readonly { readonly name: RegExp; readonly min: number }[] = [
+  { name: /^ledger-(expand|kind|eye)-/, min: 16 },
+  { name: /^feature-list-item-/, min: 16 },
+  { name: /^conflict-row-select-/, min: 16 },
+  // 分割の継承先の選択は、名前と説明の 2 行を持つ選択肢（下限は押せる高さ）。
+  { name: /^knife-choose-/, min: 28 },
+];
+
+/** 1 ボタンの中に複数行の情報を並べる行（ラベルではない）。 */
+const MULTI_LINE_ROW = /^(anchor-row-|conflict-row-select-|backup-row-|knife-choose-)/;
+
+/** 確定の文そのものが板の幅より長いボタン（文言は総点検で直す。docs/現状.md の B103）。 */
+const LONG_LABEL = new Set(['pre-save-confirm']);
+
+/** 幅が決まっていて省略記号で切る前提のボタン（全文は吹き出しで読める）。 */
+const CLIPS_BY_DESIGN = /^ledger-kind-/;
+
+/** 土台の本文の色。無効なのにこの色なら、見た目が押せるボタンと同じになる。 */
+const BODY_TEXT_COLOR = 'rgb(31, 39, 51)';
+
+/** 読める文字として求めるコントラスト比。 */
+export const MIN_CONTRAST = 4.5;
+
+/** 測った操作部品の中で、見た目の決まりから外れているものを文にして返す（巡回と E2E が同じ判定を使う）。 */
+export function controlProblems(controls: readonly ControlMetrics[]): string[] {
+  const out: string[] = [];
+  for (const c of controls) {
+    const name = c.testid ?? `.${c.cls}`;
+    const readable = c.tag === 'button' || c.tag === 'select' || c.tag === 'textarea' || c.tag === 'input';
+    if (readable && c.contrast !== null && c.contrast < MIN_CONTRAST) {
+      out.push(`${name}: コントラスト比 ${String(c.contrast)}「${c.text}」${c.disabled ? '（無効）' : ''}${c.pressed ? '（押されている）' : ''}`);
+    }
+    if (c.disabled && c.opacity < 1) out.push(`${name}: 無効に透明度を重ねている (${String(c.opacity)})`);
+    if (c.offscreen && !c.inScroller) out.push(`${name}: 窓の外に出て、スクロールでも届かない「${c.text}」`);
+    if (c.tag !== 'button') continue;
+    if (c.disabled && c.color === BODY_TEXT_COLOR) out.push(`${name}: 無効なのに本文の色のまま「${c.text}」`);
+    if (c.clipped && !CLIPS_BY_DESIGN.test(name)) out.push(`${name}: 文字が幅から切れる「${c.text}」`);
+    if (c.border.includes('outset')) out.push(`${name}: ブラウザ既定の枠 (${c.border})`);
+    if (c.radius === '0px' && !c.border.startsWith('0px')) out.push(`${name}: 角丸なしの枠`);
+    const bound = ROW_BOUND_CONTROLS.find((r) => r.name.test(name));
+    if (bound !== undefined) {
+      if (c.h < bound.min) out.push(`${name}: 行の中のボタンが低すぎる ${String(c.h)}px`);
+    } else if (!LONG_LABEL.has(name) && !ALLOWED_CONTROL_HEIGHTS.some((h) => Math.abs(c.h - h) <= 0.5)) {
+      out.push(`${name}: 高さ ${String(c.h)}px`);
+    }
+    if (c.lines > 1 && !MULTI_LINE_ROW.test(name) && !LONG_LABEL.has(name)) {
+      out.push(`${name}: ${String(c.lines)} 行に折り返す「${c.text}」`);
+    }
+  }
+  return [...new Set(out)];
 }
