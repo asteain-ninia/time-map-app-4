@@ -1,5 +1,5 @@
 // save-load-roundtrip-and-conflict-resolution の検査 3/3。全体の説明と共有の生成器は save-load-roundtrip-and-conflict-resolution.arbitraries.ts。
-// ファイル単位でしか並列に分配されないので割ってある（開発ガイド「テストの速さ」）。
+// ファイル単位でしか並列に分配されないので割ってある（開発ガイド §1.12）。
 
 import fc from 'fast-check';
 import { describe, it } from 'vitest';

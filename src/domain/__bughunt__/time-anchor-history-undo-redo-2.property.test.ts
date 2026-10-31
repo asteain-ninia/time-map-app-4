@@ -1,5 +1,5 @@
 // time-anchor-history-undo-redo の検査 2/3。全体の説明と共有の生成器は time-anchor-history-undo-redo.arbitraries.ts。
-// ファイル単位でしか並列に分配されないので割ってある（開発ガイド「テストの速さ」）。
+// ファイル単位でしか並列に分配されないので割ってある（開発ガイド §1.12）。
 
 import { describe, it } from 'vitest';
 

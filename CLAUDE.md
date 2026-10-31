@@ -20,6 +20,7 @@ npm run lint
 npx vitest run <ファイル>         # 全件は npm run test
 npm run build && npm run e2e     # e2e は build を含まない
 npm run e2e:explore              # 探索の E2E
+npm run check                    # 普段用の短い確認。見逃す範囲は開発ガイド §1.12、受け入れは上の全件
 ```
 
 ## 守ること

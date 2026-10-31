@@ -1,5 +1,5 @@
 // hole-enclave-ring-alternation の検査 1/9。全体の説明と共有の生成器は hole-enclave-ring-alternation.arbitraries.ts。
-// ファイル単位でしか並列に分配されないので割ってある（開発ガイド「テストの速さ」）。
+// ファイル単位でしか並列に分配されないので割ってある（開発ガイド §1.12）。
 
 import fc from 'fast-check';
 import { describe, it } from 'vitest';

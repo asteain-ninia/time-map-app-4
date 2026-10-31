@@ -10,7 +10,7 @@
 //   4. 単体: ソースや CSS を文字として読むテスト（TEXT_READING_TESTS。--changed では拾えない）
 //   5. E2E: src か e2e が変わっていれば build して launch.spec.ts と、変えた spec だけ
 //
-// 見逃す範囲（開発ガイド「テストの速さ」）:
+// 見逃す範囲（開発ガイド §1.12）:
 //   - E2E は変えた spec と起動の確認だけ。アプリ本体を変えても、そこを通る他の spec は走らない。
 //   - lint のキャッシュはファイルの中身と設定で判定する。別のファイルの変更で赤に変わる規則
 //     （import の解決先の消失など）は、触っていないファイルでは再検査されない。
@@ -79,4 +79,4 @@ if (changed.some(isAppSource) || specs.length > 0 || helperChanged) {
 } else {
   console.log('\n[check] src（テスト以外）も e2e も変わっていないので、E2E は走らせない。');
 }
-console.log('\n[check] 短い確認は緑。受け入れでは全件のゲートを通すこと（開発ガイド「テストの速さ」）。');
+console.log('\n[check] 短い確認は緑。受け入れでは全件のゲートを通すこと（開発ガイド §1.12）。');
