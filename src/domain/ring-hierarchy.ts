@@ -33,7 +33,7 @@
 
 import { assertNever } from './assert-never';
 import type { WorldCoordinate } from './coordinate';
-import { anchorLonToRef, unwrapRing } from './geo/index';
+import { anchorLonToRef, ringLonExtentCenter, unwrapRing } from './geo/index';
 import {
   pointInPolygon,
   POINT_LOCATION,
@@ -307,17 +307,6 @@ function resolveRing(store: VertexStore, ring: Ring): GeoRing | undefined {
   return unwrapRing(representative).map((c) => quantizeCoordinate(c));
 }
 
-/** Mean longitude of a ring (its anchor for cross-ring world-turn alignment).
- * A ring resolved by {@link resolveRing} always has ≥1 vertex when it reaches a
- * comparison site; 0 is returned for the empty case (lesson 5.18: length-decided,
- * never a falsy default) and simply yields the identity alignment. */
-function ringLonAnchor(ring: GeoRing): number {
-  if (ring.length === 0) return 0;
-  let sum = 0;
-  for (const c of ring) sum += c.lon;
-  return sum / ring.length;
-}
-
 /**
  * Align `ring` into the SAME world turn as `reference` so two independently
  * unwrapped rings (see {@link resolveRing}) can be compared in one continuous
@@ -327,7 +316,7 @@ function ringLonAnchor(ring: GeoRing): number {
  * Reuse over re-derivation (技术方针 R3 / 单一真实源 §4): the ±360° branch selection
  * delegates to U05's {@link anchorLonToRef} ("shift a longitude onto the branch
  * nearest a reference") rather than re-implementing a turn scan here. We anchor the
- * ring's MEAN longitude onto the reference's branch and shift the whole ring by that
+ * ring's extent center onto the reference's branch and shift the whole ring by that
  * one whole-turn offset, which brings a parent and hole resolved a turn apart
  * together regardless of how many turns their independent per-ring unwrap introduced.
  * (This replaced an inline ±2-turn `worldWrapReplicas` scan; the mean+anchor form is
@@ -341,8 +330,10 @@ function ringLonAnchor(ring: GeoRing): number {
  */
 function alignRingTo(reference: GeoRing, ring: GeoRing): GeoRing {
   if (ring.length === 0 || reference.length === 0) return ring;
-  const refAnchor = ringLonAnchor(reference);
-  const anchor = ringLonAnchor(ring);
+  // 輪の経度の範囲の中央で揃える（`geo/seam.ts` の整列と同じ規則）。頂点の平均は密な側へ偏るので、
+  // 幅の広い外周の中の正しい穴を「外周の外」と言ってしまう（B106 の調査）。
+  const refAnchor = ringLonExtentCenter(reference);
+  const anchor = ringLonExtentCenter(ring);
   const shift = anchorLonToRef(anchor, refAnchor) - anchor;
   if (shift === 0) return ring;
   return ring.map((c) => ({ lon: c.lon + shift, lat: c.lat }));

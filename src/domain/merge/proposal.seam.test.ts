@@ -10,6 +10,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createCoordinate, type WorldCoordinate } from '../coordinate';
+import { wrapLonDeg } from '../geo/index';
 import { createLeafFeature, type Feature, type LeafFeature } from '../feature';
 import { asFeatureId, asRingId, asVertexId, type FeatureId, type VertexId } from '../ids';
 import { createHoleRing, createShape, createTerritoryRing, RING_KIND } from '../ring';
@@ -408,5 +409,51 @@ describe('U30 結合 — 1 辺で経度 180 度以上を渡る結果は断る (N
 
     const proposal = proposalOf(result);
     expect(territoryRingCount(proposal.nextFeatures, proposal.resultFeatureId)).toBe(1);
+  });
+});
+
+describe('B106 離れた片の穴が結合で消えない・領土にならない', () => {
+  const box = (w: number, so: number, e: number, n: number): WorldCoordinate[] =>
+    [
+      [w, so],
+      [e, so],
+      [e, n],
+      [w, n],
+    ].map(([lon, lat]) => createCoordinate(wrapLonDeg(lon!), lat!));
+
+  function merge(a: ReturnType<typeof quadLeaf>, b: ReturnType<typeof quadLeaf>): MergeProposal {
+    return proposalOf(
+      buildMergeProposal({
+        features: [a.feature, b.feature],
+        vertices: storeOf(a, b),
+        targetIds: [a.feature.id, b.feature.id],
+        atTime: 0,
+        parentDecision: parentNone,
+        propertyDecision: propertyNew({
+          attributes: createBasicAttributes('結合', 0, 100),
+          color: COLOR,
+        }),
+        ids: makeIdPorts('b106'),
+      }),
+    );
+  }
+
+  function ringCounts(p: MergeProposal): { territories: number; holes: number } {
+    const leaf = p.nextFeatures.find((f) => f.id === p.resultFeatureId) as LeafFeature;
+    const holes = leaf.shape.rings.filter((r) => r.kind === RING_KIND.Hole).length;
+    return { territories: leaf.shape.rings.length - holes, holes };
+  }
+
+  it('経度 0 付近の面と、平均 181 の穴を持つ 170..190 の面（和の整列で穴が消えていた）', () => {
+    const near = quadLeaf('near', box(-10, 0, 10, 20));
+    const far = donutLeaf('far', box(170, 0, 190, 20), box(178, 5, 184, 8));
+    expect(ringCounts(merge(near, far))).toEqual({ territories: 2, holes: 1 });
+    expect(ringCounts(merge(far, near))).toEqual({ territories: 2, holes: 1 });
+  });
+
+  it('外周の平均 179・穴の平均 181（入れ子の組み立ての寄せ直しで穴が領土になっていた）', () => {
+    const near = quadLeaf('near', box(-10, 0, 10, 20));
+    const far = donutLeaf('far', box(168, 0, 190, 20), box(178, 5, 184, 8));
+    expect(ringCounts(merge(near, far))).toEqual({ territories: 2, holes: 1 });
   });
 });

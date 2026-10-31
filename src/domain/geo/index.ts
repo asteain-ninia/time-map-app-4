@@ -46,6 +46,7 @@ export {
   ringsShareVertexAcrossSeam,
   anchorLonToRef,
   unwrapRingAnchored,
+  ringLonExtentCenter,
   referenceLonForMultiPolygon,
   alignMultiPolygon,
 } from './seam';

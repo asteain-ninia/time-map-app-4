@@ -82,6 +82,16 @@ function wavyBoxRing([w, s, e, n]: Box, step: number): GeoRing {
   return [...south, c(e, s), c(e, n), ...north];
 }
 
+/** 幅 300 度、頂点の大半が西の端に集まった波打つ枠（まっすぐな長い辺を作らない）。 */
+function westDenseWideRing(): GeoRing {
+  const ring: WorldCoordinate[] = [];
+  for (let lon = 0; lon <= 60; lon += 1) ring.push(c(lon, lon % 2 === 0 ? 0 : -0.5));
+  for (let lon = 120; lon <= 300; lon += 60) ring.push(c(lon, lon % 120 === 0 ? -0.5 : 0));
+  ring.push(c(300, 30));
+  for (let lon = 240; lon >= 0; lon -= 60) ring.push(c(lon, lon % 120 === 0 ? 30.5 : 30));
+  return ring;
+}
+
 /**
  * 保存される経度へ畳む。`keepPlus180` は実データと同じく経度 180 をそのまま持つ形。アプリが
  * 作る頂点は -180 に畳まれるので、両方を確かめる。
@@ -99,6 +109,8 @@ interface LeafSpec {
   readonly enclaves?: readonly { readonly holeIndex: number; readonly ring: GeoRing }[];
   readonly parentId?: FeatureId;
   readonly keepPlus180?: boolean;
+  /** 2 つ目以降の片（飛び地の面）。外周と穴の組。 */
+  readonly extraPieces?: readonly { readonly outer: GeoRing; readonly holes?: readonly GeoRing[] }[];
 }
 
 /** 連続の座標で書いた形を、保存される形（畳んだ頂点と輪の階層）の末端にする。 */
@@ -123,6 +135,13 @@ function leafOf(spec: LeafSpec): { feature: LeafFeature; vertices: Vertex[] } {
           createTerritoryRing(asRingId(`${spec.id}-e${i}-${j}`), ids(e.ring, `e${i}-${j}`), holeId),
         );
       });
+  });
+  (spec.extraPieces ?? []).forEach((piece, i) => {
+    const pieceId = asRingId(`${spec.id}-p${i}`);
+    rings.push(createTerritoryRing(pieceId, ids(piece.outer, `p${i}`)));
+    (piece.holes ?? []).forEach((hole, j) => {
+      rings.push(createHoleRing(asRingId(`${spec.id}-p${i}h${j}`), ids(hole, `p${i}h${j}`), pieceId));
+    });
   });
   const feature = createLeafFeature(
     asFeatureId(spec.id),
@@ -286,6 +305,38 @@ const CASES: readonly Case[] = [
     },
     child: [171, 3, 173, 8],
     expected: { territories: 2, holes: 2 },
+  },
+  // B106: 先頭の片から 180 度前後の片の穴。輪ごとに整列すると穴だけ別の周へ行き、消えて確定する。
+  {
+    name: '先頭の片が経度 0 付近、2 つ目の片に平均 181 の穴があり、子は 2 つ目の片',
+    parent: {
+      outer: boxRing([-10, 0, 10, 20]),
+      extraPieces: [{ outer: boxRing([170, 0, 190, 20]), holes: [boxRing([178, 5, 184, 8])] }],
+    },
+    child: [172, 10, 175, 14],
+    expected: { territories: 2, holes: 2 },
+  },
+  {
+    name: '同じ形で子は先頭の片',
+    parent: {
+      outer: boxRing([-10, 0, 10, 20]),
+      extraPieces: [{ outer: boxRing([170, 0, 190, 20]), holes: [boxRing([178, 5, 184, 8])] }],
+    },
+    child: [-5, 5, -2, 8],
+    expected: { territories: 2, holes: 2 },
+  },
+  // 幅の広い外周の頂点が片側に密で、穴がその反対側にある形。周を頂点の平均で決めると、穴が別の
+  // 周へ行く。輪の検査まで「穴が外周の外」と言う。
+  {
+    name: '幅 300 度の外周の頂点が西に密で、穴と飛び地は東',
+    parent: {
+      outer: westDenseWideRing(),
+      holes: [boxRing([250, 5, 260, 15])],
+      enclaves: [{ holeIndex: 0, ring: boxRing([253, 7, 257, 13]) }],
+    },
+    child: [100, 5, 105, 15],
+    expected: { territories: 2, holes: 2 },
+    promoteFalselyRejected: true,
   },
 ];
 

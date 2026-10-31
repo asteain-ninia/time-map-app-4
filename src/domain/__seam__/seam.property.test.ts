@@ -322,7 +322,7 @@ describe('seam property: alignment makes cross-ring judgements correct', () => {
     );
   });
 
-  it('unwrapRingAnchored anchors by the ring MEAN, not its first vertex (Codex review #2)', () => {
+  it('unwrapRingAnchored は先頭の頂点でなく輪の位置で周を決める（Codex review #2。自分の平均へ寄せても動かない）', () => {
     // Mean-anchoring fix: a ring whose FIRST vertex sits a turn away from its
     // centroid (e.g. first corner near +179, body around +120) must be placed by its
     // centroid, so it lands on the reference's branch as a whole, not pulled by one

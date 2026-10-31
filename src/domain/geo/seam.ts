@@ -303,33 +303,38 @@ export function anchorLonToRef(lon: number, ref: number): number {
   return lon + turns * LONGITUDE_PERIOD;
 }
 
-/** Mean longitude of a continuous (already-unwrapped) ring; 0 for an empty ring
- * (lesson 5.18: length-decided). The mean — not the first vertex — is the ring's
- * anchor so a ring WIDER than 180° is placed onto the branch nearest its CENTROID,
- * not nearest an arbitrary corner that could pull the whole ring a turn away
- * (Codex root-cause review #2: first-vertex anchoring breaks >180° rings). */
-function ringLonMean(ring: readonly WorldCoordinate[]): number {
+/**
+ * 連続の輪の経度の範囲の中央。**これが輪の周を決める代表の経度**である（空の輪は 0。教訓 5.18）。
+ *
+ * 先頭の頂点では、幅 180 度を超える輪が 1 つの角に引かれて 1 周ずれる（Codex review #2）。
+ * 頂点の平均でも足りない（B106 の調査）。平均は頂点の密な側へ偏るので、幅の広い輪の中の穴や
+ * 飛び地がそこから 180 度以上離れて別の周へ行く。範囲の中央なら、輪の範囲の中のものは必ず
+ * 180 度以内に入る（輪の幅は 360 度以下）。
+ */
+export function ringLonExtentCenter(ring: readonly WorldCoordinate[]): number {
   if (ring.length === 0) return 0;
-  let sum = 0;
-  for (const c of ring) sum += c.lon;
-  return sum / ring.length;
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const c of ring) {
+    if (c.lon < min) min = c.lon;
+    if (c.lon > max) max = c.lon;
+  }
+  return (min + max) / 2;
 }
 
 /**
  * Make a ring self-continuous ({@link unwrapRingClosed}) and then shift the WHOLE
- * ring by whole ±360° turns so its MEAN longitude sits on the branch of `ref`. This
- * anchors every ring of a multi-ring shape onto ONE common longitude branch so
- * cross-ring geometry (containment, union, difference, intersection, bbox) runs in a
- * single continuous frame.
+ * ring by whole ±360° turns so the CENTER of its longitude extent sits on the branch
+ * of `ref`. Use this for ONE ring against a reference; the rings of a shape go through
+ * {@link alignMultiPolygon}, which keeps a hole with its outer ring.
  *
- * Anchoring by the ring's MEAN (not its first vertex) is load-bearing for rings that
- * span more than 180° (Codex review #2): a region at lon 220..230 inside an outer
- * ring spanning 0..240 has a first vertex (~220, stored −140) that, anchored to
- * reference 0, would be pulled to −140 while the outer stays at 0..240 — breaking
- * containment. Anchoring the region by its mean (~225) keeps it on the outer's
- * branch. For inputs already on a single representative branch (the common, non-seam
- * case) the unwrap is the identity and the anchor adds 0 turns, so behaviour is
- * unchanged. The input is never mutated.
+ * Anchoring by the extent center (not the first vertex or the vertex mean, see
+ * {@link ringLonExtentCenter}) is load-bearing for rings that span more than 180°: a
+ * region at lon 220..230 inside an outer ring spanning 0..240 has a first vertex (~220,
+ * stored −140) that, anchored to reference 0, would be pulled to −140 while the outer
+ * stays at 0..240 — breaking containment. For inputs already on a single representative
+ * branch (the common, non-seam case) the unwrap is the identity and the anchor adds 0
+ * turns, so behaviour is unchanged. The input is never mutated.
  */
 export function unwrapRingAnchored(
   ring: readonly WorldCoordinate[],
@@ -341,38 +346,61 @@ export function unwrapRingAnchored(
   // its closing edge, not just its interior edges.
   const continuous = unwrapRingClosed(ring);
   if (continuous.length === 0) return continuous;
-  const mean = ringLonMean(continuous);
-  const shift = anchorLonToRef(mean, ref) - mean;
+  const center = ringLonExtentCenter(continuous);
+  const shift = anchorLonToRef(center, ref) - center;
   if (shift === 0) return continuous;
   return continuous.map((c) => createCoordinate(c.lon + shift, c.lat));
 }
 
 /**
- * The reference longitude a whole multi-polygon is anchored to: the MEAN longitude
- * of the first piece's outer ring, made self-continuous (so the reference reflects
- * the whole extent of a >180° outer ring, not an arbitrary corner — Codex review
- * #2). Defaults to 0 for an empty multi-polygon (lesson 5.18: length-decided, never
- * a falsy default; the identity alignment results).
+ * The reference longitude a whole multi-polygon is anchored to: the center of the
+ * longitude extent of the first piece's outer ring, made self-continuous
+ * ({@link ringLonExtentCenter}). Defaults to 0 for an empty multi-polygon (lesson 5.18:
+ * length-decided, never a falsy default; the identity alignment results).
  */
 export function referenceLonForMultiPolygon(
   mp: readonly (readonly (readonly WorldCoordinate[])[])[],
 ): number {
   const outer = mp[0]?.[0];
   if (outer === undefined || outer.length === 0) return 0;
-  return ringLonMean(unwrapRingClosed(outer));
+  return ringLonExtentCenter(unwrapRingClosed(outer));
 }
 
 /**
- * Align every ring of a multi-polygon onto the common branch `ref` (defaulting to
- * the multi-polygon's own outer-ring reference). The single helper drill, the
- * aggregate union, and the display unwrap all funnel their per-ring unwrap through,
- * so a seam-crossing outer ring, its holes, and its enclaves never land a world
- * turn apart (audit root cause A). Pieces are kept intact (教訓5.1) — no ring is
- * merged or dropped. The input is never mutated.
+ * 片（外周と、その穴）を 1 つの枠へ揃える。**片の周を決めるのは外周だけ**で、穴は整列した
+ * 外周の範囲の中へ置く。
+ *
+ * 輪を 1 本ずつ `ref` へ寄せてはいけない（B106）。`ref` から 180 度前後にある片は、外周と穴の
+ * 平均が境の両側に分かれ、外周は +180 側、穴は -180 側の別の周へ行く。すると集合演算には
+ * 穴が外周の外の輪に見え、穴を黙って捨てる。
+ *
+ * 穴は外周の範囲の中にあるので、範囲の中央（{@link ringLonExtentCenter}）へ寄せれば必ず外周の
+ * 周に入る。
+ */
+function alignPiece(
+  poly: readonly (readonly WorldCoordinate[])[],
+  ref: number,
+): WorldCoordinate[][] {
+  const [outer, ...holes] = poly;
+  if (outer === undefined) return [];
+  const alignedOuter = unwrapRingAnchored(outer, ref);
+  if (holes.length === 0) return [alignedOuter];
+  const center = ringLonExtentCenter(alignedOuter);
+  return [alignedOuter, ...holes.map((hole) => unwrapRingAnchored(hole, center))];
+}
+
+/**
+ * Align a multi-polygon onto the common branch `ref` (defaulting to the
+ * multi-polygon's own outer-ring reference), PIECE BY PIECE: each piece's outer ring
+ * is anchored to `ref`, and its holes follow that outer ring (see {@link alignPiece}).
+ * The single helper drill, the aggregate union, and the display unwrap all funnel
+ * through, so a seam-crossing outer ring and its holes never land a world turn apart
+ * (audit root cause A / B106). Pieces are kept intact (教訓5.1) — no ring is merged or
+ * dropped. The input is never mutated.
  */
 export function alignMultiPolygon(
   mp: readonly (readonly (readonly WorldCoordinate[])[])[],
   ref: number = referenceLonForMultiPolygon(mp),
 ): WorldCoordinate[][][] {
-  return mp.map((poly) => poly.map((ring) => unwrapRingAnchored(ring, ref)));
+  return mp.map((poly) => alignPiece(poly, ref));
 }

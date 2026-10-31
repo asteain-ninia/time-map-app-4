@@ -235,9 +235,7 @@ function ringAreaAbs(ring: GeoRing): number {
  * 不変条件・U26 split 再親付け (knife/proposal)・直轄領昇格 (promotion/direct-domain) と
  * 同一の境界堅牢な入れ子判定)。
  *
- * 両オペランドは {@link reparentByContainment} で事前に共通アンカーへ揃えた連続フレーム
- * 座標であることを前提とする (R3 seam alignment / audit root cause A)。整列は包含判定の
- * 外側へ巻き上げ済みで、ringStrictlyContains は整列済みリングをそのまま受け付ける。
+ * 両オペランドは和の出力のままの、1 つの連続の枠の座標であることを前提とする (B106)。
  *
  * bughunt2: 旧実装は単一頂点 (inner[0]) プローブだった。量子化後、ドーナツ状 union の穴
  * リング先頭頂点はシーム接合や共有辺で外環境界上へ落ちやすく、そこでは pointInPolygon が
@@ -256,26 +254,14 @@ function alignedRingContains(outer: GeoRing, inner: GeoRing): boolean {
  * 親は「自身を厳密に含む反対種別の最小面積リング」。包含親がなければ最上位領土。これに
  * より穴あき和 (ドーナツ状) でも交互不変条件を保つ。純粋・入力非破壊。
  *
- * 性能 (bughunt2): 旧実装は R^2 の各ペアごとに alignMultiPolygon を 2 回再割り当てして
- * いた (1 ペアにつき両リングを連続フレーム配列へ作り直す)。整列はループ外へ巻き上げ、
- * 全リングを共通アンカー (先頭片の外環基準) へ一度だけ揃えてから素の包含走査を行う
- * (R3 seam alignment / audit root cause A の単一真実源を再利用)。全リングは同一 union
- * 出力由来で既に同じ連続フレームにあるため、共通アンカーへの一括整列は per-pair 整列と
- * 包含結果が等価で、single-branch 入力では恒等変換のまま (通常系不変)。さらに候補親を
- * 面積昇順に走査して最小包含親を最初に見つけた時点で打ち切る。
+ * **入れ子は和の出力のままの連続の座標で見て、寄せ直さない**（B106。分け残しの B90 と同じ）。
+ * 和の出力の輪はもともと 1 つの連続の枠にある。ここで輪を 1 本ずつ先頭の片の基準へ寄せ直すと、
+ * 先頭の片から 180 度前後の片で外周と穴の平均が境の両側に分かれ、穴だけ 1 周ずれて最上位の
+ * 領土になる。候補親は面積昇順に走査して最小包含親を最初に見つけた時点で打ち切る。
  */
 function reparentByContainment(raws: readonly RawRing[]): Ring[] {
   const areaOf = new Map<RingId, number>();
   for (const r of raws) areaOf.set(r.id, ringAreaAbs(r.coords));
-
-  // 整列をループ外へ巻き上げる: 全リングを 1 つの共通アンカーへ一度だけ揃える。共通
-  // アンカーは全リングを 1 つの multi-polygon として渡したときの外環基準 (先頭片の外環)。
-  const ref = referenceLonForMultiPolygon(raws.map((r) => [r.coords]));
-  const alignedById = new Map<RingId, GeoRing>();
-  for (const r of raws) {
-    const aligned = alignMultiPolygon([[r.coords]], ref)[0]?.[0];
-    alignedById.set(r.id, aligned ?? r.coords);
-  }
 
   // 候補親を面積昇順に並べた索引 (最小包含親を最初の一致で確定し打ち切るため)。
   const candidatesByAreaAsc = [...raws].sort(
@@ -286,13 +272,11 @@ function reparentByContainment(raws: readonly RawRing[]): Ring[] {
 
   const rings: Ring[] = [];
   for (const r of raws) {
-    const alignedInner = alignedById.get(r.id) ?? r.coords;
     let bestParent: RawRing | undefined;
     for (const cand of candidatesByAreaAsc) {
       if (cand.id === r.id) continue;
       if (cand.isOuter === r.isOuter) continue; // 親は種別が交互。
-      const alignedOuter = alignedById.get(cand.id) ?? cand.coords;
-      if (!alignedRingContains(alignedOuter, alignedInner)) continue;
+      if (!alignedRingContains(cand.coords, r.coords)) continue;
       // 面積昇順走査なので最初に見つかった包含親が最小面積親。即確定して打ち切る。
       bestParent = cand;
       break;
