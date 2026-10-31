@@ -118,6 +118,30 @@ const NEXT_STEP_RESERVE = 160;
  */
 const SETTINGS_MIN_WIDTH = 136;
 
+/**
+ * 「≫」の中の部品の幅を控える。閉じた板は `display: none` で幅が測れないので、描く前の同じ
+ * 処理の中でだけ `hidden` を外し、見えないまま測って戻す（画面には出ない。入力も奪わない）。
+ */
+function measureOverflowSlots(
+  panel: HTMLDivElement | null,
+  widths: Map<string, number>,
+): void {
+  if (panel === null) return;
+  const closed = panel.hidden;
+  if (closed) {
+    panel.hidden = false;
+    panel.style.visibility = 'hidden';
+  }
+  for (const el of Array.from(panel.querySelectorAll<HTMLElement>('[data-overflow-slot-id]'))) {
+    const id = el.dataset['overflowSlotId'];
+    if (id !== undefined) widths.set(id, el.getBoundingClientRect().width);
+  }
+  if (closed) {
+    panel.style.removeProperty('visibility');
+    panel.hidden = true;
+  }
+}
+
 export interface OptionBarProps {
   readonly store: OptionBarStore;
   /**
@@ -148,7 +172,8 @@ export function OptionBar(props: OptionBarProps): JSX.Element {
   const [visibleCount, setVisibleCount] = useState<number | null>(null);
   const settingsRef = useRef<HTMLDivElement | null>(null);
   const overflowButtonRef = useRef<HTMLButtonElement | null>(null);
-  /** 部品ごとの実測幅。**隠れている部品は測れない**ので、出ていたときの値を控えておく。 */
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  /** 部品ごとの実測幅。帯に出ている部品も「≫」の中の部品も、測るたびに測り直す。 */
   const widthsRef = useRef<Map<string, number>>(new Map());
   const slotsRef = useRef<readonly OptionBarSlot[]>(slots);
   slotsRef.current = slots;
@@ -179,6 +204,10 @@ export function OptionBar(props: OptionBarProps): JSX.Element {
       const id = el.dataset['slotId'];
       if (id !== undefined) widthsRef.current.set(id, el.getBoundingClientRect().width);
     }
+    // **「≫」の中の部品も測り直す**（B103）。部品の幅は顔ぶれが同じでも中身で変わる ―― 測量の
+    // 読み取りは測っている間だけ幅を持つ。控えた幅のままだと、測量を切って空になった読み取りが
+    // 測っていた時の幅のまま「入らない」と読まれ、800×600 で「表示 ▾」まで「≫」に残り続けた。
+    measureOverflowSlots(panelRef.current, widthsRef.current);
 
     const ids = slotsRef.current.map((s) => s.id);
     const raw = settingsBudget(box);
@@ -267,7 +296,6 @@ export function OptionBar(props: OptionBarProps): JSX.Element {
   // 必ず付けるので、「≫」が「≫ ▾」になってしまう。
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [panelPos, setPanelPos] = useState<{ left: number; top: number } | null>(null);
-  const panelRef = useRef<HTMLDivElement | null>(null);
   const panelId = useId();
 
   const closeOverflow = useCallback(() => {
@@ -443,6 +471,7 @@ export function OptionBar(props: OptionBarProps): JSX.Element {
             <span
               key={slot.id}
               className="option-bar__slot"
+              data-overflow-slot-id={slot.id}
               data-testid={`option-slot-${slot.id}`}
             >
               {slot.node}

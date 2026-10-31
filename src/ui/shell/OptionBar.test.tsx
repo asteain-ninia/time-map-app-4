@@ -26,7 +26,13 @@ import { OPTION_BAR_STRINGS } from './strings';
  * 差し替えて数字を与える。**「入るかどうか」を jsdom の実測で見ているわけではない**
  * （それは E2E の担当で、`e2e/inc5-shell.spec.ts` が 5 段の窓幅で見る）。
  */
-function stubWidths(opts: { bar: number; slot: number; button: number }): () => void {
+function stubWidths(opts: {
+  bar: number;
+  slot: number;
+  button: number;
+  /** 部品ごとの幅（無ければ `slot`）。帯に出ていても「≫」の中でも同じ値を返す。 */
+  slotById?: Readonly<Record<string, number>>;
+}): () => void {
   const clientWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth');
   const rect = Element.prototype.getBoundingClientRect;
 
@@ -34,7 +40,8 @@ function stubWidths(opts: { bar: number; slot: number; button: number }): () => 
   // 「送る → 器が縮む → もっと送る」の輪になる＝`settingsBudget` の注記）。
   const widthOf = (el: Element): number => {
     if (el.classList.contains('option-bar')) return opts.bar;
-    if (el.hasAttribute('data-slot-id')) return opts.slot;
+    const slotId = el.getAttribute('data-slot-id') ?? el.getAttribute('data-overflow-slot-id');
+    if (slotId !== null) return opts.slotById?.[slotId] ?? opts.slot;
     if (el.classList.contains('option-bar__overflow-button')) return opts.button;
     return 0;
   };
@@ -239,6 +246,31 @@ describe('OptionBar — 設定欄の畳み「≫」', () => {
     // **testid は変わらない**（T-1: 置き場が変わっても役割は同じ）。
     expect(panel).toContainElement(screen.getByTestId('option-slot-depth'));
     expect(panel).toContainElement(screen.getByTestId('option-slot-display'));
+  });
+
+  it('「≫」の中の部品の中身が縮めば、顔ぶれが同じでも帯へ戻す（B103。閉じた板は閉じたまま）', () => {
+    // 読み取りが測っている間は 400px で、先頭から全部「≫」へ入る。切ると 0px になる。
+    const widths: Record<string, number> = { readout: 400, display: 60 };
+    restoreWidths = stubWidths({ bar: 260, slot: 60, button: 30, slotById: widths });
+    const store = new OptionBarStore();
+    render(<OptionBar store={store} />);
+    withSlots(store, ['readout', 'display', 'grid']);
+    const settings = screen.getByTestId('option-bar-settings');
+    const panel = screen.getByTestId('option-bar-overflow-panel');
+    expect(panel).toContainElement(screen.getByTestId('option-slot-display'));
+    expect(panel).toHaveAttribute('hidden');
+
+    widths['readout'] = 0;
+    // 同じ id の並びのまま中身だけを差し替える（測量を切ったときの形）。
+    act(() => {
+      store.registerOptionSlot('readout', <span>空</span>);
+    });
+
+    expect(settings).toContainElement(screen.getByTestId('option-slot-readout'));
+    expect(settings).toContainElement(screen.getByTestId('option-slot-display'));
+    expect(panel).toContainElement(screen.getByTestId('option-slot-grid'));
+    expect(panel).toHaveAttribute('hidden');
+    expect(panel.style.visibility).toBe('');
   });
 
   it('Escape で閉じ、そこで止める（大域の Escape と同時に走らない）', () => {
