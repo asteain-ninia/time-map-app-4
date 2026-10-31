@@ -51,6 +51,10 @@ const FIT_TOLERANCE = 0.5;
  * 「隠す → 器が縮む → もっと隠す」と数回ぶんは往復しうる。往復は必ず収束する
  * （隠す数が増えると器は狭くなる一方なので単調で、循環しない）が、将来 CSS を
  * 変えたときに無限に測り直すことがないよう上限を切っておく。
+ *
+ * **数えるのは 1 回の測定の連鎖だけ**（自分が置き場を変えた再描画で続く測り直し）。中身や親の
+ * 再描画など外から来た測り直しは新しい測定として 0 から数える。持ち越すと、測量の入り切りを
+ * 6 回繰り返したところで上限に達し、「表示 ▾」が「≫」に残ったまま戻らなくなる。
  */
 const MEASURE_STEP_LIMIT = 12;
 
@@ -179,6 +183,10 @@ export function OptionBar(props: OptionBarProps): JSX.Element {
   slotsRef.current = slots;
   const lastAvailRef = useRef<number>(-1);
   const stepsRef = useRef(0);
+  /** 次の測り直しが、自分の `setVisibleCount` の再描画で呼ばれる印（連鎖の続きかどうか）。 */
+  const chainedRef = useRef(false);
+  const visibleCountRef = useRef<number | null>(visibleCount);
+  visibleCountRef.current = visibleCount;
 
   // 顔ぶれが変わったら、いったん全部出して測り直す（控えた幅も捨てる）。
   useLayoutEffect(() => {
@@ -189,8 +197,20 @@ export function OptionBar(props: OptionBarProps): JSX.Element {
   }, [slotsKey]);
 
   const measure = useCallback(() => {
+    // 自分が置き場を変えた再描画の続きでなければ、新しい測定として数え直す。
+    if (chainedRef.current) chainedRef.current = false;
+    else stepsRef.current = 0;
+
     const box = settingsRef.current;
     if (box === null) return;
+
+    /** 置き場を変える（同じなら何もしない）。変えたぶんだけ連鎖の回数を数える。 */
+    const placeCount = (next: number | null): void => {
+      if (visibleCountRef.current === next) return;
+      stepsRef.current += 1;
+      chainedRef.current = true;
+      setVisibleCount(next);
+    };
 
     // 出ている部品の実測幅を控える（次に隠したあとも、この値で判断できる）。
     //
@@ -239,10 +259,7 @@ export function OptionBar(props: OptionBarProps): JSX.Element {
     const totalAll =
       widths.reduce((a, b) => a + b, 0) + SETTINGS_GAP * Math.max(0, ids.length - 1);
     if (totalAll <= avail + FIT_TOLERANCE) {
-      setVisibleCount((prev) => {
-        if (prev !== null) stepsRef.current += 1;
-        return null;
-      });
+      placeCount(null);
       return;
     }
 
@@ -256,10 +273,7 @@ export function OptionBar(props: OptionBarProps): JSX.Element {
       used = next;
       fit += 1;
     }
-    setVisibleCount((prev) => {
-      if (prev !== fit) stepsRef.current += 1;
-      return fit;
-    });
+    placeCount(fit);
   }, []);
 
   // **毎レンダーのあとに測る。** 隠した結果で器の幅が変わるので、1 回では決まらない

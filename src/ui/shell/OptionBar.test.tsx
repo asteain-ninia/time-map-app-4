@@ -32,6 +32,10 @@ function stubWidths(opts: {
   button: number;
   /** 部品ごとの幅（無ければ `slot`）。帯に出ていても「≫」の中でも同じ値を返す。 */
   slotById?: Readonly<Record<string, number>>;
+  /** 「≫」の中にあるときだけ違う幅を返す部品（帯と板で幅が変わる形を作る）。 */
+  panelSlotById?: Readonly<Record<string, number>>;
+  /** 部品の幅を測った回数を数える。 */
+  onMeasureSlot?: () => void;
 }): () => void {
   const clientWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth');
   const rect = Element.prototype.getBoundingClientRect;
@@ -40,8 +44,15 @@ function stubWidths(opts: {
   // 「送る → 器が縮む → もっと送る」の輪になる＝`settingsBudget` の注記）。
   const widthOf = (el: Element): number => {
     if (el.classList.contains('option-bar')) return opts.bar;
-    const slotId = el.getAttribute('data-slot-id') ?? el.getAttribute('data-overflow-slot-id');
-    if (slotId !== null) return opts.slotById?.[slotId] ?? opts.slot;
+    const panelSlotId = el.getAttribute('data-overflow-slot-id');
+    const slotId = el.getAttribute('data-slot-id') ?? panelSlotId;
+    if (slotId !== null) {
+      opts.onMeasureSlot?.();
+      if (panelSlotId !== null && opts.panelSlotById?.[panelSlotId] !== undefined) {
+        return opts.panelSlotById[panelSlotId];
+      }
+      return opts.slotById?.[slotId] ?? opts.slot;
+    }
     if (el.classList.contains('option-bar__overflow-button')) return opts.button;
     return 0;
   };
@@ -271,6 +282,55 @@ describe('OptionBar — 設定欄の畳み「≫」', () => {
     expect(panel).toContainElement(screen.getByTestId('option-slot-grid'));
     expect(panel).toHaveAttribute('hidden');
     expect(panel.style.visibility).toBe('');
+  });
+
+  it('測量の入り切りを何度繰り返しても、切れば「表示」が帯へ戻る（測り直しの回数を持ち越さない）', () => {
+    const widths: Record<string, number> = { readout: 0, display: 60, grid: 80 };
+    restoreWidths = stubWidths({ bar: 260, slot: 60, button: 30, slotById: widths });
+    const store = new OptionBarStore();
+    render(<OptionBar store={store} />);
+    withSlots(store, ['readout', 'display', 'grid']);
+    const settings = screen.getByTestId('option-bar-settings');
+    const panel = screen.getByTestId('option-bar-overflow-panel');
+    expect(settings).toContainElement(screen.getByTestId('option-slot-display'));
+
+    for (let round = 1; round <= 10; round += 1) {
+      widths['readout'] = 400;
+      act(() => {
+        store.registerOptionSlot('readout', <span>読み取り {round}</span>);
+      });
+      expect(panel, `${String(round)} 回目の入`).toContainElement(screen.getByTestId('option-slot-display'));
+
+      widths['readout'] = 0;
+      act(() => {
+        store.registerOptionSlot('readout', <span>空 {round}</span>);
+      });
+      expect(settings, `${String(round)} 回目の切`).toContainElement(screen.getByTestId('option-slot-display'));
+    }
+  });
+
+  it('帯と「≫」で幅が変わる部品でも、1 回の測定の往復は有限で止まる', () => {
+    // b は帯では 400px で入らず、「≫」の中では 10px で入るように読める。測るたびに置き場が入れ替わる。
+    let measured = 0;
+    restoreWidths = stubWidths({
+      bar: 260,
+      slot: 60,
+      button: 30,
+      slotById: { a: 60, b: 400 },
+      panelSlotById: { b: 10 },
+      onMeasureSlot: () => {
+        measured += 1;
+      },
+    });
+    const store = new OptionBarStore();
+    render(<OptionBar store={store} />);
+    measured = 0;
+    withSlots(store, ['a', 'b']);
+    // 上限が無いと React が「Maximum update depth exceeded」で落ちる。1 回の連鎖は上限 12 回の
+    // 置き場の変更まで。1 回の測定で部品を 2 つ測るので、余裕を見ても 60 回には届かない。
+    expect(measured).toBeLessThan(60);
+    expect(screen.getByTestId('option-slot-a')).toBeInTheDocument();
+    expect(screen.getByTestId('option-slot-b')).toBeInTheDocument();
   });
 
   it('Escape で閉じ、そこで止める（大域の Escape と同時に走らない）', () => {

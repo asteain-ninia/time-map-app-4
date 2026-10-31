@@ -68,3 +68,34 @@ for (const [width, height] of [
     }
   });
 }
+
+// 測り直しの回数の上限（`MEASURE_STEP_LIMIT`）は 1 回の測定の往復を止めるためのもので、入り切りを
+// またいで数えてはいけない。以前は 6 往復目で上限に達し、「表示 ▾」が「≫」に残ったまま戻らなかった。
+test('800×600 で測量の入り切りを 10 回繰り返しても、毎回入れる前と同じ置き場へ戻る', async () => {
+  test.setTimeout(120_000);
+  const { app, page } = await launchApp();
+  try {
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]!.setContentSize(800, 600);
+    });
+    const settings = page.getByTestId('option-bar-settings');
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(800);
+    await expect.poll(async () => (await settings.boundingBox())?.width ?? 0).toBeGreaterThan(0);
+    await expect(page.locator('[data-testid="option-slot-display"]')).toHaveCount(1);
+    await page.waitForTimeout(200);
+    const before = await readLayout(page);
+    expect(before.inBar).toContain('option-slot-display');
+
+    for (let round = 1; round <= 10; round += 1) {
+      await page.getByTestId('survey-toggle').click();
+      await expect(page.getByTestId('survey-readout')).toBeAttached();
+      await page.getByTestId('survey-toggle').click();
+      await expect(page.getByTestId('survey-readout')).toHaveCount(0);
+      await expect
+        .poll(() => readLayout(page), `${String(round)} 回目の入り切りのあと`)
+        .toEqual(before);
+    }
+  } finally {
+    await app.close();
+  }
+});
