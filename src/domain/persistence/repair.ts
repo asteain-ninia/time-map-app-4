@@ -21,7 +21,7 @@
 //
 // Pure & framework-free.
 
-import { createAnchor, createAnchorSnapshot } from '../anchor';
+import { createAnchor, createAnchorSnapshot, type AnchorSnapshot } from '../anchor';
 import {
   createAnchorEntry,
   normalizeSeries,
@@ -67,10 +67,12 @@ import {
   type FeatureId,
   type VertexId,
 } from '../ids';
-import { createVertex, createVertexStore, type Vertex, type VertexStore } from '../vertex';
-import { coordinatesEqual } from '../coordinate';
+import { quantizedEqual } from '../geometry/index';
+import { createVertex, createVertexStore, getVertex, type Vertex, type VertexStore } from '../vertex';
+import { coordinatesEqual, type WorldCoordinate } from '../coordinate';
 import {
   checkConsistency,
+  distinctAnchorTimes,
   INCONSISTENCY,
   SHAPE_DETAIL_LEAF_WITH_CHILDREN,
   type Inconsistency,
@@ -136,7 +138,7 @@ export const REPAIR_OPTION = {
   MaterializeOrphanHistory: 'materialize-orphan-history',
   /** 同一地物を所有する重複した歴史 → 先頭のみ残し、重複分を除外する。 */
   DropDuplicateOwnerHistories: 'drop-duplicate-owner-histories',
-  /** 共有頂点の座標が歴史間で食い違う → 全スナップショットを最初の座標へ揃える。 */
+  /** 共有頂点の座標が同じ年の記録どうしで食い違う → その年の間だけ、正とする版へ揃える（B72）。 */
   ReconcileVertexCoordinate: 'reconcile-vertex-coordinate',
 } as const;
 
@@ -263,7 +265,7 @@ export function repairOptionsFor(inc: Inconsistency): RepairOption[] {
       //
       // 以前これを既定にできなかったのは、起こした系列を歴史の **末尾へ足していた**
       // からである。並びが変わると、時刻ごとの頂点の束（後に来た方が勝つ）と、食い違う
-      // 頂点を揃える修復（先に見えた方を正とする）の勝ち負けが入れ替わり、重なりが一度
+      // 頂点を揃える修復（同じ古さなら先に見えた方を正とする）の勝ち負けが入れ替わり、重なりが一度
       // 隠れて次の修復で「新しい不整合」として現れる（seed 36002 / 36004）。後始末として
       // 起こした系列を写し元の位置に置くようにした（affiliation/materialize.ts）。
       return [
@@ -573,95 +575,193 @@ function dropDuplicateOwnerHistories(
   return { ...project, histories };
 }
 
+/** 食い違いの候補 1 件（その年に効いている錨の、その頂点の版）。 */
+interface VertexVersion {
+  readonly body: Vertex;
+  readonly history: FeatureHistory;
+  readonly entry: AnchorEntry;
+  /** その錨の地物がこの頂点を引いている（引いていない版は別の錨から紛れ込んだ写し）。 */
+  readonly cited: boolean;
+}
+
 /**
- * Reconcile a shared vertex whose coordinate diverges across histories to ONE canonical
- * coordinate (FR-106 拡張): the FIRST body seen for that id (in history → entry → store
- * order) is authoritative — the same reference the divergence detector compares against —
- * and every later snapshot body for that id is overwritten to match. This collapses the
- * same-id coordinate disagreement to a single source of truth (R6) without dropping any
- * feature, so the boundary re-joins rather than tearing. Pure: returns a new project,
- * reusing unchanged anchors/snapshots. A no-op when no snapshot carries the id.
+ * ある版の座標が、その系列でいつから続いているか。`moved` は、同じ系列の前の錨がこの頂点を
+ * 別の座標で持っていた（＝その年に本当に動かした記録である）こと。比較は検出と同じ格子。
  */
-function reconcileVertexCoordinate(
-  project: DomainProject,
-  vertexId: VertexId,
-): DomainProject {
-  // The canonical coordinate for EVERY vertex id: the FIRST body seen for that id in
-  // the detector's traversal order (history → entry → store). We collect ALL of them
-  // up-front, then reconcile not only the named `vertexId` but every OTHER id whose
-  // bodies also disagree across snapshots.
-  //
-  // Reconciling only the single named vertex is unsafe when MORE THAN ONE shared
-  // vertex diverges at the same slice: the spatial checks ((d) terminal-exclusion /
-  // (g) anchor-spatial-overlap) read the time-slice's last-write-wins MERGED store,
-  // so while ONE divergent vertex is still present a feature's effective geometry can
-  // overlap a neighbour's — meaning a per-vertex reconcile TRANSIENTLY manufactures a
-  // terminal/spatial-overlap (a NEW inconsistency) that `applyRepairChecked` then
-  // correctly refuses to certify, deadlocking the safe-repair fixpoint. Aligning all
-  // co-divergent boundary vertices to their single source of truth (R6) in ONE
-  // application restores the consistent base geometry atomically — matching this
-  // option's stated intent (同一頂点の座標を…すべて揃える) — so the repair converges
-  // without ever passing through a geometry-broken intermediate. Idempotent: on a
-  // project with a single divergence it rewrites exactly that one vertex.
-  void vertexId; // every divergent id is reconciled; the named one is included.
-  //
-  // **正とするのは「その錨の地物が実際に使っている」頂点の最初の版**（2026-10-03、
-  // 裁定 (b) の後始末）。どの地物も参照していない頂点の版は、別の錨から紛れ込んだ
-  // 写し（`pruneVertexStore` の注記にある「漏れた頂点」）であって座標の根拠にならない。
-  // 以前は参照の有無を見ずに最初の版を正としていたので、孤立した歴史を救済して歴史の
-  // 並びが変わると、紛れ込んだ版が「最初」になり、使われている形の方を壊して穴が外へ
-  // はみ出した（性質検査 seed 36004）。参照されている版が 1 つも無い id だけ、従来どおり
-  // 最初に見えた版を正とする。
-  const canonicalById = new Map<VertexId, Vertex>();
-  const firstSeenById = new Map<VertexId, Vertex>();
-  for (const h of project.histories) {
-    for (const e of h.series.entries) {
-      const cited = new Set<VertexId>();
-      for (const f of e.anchor.snapshot.features) {
-        for (const id of referencedVertexIds(f)) cited.add(id);
+function versionRecord(
+  version: VertexVersion,
+  calendar: Calendar,
+): { readonly since: TimePoint; readonly moved: boolean } {
+  const earlier = version.history.series.entries
+    .filter((e) => compare(e.start, version.entry.start, calendar) < 0)
+    .sort((a, b) => compare(b.start, a.start, calendar));
+  let since = version.entry.start;
+  for (const e of earlier) {
+    const body = getVertex(e.anchor.snapshot.vertices, version.body.id);
+    if (body === undefined) return { since, moved: false };
+    if (!quantizedEqual(body.coordinate, version.body.coordinate)) return { since, moved: true };
+    since = e.start;
+  }
+  return { since, moved: false };
+}
+
+/**
+ * 同じ年に効いている版のうち、正とする 1 つを選ぶ（B72。README B-3）。
+ *
+ * 1. どの地物も引いていない版は、引いている版があれば正にしない（紛れ込みの写し。性質検査 seed 36004）。
+ * 2. 動かした記録があれば、いちばん新しく動かした版。動かした年の座標を巻き戻さない
+ *    （`editing/vertex-carry-forward.ts` の「本当に動かした記録は壊さない」）。
+ * 3. どれも動かしていなければ、いちばん古くからある版（後から現れた系列の錨は移動前の写しを
+ *    持っていることがある。同じ注記の「隣が 1500 年から現れる」形）。
+ * 4. それでも同じなら検出の走査順で先のもの。
+ */
+function canonicalVersion(versions: readonly VertexVersion[], calendar: Calendar): VertexVersion {
+  const pool = versions.some((v) => v.cited) ? versions.filter((v) => v.cited) : versions;
+  let best = pool[0]!;
+  let bestRecord = versionRecord(best, calendar);
+  for (const candidate of pool.slice(1)) {
+    const record = versionRecord(candidate, calendar);
+    const order = compare(record.since, bestRecord.since, calendar);
+    const better =
+      record.moved !== bestRecord.moved
+        ? record.moved
+        : record.moved
+          ? order > 0
+          : order < 0;
+    if (better) {
+      best = candidate;
+      bestRecord = record;
+    }
+  }
+  return best;
+}
+
+/** 2 つの書き換え表が同じか（同じなら錨を割らない）。 */
+function sameRewrites(
+  a: ReadonlyMap<VertexId, WorldCoordinate>,
+  b: ReadonlyMap<VertexId, WorldCoordinate>,
+): boolean {
+  if (a.size !== b.size) return false;
+  for (const [id, coordinate] of a) {
+    const other = b.get(id);
+    if (other === undefined || !coordinatesEqual(coordinate, other)) return false;
+  }
+  return true;
+}
+
+/**
+ * 「共有頂点の座標が食い違っている」の修復（FR-106 拡張。B72 で作り直した）。
+ *
+ * **同じ頂点 id が年によって別の場所を指すのは正常な形**で（`editing/vertex-carry-forward.ts`）、
+ * 検出（`detectVertexDivergence`）が問題にするのは「同じ年に効いている錨どうしで座標が違う」
+ * ことだけである。だから修復も、検出と同じ時刻の切り方で年ごとに見て、**その年に食い違っている
+ * 頂点を、その年に効いている錨の中でだけ**揃える。ほかの頂点・ほかの年の座標には触らない
+ * （以前は全部の頂点 id を全部の年で 1 つの座標へ揃えていて、正しく動かした年の座標まで戻した）。
+ *
+ * 1 本の錨が複数の年の断面にまたがり、断面ごとに書き換えが違うときは、**境目で錨を割る**
+ * （教訓 5.89。後ろの片は前の片の終わりを引き継ぐ）。割らないと、食い違っていない年まで動く。
+ *
+ * 1 回の適用で **全部の頂点・全部の年**を揃える。1 つだけ揃えると、時刻の断面の重なり検査が
+ * 読む「同じ id は後勝ちの頂点表」の中で別の食い違いが形を歪めたままになり、途中で新しい重なりを
+ * 作って修復の再検証が断る（以前からの理由。修復が行き詰まる）。純粋。変化の無い錨は同じ値を返す。
+ */
+function reconcileVertexCoordinates(project: DomainProject, calendar: Calendar): DomainProject {
+  const slicesByEntry = new Map<
+    AnchorEntry,
+    { readonly time: TimePoint; readonly rewrites: Map<VertexId, WorldCoordinate> }[]
+  >();
+  const citedByEntry = new Map<AnchorEntry, ReadonlySet<VertexId>>();
+  const citedIn = (entry: AnchorEntry): ReadonlySet<VertexId> => {
+    let cited = citedByEntry.get(entry);
+    if (cited === undefined) {
+      cited = new Set(entry.anchor.snapshot.features.flatMap((f) => [...referencedVertexIds(f)]));
+      citedByEntry.set(entry, cited);
+    }
+    return cited;
+  };
+
+  for (const time of distinctAnchorTimes(project.histories, calendar)) {
+    const versionsById = new Map<VertexId, VertexVersion[]>();
+    const rewritesAt = new Map<AnchorEntry, Map<VertexId, WorldCoordinate>>();
+    for (const history of project.histories) {
+      const res = resolveAt(history.series, time, calendar);
+      if (res.kind !== 'present') continue;
+      const entry = res.entry;
+      const rewrites = new Map<VertexId, WorldCoordinate>();
+      rewritesAt.set(entry, rewrites);
+      const slices = slicesByEntry.get(entry) ?? [];
+      slices.push({ time, rewrites });
+      slicesByEntry.set(entry, slices);
+      const cited = citedIn(entry);
+      for (const body of entry.anchor.snapshot.vertices.byId.values()) {
+        const versions = versionsById.get(body.id);
+        const version = { body, history, entry, cited: cited.has(body.id) };
+        if (versions === undefined) versionsById.set(body.id, [version]);
+        else versions.push(version);
       }
-      for (const body of e.anchor.snapshot.vertices.byId.values()) {
-        if (!firstSeenById.has(body.id)) firstSeenById.set(body.id, body);
-        if (cited.has(body.id) && !canonicalById.has(body.id)) canonicalById.set(body.id, body);
+    }
+    for (const versions of versionsById.values()) {
+      const first = versions[0]!.body.coordinate;
+      if (versions.every((v) => quantizedEqual(first, v.body.coordinate))) continue; // 検出と同じ判定。
+      const canonical = canonicalVersion(versions, calendar).body;
+      for (const v of versions) {
+        if (coordinatesEqual(v.body.coordinate, canonical.coordinate)) continue;
+        rewritesAt.get(v.entry)!.set(v.body.id, canonical.coordinate);
       }
     }
   }
-  for (const [id, body] of firstSeenById) {
-    if (!canonicalById.has(id)) canonicalById.set(id, body);
-  }
-  if (canonicalById.size === 0) return project; // no vertices at all → nothing to do.
 
-  const histories: FeatureHistory[] = project.histories.map((h) => ({
-    featureId: h.featureId,
-    series: {
-      entries: h.series.entries.map((e) => {
-        const store = e.anchor.snapshot.vertices;
-        // Rewrite only the bodies that DISAGREE with their canonical coordinate, so an
-        // anchor whose every vertex already matches keeps its referential identity.
-        let byId: Map<VertexId, Vertex> | undefined;
-        for (const body of store.byId.values()) {
-          const canonical = canonicalById.get(body.id)!;
-          if (coordinatesEqual(body.coordinate, canonical.coordinate)) continue;
-          if (byId === undefined) byId = new Map(store.byId);
-          byId.set(body.id, createVertex(body.id, canonical.coordinate));
-        }
-        if (byId === undefined) return e;
-        return {
-          anchor: {
-            id: e.anchor.id,
-            snapshot: {
-              features: e.anchor.snapshot.features,
-              vertices: { byId },
-            },
-          },
-          start: e.start,
-          end: e.end,
-        };
-      }),
-    },
-  }));
+  const withRewrites = (
+    entry: AnchorEntry,
+    rewrites: ReadonlyMap<VertexId, WorldCoordinate>,
+  ): AnchorSnapshot => {
+    const snapshot = entry.anchor.snapshot;
+    if (rewrites.size === 0) return snapshot;
+    const byId = new Map(snapshot.vertices.byId);
+    for (const [id, coordinate] of rewrites) byId.set(id, createVertex(id, coordinate));
+    return { features: snapshot.features, vertices: { byId } };
+  };
+
+  let changed = false;
+  const histories = project.histories.map((history) => {
+    const out: AnchorEntry[] = [];
+    let touched = false;
+    for (const entry of history.series.entries) {
+      const slices = slicesByEntry.get(entry);
+      if (slices === undefined || slices.every((s) => s.rewrites.size === 0)) {
+        out.push(entry);
+        continue;
+      }
+      touched = true;
+      // 書き換えの同じ断面をつなぎ、変わる年で割る。
+      const pieces: { time: TimePoint; rewrites: ReadonlyMap<VertexId, WorldCoordinate> }[] = [];
+      for (const slice of slices) {
+        const last = pieces[pieces.length - 1];
+        if (last === undefined || !sameRewrites(last.rewrites, slice.rewrites)) pieces.push(slice);
+      }
+      pieces.forEach((piece, i) => {
+        const snapshot = withRewrites(entry, piece.rewrites);
+        const next = pieces[i + 1];
+        const anchor =
+          i === 0
+            ? createAnchor(entry.anchor.id, snapshot)
+            : withUniqueAnchorId(
+                [...history.series.entries, ...out],
+                createAnchor(deriveAnchorId(history.featureId, piece.time), snapshot),
+              );
+        out.push({
+          anchor,
+          start: i === 0 ? entry.start : piece.time,
+          end: next === undefined ? entry.end : next.time,
+        });
+      });
+    }
+    if (!touched) return history;
+    changed = true;
+    return { featureId: history.featureId, series: { entries: out } };
+  });
   // Spread to preserve optional project fields (uiSettings); see mapSnapshotFeatures.
-  return { ...project, histories };
+  return changed ? { ...project, histories } : project;
 }
 
 /** Drop the FIRST of the overlapping pair (deterministic: the lower-ordered id). */
@@ -1361,14 +1461,8 @@ export function applyRepair(
       return dropHistories(project, inc.featureIds);
     case REPAIR_OPTION.DropDuplicateOwnerHistories:
       return dropDuplicateOwnerHistories(project, inc.featureIds);
-    case REPAIR_OPTION.ReconcileVertexCoordinate: {
-      // The divergent vertex id rides in `detail` as `vertex:<id>` (see consistency.ts
-      // detectVertexDivergence). Without it there is nothing to reconcile → no-op.
-      const prefix = 'vertex:';
-      if (inc.detail === undefined || !inc.detail.startsWith(prefix)) return project;
-      const vertexId = asVertexId(inc.detail.slice(prefix.length));
-      return reconcileVertexCoordinate(project, vertexId);
-    }
+    case REPAIR_OPTION.ReconcileVertexCoordinate:
+      return reconcileVertexCoordinates(project, calendar);
   }
 }
 

@@ -78,7 +78,7 @@ export const PERSISTENCE_MESSAGES = {
   repairDropDuplicateOwnerHistories:
     '同一地物を所有する歴史が複数あるとき、先頭の歴史のみを残して重複分を読み込みから除外します。',
   repairReconcileVertexCoordinate:
-    '同一の頂点が歴史間で異なる座標を持つとき、最初に現れた座標へすべて揃えます。',
+    '同じ年の記録どうしで同じ頂点の座標が食い違っている所だけを、最後に動かした記録の座標へ揃えます。ほかの年の座標は変えません。',
 
   // --- 選択肢の並びを変えた理由の 1 行（repair.ts の repairOptionsInContext） ---
   /** 子を持つ末端の行で、既定を「そのまま残す」にしたときの理由。 */
