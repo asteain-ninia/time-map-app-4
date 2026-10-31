@@ -6,12 +6,16 @@
 //
 // 仕組みと見逃す範囲は docs/開発ガイド.md §1.12、本体は e2e/shared-launch.ts。
 // 終わると、使い回した回数と、起動し直しの原因になった残すものを出す。
+// 閉じ忘れと終了の失敗が 1 件でもあれば、検査が全部緑でも終了コードを非 0 にする。
 // 記録の全部は test-results/shared-launch-log.jsonl（E2E_LAUNCH_LOG で変えられる）。
 
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { exitCodeFor, summarizeLaunchLog } from './e2e-shared-summary.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const logPath = process.env['E2E_LAUNCH_LOG'] ?? join(root, 'test-results', 'shared-launch-log.jsonl');
@@ -22,7 +26,8 @@ const passThrough = args.filter((a) => a !== seedArg);
 if (!passThrough.some((a) => a.startsWith('--project'))) passThrough.unshift('--project=main');
 
 const cli = join(root, 'node_modules', '@playwright', 'test', 'cli.js');
-const env = { ...process.env, E2E_LAUNCH_MODE: 'shared' };
+const runId = randomUUID();
+const env = { ...process.env, E2E_LAUNCH_MODE: 'shared', E2E_LAUNCH_RUN: runId };
 const entry = seedArg === undefined ? cli : join(root, 'scripts', 'e2e-shuffled-cli.mjs');
 if (seedArg !== undefined) {
   env['E2E_SHUFFLE_SEED'] = seedArg.slice('--seed='.length);
@@ -31,26 +36,20 @@ if (seedArg !== undefined) {
 
 const result = spawnSync(process.execPath, [entry, 'test', ...passThrough], { cwd: root, env, stdio: 'inherit' });
 
+let problemCount = 0;
 if (existsSync(logPath)) {
-  const records = readFileSync(logPath, 'utf8')
-    .split('\n')
-    .filter((line) => line !== '')
-    .map((line) => JSON.parse(line));
-  const launches = records.filter((r) => r.ev === 'launch');
-  const leavers = records.filter((r) => r.ev === 'checkin' && Object.keys(r.left).length > 0);
-  const reused = launches.filter((r) => r.kind === 'reused').length;
-  console.log(`\n[起動の使い回し] 使い回し ${String(reused)} 回 / 起動 ${String(launches.length - reused)} 回 / 記録 ${logPath}`);
-  const byKey = new Map();
-  for (const record of leavers) {
-    // 1 本が同じ種類の項目を幾つ残しても 1 本と数える（窓の大きさは全体・幅・高さの 3 項目ある）。
-    const groups = new Set(
-      Object.keys(record.left).map((key) => key.replace(/\.\d+\..*$/, '').replace(/^(driver\.\w+)\..*$/, '$1')),
-    );
-    for (const group of groups) byKey.set(group, (byKey.get(group) ?? 0) + 1);
-  }
-  for (const [key, count] of [...byKey].sort((a, b) => b[1] - a[1]).slice(0, 10)) {
+  const summary = summarizeLaunchLog(readFileSync(logPath, 'utf8'), runId);
+  problemCount = summary.problemCount;
+  console.log(`\n[起動の使い回し] 使い回し ${String(summary.reused)} 回 / 起動 ${String(summary.started)} 回 / 記録 ${logPath}`);
+  for (const [key, count] of summary.leftByGroup.slice(0, 10)) {
     console.log(`  ${String(count)} 本が残した: ${key}`);
+  }
+  console.log(`[起動の使い回し] 閉じ忘れ ${String(summary.notClosed.length)} 件 / 終了の失敗 ${String(summary.closeFailed.length)} 件`);
+  for (const record of summary.notClosed) console.log(`  閉じ忘れ: ${String(record.test)}`);
+  for (const record of summary.closeFailed) {
+    const state = record.exited === true ? (record.forced === true ? '強制的に止めた' : '止まっていた') : '止められなかった';
+    console.log(`  終了の失敗（${state}）: ${String(record.owner)}: ${String(record.error)}`);
   }
 }
 
-process.exit(result.status ?? 1);
+process.exit(exitCodeFor(result.status, problemCount));

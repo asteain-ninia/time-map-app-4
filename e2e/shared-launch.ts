@@ -19,7 +19,13 @@
 //   - 同じ検査の中で 2 回目の launchApp を呼んだ（閉じて開き直す検査）
 //   - 検査に `FRESH_LAUNCH` の印がある（起動や終了そのものを確かめる検査）
 //   - 前の検査が app.close() を呼ばずに終わった
+//
+// 同じ userData で本体を 2 つ動かさない（画面の保存領域を掴まれて、次の検査の控えが取れずに
+// 赤くなる）。閉じ忘れた本体も、閉じるのに失敗した本体も、**止めてから**次を起動し、事実を記録へ
+// 書く（`not-closed`、`close-failed`）。無関係な次の検査は赤にせず、`scripts/e2e-shared.mjs` が
+// 終わりの集計で赤にする。
 
+import { spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
@@ -312,11 +318,14 @@ export function diffSnapshots(before: StateSnapshot, after: StateSnapshot): Reco
 
 const LOG_PATH = process.env['E2E_LAUNCH_LOG'] ?? join(process.cwd(), 'test-results', 'shared-launch-log.jsonl');
 
+/** 同じ記録の置き場に前の実行の分が残っていても、集計が取り違えないための印。 */
+const RUN_ID = process.env['E2E_LAUNCH_RUN'] ?? null;
+
 function log(record: Record<string, unknown>): void {
   if (launchMode() === 'fresh') return;
   try {
     mkdirSync(dirname(LOG_PATH), { recursive: true });
-    appendFileSync(LOG_PATH, `${JSON.stringify(record)}\n`);
+    appendFileSync(LOG_PATH, `${JSON.stringify({ run: RUN_ID, ...record })}\n`);
   } catch {
     // 記録の失敗で検査を落とさない。
   }
@@ -371,6 +380,8 @@ export function launchKeyOf(extraArgs: readonly string[], childEnv: Readonly<Rec
 interface Slot {
   readonly app: ElectronApplication;
   readonly page: Page;
+  /** 起動の時点で取っておく。ワーカーの終わりには `app.process()` がもう読めない。 */
+  readonly proc: ChildProcess;
   readonly realClose: () => Promise<void>;
   readonly driver: DriverState;
   readonly launchKey: string;
@@ -381,23 +392,62 @@ interface Slot {
   ownerKey: string | null;
   /** 最後に使った検査。 */
   lastOwnerKey: string;
+  /** 最後に使った検査の情報（閉じ忘れの記録と、その検査が失敗したかどうかの判定に使う）。 */
+  lastOwnerInfo: TestInfo | null;
   uses: number;
   closed: boolean;
+  /**
+   * 使っている検査の最中にプロセスが終わった（検査が自分で止めた）。検査が終わったあとに
+   * 終わった分（ワーカーの終わりに Playwright が止めた）は false のままで、閉じ忘れと数える。
+   */
+  exitedDuringOwner: boolean;
 }
 
 /** このワーカーが抱えている、次へ渡せるアプリ。 */
 let held: Slot | null = null;
 
-// ワーカーの終わりに、抱えているアプリを止める。Playwright も止めるが、その前に helpers.ts の
-// 後始末が userData を消しに行くと、掴まれていて消せずに一時フォルダが残る。この登録は
-// helpers.ts より先に走る（このファイルを先に読み込むので）。
-process.on('exit', () => {
-  try {
-    held?.app.process().kill();
-  } catch {
-    // すでに終わっている。後始末の失敗はテスト結果に影響させない。
+/** このワーカーで動いている本体の全部（検査が使っている最中のものも、返却済みのものも）。 */
+const live = new Set<Slot>();
+
+function hasExited(proc: ChildProcess): boolean {
+  return proc.exitCode !== null || proc.signalCode !== null;
+}
+
+/** その検査が失敗したか。失敗で途中で抜けた検査の `app.close()` は、呼ばれなくて当然である。 */
+function ownerFailed(info: TestInfo | null): boolean {
+  if (info === null) return false;
+  return info.errors.length > 0 || (info.status !== 'passed' && info.status !== 'skipped' && info.status !== undefined);
+}
+
+/**
+ * ワーカーの終わりに、残っている本体を止める。Playwright も止めるが、その前に helpers.ts の
+ * 後始末が userData を消しに行くと、掴まれていて消せずに一時フォルダが残る。この登録は
+ * helpers.ts より先に走る（このファイルを先に読み込むので）。
+ *
+ * 最後の検査の閉じ忘れは次の起動で見つけられないので、ここで記録する。ここへ来る前に Playwright が
+ * 本体を止めていることが多いので、動いているかどうかでは判定しない。失敗した検査の分は集計で
+ * 数えない（検査はすでに赤で、やり直しで緑になった実行を赤に変えてしまう）。
+ */
+export function stopAllAtExit(): void {
+  for (const slot of live) {
+    try {
+      if (slot.ownerKey !== null && !slot.exitedDuringOwner) {
+        log({
+          ev: 'not-closed',
+          test: testLabel(slot.lastOwnerInfo),
+          nextTest: null,
+          ownerFailed: ownerFailed(slot.lastOwnerInfo),
+          worker: slot.lastOwnerInfo?.workerIndex ?? null,
+        });
+      }
+      if (!hasExited(slot.proc)) slot.proc.kill();
+    } catch {
+      // すでに終わっている。後始末の失敗はテスト結果に影響させない。
+    }
   }
-});
+}
+
+process.on('exit', stopAllAtExit);
 
 /** 再読み込みを生き延びる API を呼んだら印を付ける。 */
 function watchStickyCalls(target: object, label: string, names: readonly string[], driver: DriverState): void {
@@ -481,10 +531,102 @@ function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> 
   });
 }
 
-async function closeQuietly(slot: Slot): Promise<void> {
-  if (slot.closed) return;
+/** 本物の `close` を待つ上限。実データを開いた本体でも、ふつうは数秒で終わる。 */
+const CLOSE_LIMIT_MS = 20_000;
+/** `close` のあと、または強制終了のあとに、プロセスの終わりを待つ上限。 */
+const EXIT_LIMIT_MS = 10_000;
+
+function waitForExit(proc: ChildProcess, ms: number): Promise<boolean> {
+  if (hasExited(proc)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const onExit = (): void => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      proc.off('exit', onExit);
+      resolve(false);
+    }, ms);
+    proc.once('exit', onExit);
+  });
+}
+
+/** 子のプロセスごと止める。Windows では本体だけ止めると木をたどれなくなるので、先に木ごと止める。 */
+function forceKill(proc: ChildProcess): void {
+  if (process.platform === 'win32' && proc.pid !== undefined) {
+    spawnSync('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+  }
+  if (!hasExited(proc)) proc.kill('SIGKILL');
+}
+
+/**
+ * 本体を確実に止める。本物の `close` が失敗しても、返ってこなくても、プロセスが残っても、
+ * 強制的に止めて `close-failed` を記録する。`close` の失敗の文面を返す（無ければ null）。
+ *
+ * **強制しても止められなければ例外を投げる。** 同じ userData で次を起動すると、前の本体が掴んだ
+ * 保存領域のせいで別の赤になり、原因が読めなくなる。投げれば Playwright がワーカーごと捨てて、
+ * 次のワーカーは別の userData で始まる。
+ */
+async function stopSlot(slot: Slot, requestedBy: TestInfo | null): Promise<string | null> {
+  if (slot.closed) return null;
+  const { proc } = slot;
+  let error: string | null = null;
+  if (!hasExited(proc)) {
+    try {
+      await withTimeout(slot.realClose(), CLOSE_LIMIT_MS, '本体の終了');
+    } catch (cause) {
+      error = String(cause);
+    }
+  }
+  let exited = await waitForExit(proc, EXIT_LIMIT_MS);
+  const forced = !exited;
+  if (forced) {
+    forceKill(proc);
+    exited = await waitForExit(proc, EXIT_LIMIT_MS);
+  }
+  if (error !== null || forced) {
+    log({
+      ev: 'close-failed',
+      test: testLabel(requestedBy),
+      owner: testLabel(slot.lastOwnerInfo),
+      error,
+      forced,
+      exited,
+      worker: requestedBy?.workerIndex ?? null,
+    });
+  }
+  if (!exited) {
+    throw new Error(
+      `[起動の使い回し] 前の本体（PID ${String(proc.pid)}）を止められなかったので、同じ userData で次を起動しない`,
+    );
+  }
   slot.closed = true;
-  await slot.realClose();
+  live.delete(slot);
+  if (held === slot) held = null;
+  return error;
+}
+
+/**
+ * 前の検査が閉じずに終わった本体を止める。止めたら true（次は起動し直す）。
+ * 同じ検査がまだ使っているものには触らない。検査が自分で止めた本体は閉じ忘れと数えない。
+ */
+async function stopForgotten(key: string, info: TestInfo | null): Promise<boolean> {
+  let found = false;
+  for (const slot of [...live]) {
+    if (slot.ownerKey === null || slot.ownerKey === key) continue;
+    found = true;
+    if (!hasExited(slot.proc)) {
+      log({
+        ev: 'not-closed',
+        test: testLabel(slot.lastOwnerInfo),
+        nextTest: testLabel(info),
+        ownerFailed: ownerFailed(slot.lastOwnerInfo),
+        worker: info?.workerIndex ?? null,
+      });
+    }
+    await stopSlot(slot, info);
+  }
+  return found;
 }
 
 async function startSlot(ports: LaunchPorts, noReuse: boolean, info: TestInfo | null): Promise<Slot> {
@@ -495,6 +637,7 @@ async function startSlot(ports: LaunchPorts, noReuse: boolean, info: TestInfo | 
   const slot: Slot = {
     app,
     page,
+    proc: app.process(),
     realClose,
     driver,
     launchKey: ports.launchKey,
@@ -503,9 +646,16 @@ async function startSlot(ports: LaunchPorts, noReuse: boolean, info: TestInfo | 
     baseline: {},
     ownerKey: testKey(info),
     lastOwnerKey: testKey(info),
+    lastOwnerInfo: info,
     uses: 1,
     closed: false,
+    exitedDuringOwner: false,
   };
+  live.add(slot);
+  slot.proc.once('exit', () => {
+    // `duration` は検査が終わるまで 0 のまま。
+    slot.exitedDuringOwner = slot.ownerKey !== null && slot.lastOwnerInfo?.duration === 0;
+  });
   slot.baseline = await takeSnapshot(app, page, driver, ports.userDataDir);
   // 印を付けるのは控えを取ったあと。ここまでは launchApp 自身の操作である。
   const context = app.context();
@@ -599,7 +749,9 @@ async function checkIn(slot: Slot, ports: LaunchPorts): Promise<void> {
   if (mode === 'shared' && leftKeys.length > 0) {
     console.log(`[起動の使い回し] 起動し直す: ${testLabel(info)} が残した: ${leftKeys.slice(0, 6).join(', ')}`);
   }
-  await closeQuietly(slot);
+  const closeError = await stopSlot(slot, info);
+  // 検査自身の `app.close()` なので、失敗は今までどおりその検査へ返す。
+  if (closeError !== null) throw new Error(closeError);
 }
 
 function hookClose(slot: Slot, ports: LaunchPorts): void {
@@ -640,6 +792,9 @@ export async function launchShared(ports: LaunchPorts): Promise<LaunchedPair> {
   const fresh = info?.annotations.some((a) => a.type === FRESH_LAUNCH.type) === true;
   const key = testKey(info);
 
+  // 先に、閉じ忘れの本体を止める（`held` が空くこともある）。
+  const forgotten = await stopForgotten(key, info);
+
   let reason: string | null = null;
   const previous = held;
   if (mode !== 'shared') {
@@ -653,18 +808,12 @@ export async function launchShared(ports: LaunchPorts): Promise<LaunchedPair> {
   } else if (previous.launchKey !== ports.launchKey) {
     reason = '起動の引数か環境変数が前と違う';
   }
-
-  if (previous !== null && previous.ownerKey !== null && previous.ownerKey !== key) {
-    // 前の検査が閉じずに終わった。残っているものが分からないので捨てる。
-    log({ ev: 'not-closed', test: testLabel(info) });
-    held = null;
-    await closeQuietly(previous).catch(() => undefined);
-    reason = '前の検査が閉じずに終わった';
-  }
+  if (forgotten) reason = '前の検査が閉じずに終わった';
 
   if (reason === null && previous !== null) {
     previous.ownerKey = key;
     previous.lastOwnerKey = key;
+    previous.lastOwnerInfo = info;
     previous.uses += 1;
     const refused = await tryReuse(previous, ports, info);
     if (refused === null) {
@@ -683,14 +832,9 @@ export async function launchShared(ports: LaunchPorts): Promise<LaunchedPair> {
   }
 
   // 抱えていたものは閉じる（同じ検査がまだ使っているものには触らない）。
-  if (held !== null && held.ownerKey === null) {
-    const stale = held;
-    held = null;
-    await closeQuietly(stale).catch(() => undefined);
-  } else if (held !== null && previous === held && reason?.startsWith('再読み込み') === true) {
-    const stale = held;
-    held = null;
-    await closeQuietly(stale).catch(() => undefined);
+  if (held !== null && (held.ownerKey === null || (previous === held && reason?.startsWith('再読み込み') === true))) {
+    // 終了の失敗は stopSlot が止めて記録する。ここでは次の起動へ進む。
+    await stopSlot(held, info);
   }
 
   const slot = await startSlot(ports, mode !== 'shared' || fresh, info);
