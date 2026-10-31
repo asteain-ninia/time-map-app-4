@@ -171,10 +171,16 @@ function findDomainLiteralCasts(file: string, text: string): Finding[] {
   return out;
 }
 
+/** 括弧・`!`・`as` を外した式。 */
+function unwrapCast(node: ts.Expression): ts.Expression {
+  let e = unwrapParens(node);
+  while (ts.isNonNullExpression(e) || ts.isAsExpression(e)) e = unwrapParens(e.expression);
+  return e;
+}
+
 /** `x[0]`／`x[0]!`／`x.at(0)` か。 */
 function isFirstElement(node: ts.Expression): boolean {
-  let e = unwrapParens(node);
-  if (ts.isNonNullExpression(e)) e = unwrapParens(e.expression);
+  const e = unwrapCast(node);
   if (ts.isElementAccessExpression(e)) {
     return ts.isNumericLiteral(e.argumentExpression) && e.argumentExpression.text === '0';
   }
@@ -218,7 +224,8 @@ function findFirstVertexProbes(file: string, text: string): Finding[] {
       ts.isIdentifier(node.expression) &&
       POINT_CONTAINMENT_PREDICATES.includes(node.expression.text)
     ) {
-      const first = node.arguments[0];
+      const arg = node.arguments[0];
+      const first = arg === undefined ? undefined : unwrapCast(arg);
       const probing =
         first !== undefined &&
         (isFirstElement(first) || (ts.isIdentifier(first) && scope.has(first.text)));
@@ -342,6 +349,7 @@ describe('§5.44 輪の包含を先頭の頂点 1 点で判定しない', () => 
     expect(finds(`const a = pointInPolygon(ring[0], poly);`)).toBe(1);
     expect(finds(`const a = pointInPolygon(ring[0]!, poly);`)).toBe(1);
     expect(finds(`const a = pointInPolygon(ring.at(0), poly);`)).toBe(1);
+    expect(finds(`function f() { const p = rings[0]; return pointInPolygon(p as never, poly); }`)).toBe(1);
     expect(finds(`function f() { const p = rings[0]!; return pointInPolygon(p, poly); }`)).toBe(1);
     // 全部の頂点を回す・利用者の点を聞く形は通す。
     expect(finds(`for (const v of inner) pointInPolygon(v, poly);`)).toBe(0);
