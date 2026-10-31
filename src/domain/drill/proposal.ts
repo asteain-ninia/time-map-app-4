@@ -32,17 +32,10 @@ import {
   type LeafFeature,
 } from '../feature';
 import { createEditProposal, type EditProposal } from '../consistency/index';
-import { pointInPolygon, POINT_LOCATION } from '../geometry/index';
 import type { TimePoint } from '../time/time-point';
 import type { FeatureId, RingId, VertexId } from '../ids';
-import {
-  createHoleRing,
-  createShape,
-  createTerritoryRing,
-  isAlternationValid,
-  type Ring,
-  type Shape,
-} from '../ring';
+import { createShape, isAlternationValid, type Shape } from '../ring';
+import { nestRingsByContainment, type RawRing } from '../promotion/direct-domain';
 import { createVertex, getVertex, type Vertex, type VertexStore } from '../vertex';
 import { type DrillGeometry } from './drill-geometry';
 
@@ -125,15 +118,6 @@ function buildExistingSeed(target: LeafFeature, store: VertexStore): Map<string,
   return seed;
 }
 
-/** A raw ring carried from the boolean output with its minted id + coordinates. */
-interface RawRing {
-  readonly id: RingId;
-  readonly vertexIds: readonly VertexId[];
-  readonly coords: GeoMultiPolygon[number][number];
-  /** True for a polygon piece's index-0 ring (an outer/territory boundary). */
-  readonly isOuter: boolean;
-}
-
 /**
  * Build a {@link Shape} from a GeoMultiPolygon, minting a vertex per ring coordinate
  * and a ring id per ring, then RE-PARENTING the rings into a valid 領土→穴→領土→…
@@ -146,7 +130,8 @@ interface RawRing {
  * side the carved region is a single territory piece (no hole).
  *
  * 向き正規化は U06 を信頼し再実装しない (注意点・単一の真実源): we never re-orient
- * rings; containment is decided by U06 `pointInPolygon`.
+ * rings; 入れ子は分け残しと同じ {@link nestRingsByContainment} が輪全体で決める
+ * (B109。1 点で見ると、先頭の頂点が外周に接する穴が最上位の領土になる)。
  *
  * `existing` (holed side only): a coordKey → EXISTING target Vertex seed. When an
  * output coordinate quantize-matches an existing target vertex (the UNCHANGED outer
@@ -199,74 +184,7 @@ function buildShapeFromArea(
     });
   }
 
-  const rings = reparentByContainment(raws);
-  return { shape: createShape(rings), vertices };
-}
-
-/** Signed-area magnitude of a coordinate ring (for "smallest enclosing" choice). */
-function ringAreaAbs(ring: GeoMultiPolygon[number][number]): number {
-  let sum = 0;
-  const n = ring.length;
-  for (let i = 0; i < n; i += 1) {
-    const a = ring[i];
-    const b = ring[(i + 1) % n];
-    if (a === undefined || b === undefined) continue;
-    sum += a.lon * b.lat - b.lon * a.lat;
-  }
-  return Math.abs(sum) / 2;
-}
-
-/** True iff `inner`'s representative point lies strictly inside `outer`. */
-function ringContains(
-  outer: GeoMultiPolygon[number][number],
-  inner: GeoMultiPolygon[number][number],
-): boolean {
-  const probe = inner[0];
-  if (probe === undefined) return false;
-  return pointInPolygon(probe, [outer]) === POINT_LOCATION.Inside;
-}
-
-/**
- * Re-parent raw rings into a valid alternating hierarchy by containment. Each ring's
- * parent is the SMALLEST-area ring of the OPPOSITE kind that strictly contains it;
- * a top-level outer ring is a territory, a hole inside a territory is parented to it,
- * an enclave inside a hole is parented to that hole (FR-24 交互). Pure; no mutation.
- */
-function reparentByContainment(raws: readonly RawRing[]): Ring[] {
-  const areaOf = new Map<RingId, number>();
-  for (const r of raws) areaOf.set(r.id, ringAreaAbs(r.coords));
-
-  const rings: Ring[] = [];
-  for (const r of raws) {
-    let bestParent: RawRing | undefined;
-    let bestArea = Number.POSITIVE_INFINITY;
-    for (const cand of raws) {
-      if (cand.id === r.id) continue;
-      if (cand.isOuter === r.isOuter) continue; // parent must alternate kind.
-      if (!ringContains(cand.coords, r.coords)) continue;
-      const a = areaOf.get(cand.id) ?? Number.POSITIVE_INFINITY;
-      if (a < bestArea) {
-        bestArea = a;
-        bestParent = cand;
-      }
-    }
-
-    if (r.isOuter) {
-      if (bestParent === undefined) {
-        rings.push(createTerritoryRing(r.id, r.vertexIds));
-      } else {
-        rings.push(createTerritoryRing(r.id, r.vertexIds, bestParent.id));
-      }
-    } else if (bestParent === undefined) {
-      // No containing territory (should not happen for U06 output): demote to a
-      // top-level territory rather than emit an orphan hole (keeps alternation
-      // valid; 教訓5.1 片落とし禁止 — never drop the ring).
-      rings.push(createTerritoryRing(r.id, r.vertexIds));
-    } else {
-      rings.push(createHoleRing(r.id, r.vertexIds, bestParent.id));
-    }
-  }
-  return rings;
+  return { shape: createShape(nestRingsByContainment(raws)), vertices };
 }
 
 // ---------------------------------------------------------------------------
