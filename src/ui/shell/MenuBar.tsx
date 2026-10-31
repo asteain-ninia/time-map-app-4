@@ -126,7 +126,7 @@ export function MenuBar(props: MenuBarProps): JSX.Element {
                 const tip = TOOLTIPS[it.commandId] ?? it.label;
                 return (
                   <li key={it.commandId} role="none">
-                    <Tooltip text={tip}>
+                    <Tooltip text={tip} placement="beside-menu">
                       <button
                         type="button"
                         role="menuitem"

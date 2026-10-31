@@ -9,6 +9,7 @@
 import { useEffect } from 'react';
 
 import { useModalRegistration } from '../a11y/index';
+import { useMenuInWindow } from '../shell/useMenuInWindow';
 
 import type { RailMenuItem, RailMenuItemId } from './rail-menu';
 
@@ -27,6 +28,8 @@ export interface RailContextMenuProps {
 export function RailContextMenu(props: RailContextMenuProps): JSX.Element {
   const { clientX, clientY, target, items, onSelect, onClose, onModalChange } = props;
   useModalRegistration(onModalChange, true);
+  // レールは窓の下端に居るので、上へ開く（下へ開くと窓の外へ切れる）。
+  const placed = useMenuInWindow(clientX, clientY, 'up');
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -51,8 +54,8 @@ export function RailContextMenu(props: RailContextMenuProps): JSX.Element {
       className="context-menu"
       data-testid="context-menu"
       data-rail-target={target}
-      // レールは窓の下端に居るので、上へ開く（下へ開くと窓の外へ切れる）。
-      style={{ position: 'fixed', left: clientX, bottom: window.innerHeight - clientY }}
+      ref={placed.ref}
+      style={placed.style}
       onPointerDown={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
     >

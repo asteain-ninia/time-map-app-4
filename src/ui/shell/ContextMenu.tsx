@@ -13,6 +13,7 @@ import { useEffect, type ReactNode } from 'react';
 import type { CommandRegistry, CommandId } from './commands';
 import { resolveCommandEnabled } from './permissions';
 import type { EditMode } from '../state/session';
+import { useMenuInWindow } from './useMenuInWindow';
 
 export interface ContextMenuItem {
   readonly commandId: CommandId;
@@ -34,6 +35,7 @@ export interface ContextMenuProps {
 
 export function ContextMenu(props: ContextMenuProps): JSX.Element {
   const { x, y, items, registry, mode, onClose, emptyContent } = props;
+  const placed = useMenuInWindow(x, y);
 
   // Close契機: Escape key and any outside interaction (FR-96).
   useEffect(() => {
@@ -56,7 +58,8 @@ export function ContextMenu(props: ContextMenuProps): JSX.Element {
       role="menu"
       className="context-menu"
       data-testid="context-menu"
-      style={{ position: 'fixed', left: x, top: y }}
+      ref={placed.ref}
+      style={placed.style}
       // Keep clicks inside the menu from triggering the outside-close handler.
       onPointerDown={(e) => e.stopPropagation()}
     >

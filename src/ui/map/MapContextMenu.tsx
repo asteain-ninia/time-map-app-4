@@ -34,6 +34,7 @@ import {
 import { useStore } from 'zustand';
 
 import { ContextMenu, type ContextMenuItem } from '../shell/ContextMenu';
+import { useMenuInWindow } from '../shell/useMenuInWindow';
 import { COMMAND_ID, type CommandRegistry } from '../shell/commands';
 import { resolveCommandEnabled } from '../shell/permissions';
 import { MENU_ITEM_LABELS } from '../shell/strings';
@@ -353,6 +354,7 @@ interface DynamicContextMenuProps {
 function DynamicContextMenu(props: DynamicContextMenuProps): JSX.Element {
   const { request, model, registry, mode, onClose, onSelectItem } = props;
   const { surveyItems, onRemoveSurveyLine } = props;
+  const placed = useMenuInWindow(request.clientX, request.clientY);
   // **道具の局面の項目**（増分 5 からの送り / 設計書 §I.3）。オプションバーの確定欄を
   // そのまま項目にする ―― 「開くのに中身が無い」を減らし、写しも作らない。
   const optionBar = props.optionBar;
@@ -410,7 +412,8 @@ function DynamicContextMenu(props: DynamicContextMenuProps): JSX.Element {
       role="menu"
       className="context-menu"
       data-testid="context-menu"
-      style={{ position: 'fixed', left: request.clientX, top: request.clientY }}
+      ref={placed.ref}
+      style={placed.style}
       onPointerDown={(e) => e.stopPropagation()}
     >
       {/* 増分 8C（設計書 §E.1 V15）: 右クリックが測量の線に当たったときの「この線を消す」。
