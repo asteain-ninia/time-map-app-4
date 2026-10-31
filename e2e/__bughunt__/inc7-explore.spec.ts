@@ -289,7 +289,8 @@ test.describe('増分 7 の探索 — 実データのコピーで 60 州を組�
       const confirmBtn = page.getByTestId('reparent-options-confirm');
       await confirmBtn.click();
       if ((await page.getByTestId('reparent-commit-progress').count()) > 0) {
-        if (await confirmBtn.isEnabled()) {
+        // 進行表示を読んだ直後に確定が終わると板ごと消えるので、待たずに読む（消えていれば二重適用の余地は無い）
+        if (await confirmBtn.isEnabled({ timeout: 500 }).catch(() => false)) {
           findings.push({
             tag: '[異常] 確定中なのに確定ボタンがまだ押せる（二重に適用されうる）',
             detail: '進行表示は出ているが disabled になっていない',
