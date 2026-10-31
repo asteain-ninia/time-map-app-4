@@ -32,7 +32,7 @@ import {
   type MovingRing,
 } from '../../domain/editing/edit-flow';
 import { movingVertexIds } from '../../domain/editing/drag-session';
-import { unwrapRing, unwrapRingClosed } from '../../domain/geo/seam';
+import { normalizeCoordinate, unwrapRing, unwrapRingClosed } from '../../domain/geo/seam';
 import { getVertex } from '../../domain/vertex';
 import type { WorldCoordinate } from '../../domain/coordinate';
 import type { Feature } from '../../domain/feature';
@@ -84,7 +84,7 @@ export function buildEditSnapshot(
       session.target.vertexId,
       session.companionVertexIds,
       store,
-      session.preview,
+      inRange ? session.preview : normalizeCoordinate(session.preview),
     );
     if (moved === undefined) return buildSnapshot({ vertices: [] });
     // 受け入れ基準12 / FR-31: forward a snap that survived to release as the decided
@@ -113,7 +113,15 @@ export function buildEditSnapshot(
     // yields undefined → an EMPTY snapshot (片落とし禁止 — no half insert, 教訓 5.18); a
     // point has no edge at all.
     const { startVertexId, endVertexId, newVertexId } = session.target;
-    const newVertex = createVertex(newVertexId, session.preview);
+    // 経度は **畳んで保存する**（B80）。`session.preview` は押した所の巻きのまま（±360° の複製の
+    // 上なら 538° など）で、確定の関門はこの巻きで移動量を見るので preview は変えない。輪は隣り合う
+    // 頂点の最短の向きでつなぐので、畳んでも形は変わらない。範囲の中の座標は畳む計算を通さない
+    // （足して引くと小数の端数が変わる）。
+    const inRange = session.preview.lon >= -180 && session.preview.lon < 180;
+    const newVertex = createVertex(
+      newVertexId,
+      inRange ? session.preview : normalizeCoordinate(session.preview),
+    );
     let result;
     if (feature.kind === FEATURE_KIND.Line) {
       result = addVertexToLine(feature, startVertexId, endVertexId, newVertexId);
