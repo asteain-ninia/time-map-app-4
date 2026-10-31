@@ -84,7 +84,7 @@ export function buildEditSnapshot(
       session.target.vertexId,
       session.companionVertexIds,
       store,
-      inRange ? session.preview : normalizeCoordinate(session.preview),
+      session.preview,
     );
     if (moved === undefined) return buildSnapshot({ vertices: [] });
     // 受け入れ基準12 / FR-31: forward a snap that survived to release as the decided
