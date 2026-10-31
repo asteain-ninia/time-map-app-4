@@ -88,7 +88,8 @@ export interface BuiltDirectDomainShape {
   readonly vertices: readonly Vertex[];
 }
 
-interface RawRing {
+/** {@link nestRingsByContainment} へ渡す輪。 */
+export interface RawRing {
   readonly id: RingId;
   readonly vertexIds: readonly VertexId[];
   /**
@@ -123,7 +124,7 @@ export function ringAreaAbs(ring: GeoRing): number {
  * fragile: after quantization a 飛び地/穴's first vertex frequently lands exactly
  * ON a shared seam boundary of the candidate outer/hole, where `pointInPolygon`
  * returns Boundary (not Inside) — so the old probe reported "not contained" for a
- * genuinely nested ring, and {@link reparentByContainment} would wrongly promote a
+ * genuinely nested ring, and {@link nestRingsByContainment} would wrongly promote a
  * 穴/飛び地 to a top-level territory, collapsing the 直轄領 hierarchy (FR-24). The
  * robust predicate tests no-vertex-outside + no-edge-stretch-outside + has-real-
  * interior-inside, so an on-boundary seam vertex no longer fools it.
@@ -139,7 +140,7 @@ function ringContains(outer: GeoRing, inner: GeoRing): boolean {
  * territory. Disjoint outer pieces with no containing ring all become top-level
  * territories — i.e. 飛び地 of the same 直轄領 (教訓 5.1). Pure; inputs unmutated.
  */
-function reparentByContainment(raws: readonly RawRing[]): Ring[] {
+export function nestRingsByContainment(raws: readonly RawRing[]): Ring[] {
   const areaOf = new Map<RingId, number>();
   for (const r of raws) areaOf.set(r.id, ringAreaAbs(r.coords));
 
@@ -243,6 +244,6 @@ export function buildDirectDomainShape(
 
   if (raws.length === 0) return undefined;
 
-  const rings = reparentByContainment(raws);
+  const rings = nestRingsByContainment(raws);
   return { shape: createShape(rings), vertices };
 }

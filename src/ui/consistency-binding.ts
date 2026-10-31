@@ -89,8 +89,9 @@ import {
 import { detectTerminalOverlaps, type OverlapPair } from '../domain/spatial/index';
 import { resolveLeafShape } from '../domain/hierarchy/resolve-shape';
 import { difference, isOk } from '../domain/geometry/index';
+import { nestRingsByContainment, type RawRing } from '../domain/promotion/direct-domain';
+import { shapeKeepsArea, subtractAcrossSeam } from '../domain/promotion/subtract-across-seam';
 import { isMultiPolygonEmpty, type GeoMultiPolygon } from '../domain/geometry/types';
-import { alignMultiPolygon, referenceLonForMultiPolygon } from '../domain/geo/index';
 import {
   FEATURE_KIND,
   pruneVertexStore,
@@ -100,7 +101,7 @@ import {
   type Feature,
   type LeafFeature,
 } from '../domain/feature';
-import { createHoleRing, createShape, createTerritoryRing, type Ring } from '../domain/ring';
+import { createShape } from '../domain/ring';
 import { createVertexStore, getVertex, type Vertex, type VertexStore } from '../domain/vertex';
 import { buildWeldIndex, weldRingVertices, type WeldIndex } from '../domain/vertex-weld';
 import type { TimePoint } from '../domain/time/time-point';
@@ -594,7 +595,7 @@ function shapeFromMultiPolygon(
   weld: WeldIndex,
 ): { shape: ReturnType<typeof createShape>; vertices: Vertex[] } | undefined {
   const vertices: Vertex[] = [];
-  const rings: Ring[] = [];
+  const raws: RawRing[] = [];
 
   // Materialise ONE GeoJSON ring into its vertex run + ids: each coordinate is
   // either welded onto an existing vertex or minted fresh. Returns undefined for a
@@ -618,23 +619,24 @@ function shapeFromMultiPolygon(
     // priority feature out of the interior of the adjust feature, yielding an
     // outer ring + hole). Dropping the holes would re-create the very overlap the
     // resolution removed, so U13 would re-detect it and never converge — carry
-    // every hole, parented to this piece's outer ring (FR-26 / 教訓 5.20).
+    // every hole (FR-26 / 教訓 5.20).
     const outer = poly[0];
     if (outer === undefined) continue;
     const outerIds = buildRing(outer);
     if (outerIds === undefined) continue;
-    const outerRingId = nextRingId();
-    rings.push(createTerritoryRing(outerRingId, outerIds));
+    raws.push({ id: nextRingId(), vertexIds: outerIds, coords: outer, isOuter: true });
     for (let h = 1; h < poly.length; h += 1) {
       const holeCoords = poly[h];
       if (holeCoords === undefined) continue;
       const holeIds = buildRing(holeCoords);
       if (holeIds === undefined) continue;
-      rings.push(createHoleRing(nextRingId(), holeIds, outerRingId));
+      raws.push({ id: nextRingId(), vertexIds: holeIds, coords: holeCoords, isOuter: false });
     }
   }
-  if (rings.length === 0) return undefined;
-  return { shape: createShape(rings), vertices };
+  if (raws.length === 0) return undefined;
+  // 輪の親は包含で決める。穴の中の飛び地は差分では独立の片になるので、片の順のまま組むと最上位の
+  // 領土が穴の中に重なる形で確定する（分け残しと同じ組み立て）。
+  return { shape: createShape(nestRingsByContainment(raws)), vertices };
 }
 
 /**
@@ -672,38 +674,12 @@ function applyResolutionAt(
     const priorityArea = resolveLeafShape(priority.shape, vertices);
     if (adjustArea === undefined || priorityArea === undefined) return undefined;
 
-    // R3 / audit root cause A (シーム跨ぎ収束失敗の根治): resolveLeafShape unwraps each
-    // feature onto ITS OWN world turn, so a seam-crossing adjust and its priority can
-    // sit ~360° apart in the continuous frame. Differenced as-is the op removes
-    // NOTHING (operands disjoint) → the write-back re-detects the same overlap next
-    // round → convergence-failure, every time — the U4 review dead-end. Anchor BOTH
-    // operands onto ONE common branch through the single alignment source of truth
-    // before the op (the same pattern merge / drill / U10 / display use, D35).
-    //
-    // PER-PIECE reference (GPT-5.6 Sol review #3): a single whole-multipolygon ref
-    // (the first piece's mean) breaks when the adjust has pieces on DIFFERENT
-    // branches — with piece-1 near lon 0 the ±180 window edges split a seam-hugging
-    // piece (+179.8) from a seam-hugging priority (−179.8), leaving them ~360°
-    // apart and the conflict unresolvable again. Differencing each adjust piece in
-    // ITS OWN frame (priority re-aligned per piece) keeps every real overlap within
-    // <180° of the piece's mean, where the window cannot split it. Pieces are
-    // disjoint by invariant, so per-piece difference ∪-composed equals the whole
-    // difference. Single-piece / non-seam inputs are the identity — case unchanged.
-    const trimmedPieces: GeoMultiPolygon[number][] = [];
-    for (const piece of adjustArea) {
-      const pieceRef = referenceLonForMultiPolygon([piece]);
-      const diff = difference(
-        alignMultiPolygon([piece], pieceRef),
-        alignMultiPolygon(priorityArea, pieceRef),
-      );
-      if (!isOk(diff)) return undefined;
-      trimmedPieces.push(...diff.result);
-    }
-    if (isMultiPolygonEmpty(trimmedPieces)) {
-      // The adjust feature is fully covered — there is nothing left; refuse so the
-      // user picks a different priority rather than silently deleting a feature.
-      return undefined;
-    }
+    // 面の全部の周で引き、引けたことを確かめ、集合演算が消した点を打ち直す（B108・B105）。処理は
+    // 分け残しと同じ 1 本（開発ガイド §5.44）。引いた結果を整列し直さない（1 つの連続の枠にある）。
+    // 全部覆われたら何も残らないので断り、利用者に別の優先を選んでもらう（地物を黙って消さない）。
+    const adjustPoints = vertexBodiesOf(adjust, vertices).map((v) => v.coordinate);
+    const subtracted = subtractAcrossSeam(adjustArea, priorityArea, adjustPoints);
+    if (subtracted.kind !== 'ok') return undefined;
     // HB3-10 — WELD the trimmed boundary onto the vertices that are already there,
     // instead of re-minting the whole ring. The candidate order IS the precedence:
     //   (A) the PRIORITY leaf — the requirement itself. Its boundary is what the
@@ -723,8 +699,10 @@ function applyResolutionAt(
       vertexBodiesOf(priority, vertices),
       vertexBodiesOf(adjust, vertices),
     ]);
-    const built = shapeFromMultiPolygon(trimmedPieces, nextVertexId, nextRingId, weld);
+    const built = shapeFromMultiPolygon(subtracted.shape, nextVertexId, nextRingId, weld);
     if (built === undefined) return undefined;
+    // 保存して読み直した形の面積を確かめる。崩れた形を書くと偽の重なりが出て、やめるしかなくなる。
+    if (!shapeKeepsArea(built.shape, built.vertices, subtracted.area)) return undefined;
 
     const trimmed: LeafFeature = withLeafShape(adjust, built.shape);
     return rewriteFeatureAtTime(state, adjustId, anchorTime, trimmed, built.vertices);
