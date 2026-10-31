@@ -13,8 +13,11 @@ import {
 } from '../../shell/cursor-position';
 import { BROWSER_CLOCK, throttleTrailing } from '../../shell/map-resize';
 import { toolPansFromEmptyPress, toolPansFromFeaturePress } from '../../shell/tools';
+import { timePointKey } from '../../../domain/anchor-id';
 import { EDIT_MODE } from '../../state/session';
+import { TIME_CHANGE_SOURCE } from '../../state/store';
 import { POINTER_BUTTON, pointerButtonFromCode } from '../dispatch';
+import { DRAG_CANCEL_CAUSE, type DragCancelCause, type DragYearHost } from '../drag-year';
 import { PointerDispatcher } from '../PointerDispatcher';
 import type { ZoomDirection } from '../keyboard-zoom';
 import type { ZoomRange } from '../../../render/camera';
@@ -78,6 +81,8 @@ export interface MountInputOptions {
    * 板が開いたら、その押下を畳む。
    */
   readonly boardOpenedRef: MutableRefObject<(() => void) | null>;
+  /** 引いている最中の年の扱いを宿主へ知らせる口（{@link DragYearHost}）。 */
+  readonly dragYearHostRef?: MutableRefObject<DragYearHost | null>;
   /**
    * ホイールの 1 ノッチごとに、倍率を書く前に呼ぶ口の置き場（増分 8E の手直し / G-21）。
    * 宿主が上下限での断りを出すのに使う。渡さなければ何もしない。
@@ -419,7 +424,26 @@ export function createMountInput(options: MountInputOptions): MountInput {
   // `null` のままだと `mode` も `activeTool` も変わらず、明示の「選択」からだけ破棄されていた。読むだけの
   // 動きは変えない（鍵を開けているときだけ畳む）。
   let prevSurveyActive = store.getState().survey.active;
+  let prevTime = store.getState().currentTime;
+  let prevDomain = store.getState().domain;
+  let prevLoadNonce = store.getState().projectLoadNonce;
   const unsubscribeMode = store.subscribe((s) => {
+    // **止められずに年や書類が変わったら、引いていたものを記録せずに取り消す。** 結果の状態で見る
+    // ので、設定の補正・読み込み・新規・取り消しのどれから来ても同じに扱える（教訓 5.6）。
+    if (dispatcher.holdsEditPress) {
+      let cause: DragCancelCause | null = null;
+      if (s.projectLoadNonce !== prevLoadNonce) cause = DRAG_CANCEL_CAUSE.Project;
+      else if (timePointKey(s.currentTime) !== timePointKey(prevTime)) cause = DRAG_CANCEL_CAUSE.Time;
+      else if (s.domain !== prevDomain) cause = DRAG_CANCEL_CAUSE.Document;
+      if (cause !== null) {
+        dispatcher.cancelSelectEdit();
+        candidateGesture?.cancel();
+        options.dragYearHostRef?.current?.cancelled(cause, s.currentTime);
+      }
+    }
+    prevTime = s.currentTime;
+    prevDomain = s.domain;
+    prevLoadNonce = s.projectLoadNonce;
     const surveySwitched = s.survey.active !== prevSurveyActive && s.mode !== EDIT_MODE.View;
     prevSurveyActive = s.survey.active;
     if (s.mode === prevMode && s.activeTool === prevActiveTool && !surveySwitched) return;
@@ -428,14 +452,37 @@ export function createMountInput(options: MountInputOptions): MountInput {
     dispatcher.onModeChange();
   });
 
+  // **引いている最中は年を動かさない**（所有者の方針 2026-11-01。`docs/ui-redesign/README.md` の
+  // B-3）。入口は描く 4 道具と同じ `setCurrentTime` の関門で、再生・鍵盤の送り・レール・一覧の行の
+  // どれから来ても止まる。押下の状態はこの層が持っているので、関門は読むだけである。設定の補正は
+  // 止められない（戻り値を読まれない）ので、上の見張りが取り消す。
+  const removeTimeGate = store.getState().addTimeChangeGate((time, source) => {
+    if (source === TIME_CHANGE_SOURCE.RangeClamp || !dispatcher.holdsEditPress) return false;
+    // 同じ年への書き込みは動きではない。
+    if (timePointKey(time) === timePointKey(store.getState().currentTime)) return false;
+    options.dragYearHostRef?.current?.timeMoveRefused(source);
+    return true;
+  });
+
   // 確認の板が開いた瞬間に、左の押下を畳む（B114 の検証）。読むだけの動きは変えない。
   options.boardOpenedRef.current = (): void => {
     if (store.getState().mode === EDIT_MODE.View) return;
+    if (dispatcher.holdsEditPress) {
+      // 覆いが地図を隠すと、あとに来る `pointerleave` が黙って畳む。先に取り消して言う。
+      dispatcher.cancelSelectEdit();
+      candidateGesture?.cancel();
+      options.dragYearHostRef?.current?.cancelled(
+        DRAG_CANCEL_CAUSE.Board,
+        store.getState().currentTime,
+      );
+      return;
+    }
     if (dispatcher.foldPressedLeftPans()) candidateGesture?.cancel();
   };
 
   const dispose = (): void => {
     options.boardOpenedRef.current = null;
+    removeTimeGate();
     unsubscribeMode();
     unwatchCandidates();
     unwatchHover();

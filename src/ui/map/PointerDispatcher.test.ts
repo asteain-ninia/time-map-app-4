@@ -950,6 +950,58 @@ describe('左の押下の途中で板が開いたとき（B114 の検証の指�
   });
 });
 
+describe('掴んだ押下が生きているか（引いている最中の年の関門が読む）', () => {
+  function withEdit(mode: EditMode, begins: boolean) {
+    const selection = new FakeSelection();
+    const dispatcher = new PointerDispatcher({
+      getMode: () => mode,
+      camera: new FakeCamera(),
+      hitTester: { hitTest: () => EMPTY_HIT },
+      selection,
+      add: new FakeAdd(),
+      contextMenu: new FakeContextMenu(),
+      editSession: { begin: () => begins, update: () => {}, release: () => {}, cancel: () => {} },
+    });
+    return dispatcher;
+  }
+  const press = ptr(1, 100, 100, POINTER_BUTTON.Left);
+
+  it('押した瞬間から離すまで真（しきい値を越えるまで待たない）', () => {
+    const d = withEdit(EDIT_MODE.Edit, true);
+    expect(d.holdsEditPress).toBe(false);
+    d.pointerDown(press);
+    expect(d.holdsEditPress).toBe(true);
+    d.pointerMove(ptr(1, 140, 100, POINTER_BUTTON.Left));
+    expect(d.holdsEditPress).toBe(true);
+    d.pointerUp(ptr(1, 140, 100, POINTER_BUTTON.Left));
+    expect(d.holdsEditPress).toBe(false);
+  });
+
+  it('全部の終わり方で偽へ戻る（取消・地図の外・モード切替・Escape）', () => {
+    for (const end of [
+      (d: PointerDispatcher) => d.pointerCancel(1),
+      (d: PointerDispatcher) => d.pointerLeave(),
+      (d: PointerDispatcher) => d.onModeChange(),
+      (d: PointerDispatcher) => d.cancelSelectEdit(),
+    ]) {
+      const d = withEdit(EDIT_MODE.Edit, true);
+      d.pointerDown(press);
+      end(d);
+      expect(d.holdsEditPress).toBe(false);
+    }
+  });
+
+  it('掴まなかった押下（矩形選択）と地図の移動は入らない', () => {
+    const selectOnly = withEdit(EDIT_MODE.Edit, false);
+    selectOnly.pointerDown(press);
+    expect(selectOnly.holdsEditPress).toBe(false);
+    const pan = withEdit(EDIT_MODE.View, true);
+    pan.pointerDown(press);
+    expect(pan.isPanning).toBe(true);
+    expect(pan.holdsEditPress).toBe(false);
+  });
+});
+
 describe('地図を動かしている最中のカメラの変更（B114 の検証の指摘）', () => {
   const MODES = [
     ['読むだけ', EDIT_MODE.View, POINTER_BUTTON.Left],

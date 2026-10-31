@@ -15,6 +15,7 @@ import {
   type FocusOwner,
 } from '../../shell/focus-owner';
 import { TOOL_ID, toolShowsVertexHandles } from '../../shell/tools';
+import type { DragYearHost } from '../drag-year';
 import { EDIT_MODE, type EditMode, type ToolId } from '../../state/session';
 import { createEditSessionPort } from '../edit-session-adapter';
 import {
@@ -164,6 +165,8 @@ export interface MountHitTestOptions {
       ) => void)
     | null
   >;
+  /** 掴んだことを宿主へ知らせる口（再生を止める。{@link DragYearHost}）。 */
+  readonly dragYearHostRef?: MutableRefObject<DragYearHost | null>;
   /** 右クリックメニューの React 側の開く口。 */
   readonly contextMenuOpenerRef: MutableRefObject<ContextMenuOpener | null>;
   /**
@@ -464,6 +467,9 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
     // (教訓 5.7 — the reducer's release-time SimultaneousMoveSpec was unreachable because
     // a非空 press never enters live-selection-port's drag branch).
     vertexSelection: () => store.getState().selection,
+    // 離した瞬間に読むが、これは押した年である: 掴んでいるあいだ店の年は動かず（`mount/input.ts` の
+    // 関門）、止められずに動いたら離す前に取り消す。同じ読み方の `editSnapshotCtx`・近傍の問い合わせ・
+    // `edgeClickPoint` も同じ理由で押した年を読む ―― 年を覚えて渡すより、年を止める形にしてある。
     anchorTime: () => store.getState().currentTime,
     currentState: () => store.getState().domain,
     // 束ねの `.ports` は検出が空なので渡さない。`startProcess` が提案に結び直す（B98 / 教訓 5.101）。
@@ -588,7 +594,10 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
         { context: candidateContextOf(), selection: store.getState().selection },
         () => probeNear(point),
       );
-      return editSessionInner.begin(preferred, point, modifiers);
+      const began = editSessionInner.begin(preferred, point, modifiers);
+      // 掴んだ瞬間の年が記録の年になる。ここから先、再生で年を進めない。
+      if (began) options.dragYearHostRef?.current?.pressBegan();
+      return began;
     },
     update: (point) => editSessionInner.update(point),
     release: (point, wasDrag) => {

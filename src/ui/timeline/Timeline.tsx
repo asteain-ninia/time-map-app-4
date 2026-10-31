@@ -11,7 +11,14 @@
 // **編集の意味論には触れない**（増分 6 は読む側だけ）。編集時刻バッジは素性欄と
 // **同じ純粋関数**（`decideEditPlan`）から出しており、保存の経路には手を出していない。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -76,6 +83,11 @@ export interface TimelineProps<S> {
    */
   readonly modalOpen?: boolean;
   /**
+   * 再生を止める口の置き場（ここへ入れる）。止めたら真を返す。地図で頂点や面を掴んだ瞬間に
+   * 宿主が呼ぶ（押した年に記録するので、引いている間は年を進めない）。
+   */
+  readonly stopPlaybackRef?: MutableRefObject<(() => boolean) | null>;
+  /**
    * レールの右クリックメニューの開閉を名乗る口（決定 (13)。開いているあいだ鍵盤の持ち主は
    * `modal`）。合成ルートは `toolModalChange('rail-menu')` を渡す。
    */
@@ -95,6 +107,7 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
     onPopoverOpenChange,
     getRoot,
     modalOpen = false,
+    stopPlaybackRef,
     onMenuOpenChange,
     onRequestAnchorDelete,
     onRequestAnchorStartEdit,
@@ -117,6 +130,15 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
     if (!wasPlayingRef.current) return;
     pausePlayback();
   }, [modalOpen, pausePlayback]);
+
+  const stopIfRunning = playback.stopIfRunning;
+  useEffect(() => {
+    if (stopPlaybackRef === undefined) return;
+    stopPlaybackRef.current = stopIfRunning;
+    return () => {
+      stopPlaybackRef.current = null;
+    };
+  }, [stopPlaybackRef, stopIfRunning]);
 
   const [fold, setFold] = useState<RailFoldLevel>(() =>
     railFoldOf(typeof window === 'undefined' ? 1280 : window.innerWidth),

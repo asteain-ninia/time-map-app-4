@@ -217,6 +217,18 @@ export class PointerDispatcher {
     return false;
   }
 
+  /**
+   * **頂点・辺・面を掴んだ押下が生きているか**（押した瞬間から離すまで）。店の年の関門が読む
+   * （`mount/input.ts`）。しきい値を越えるまで待たない ―― 辺の中点のクリックは動かさずに離しても
+   * 記録するので、押した年はここで決まる。地図の移動と矩形選択は記録しないので入らない。
+   */
+  get holdsEditPress(): boolean {
+    for (const p of this.active.values()) {
+      if (p.kind === DISPATCH_TARGET.SelectEdit && p.editing) return true;
+    }
+    return false;
+  }
+
   /** Number of live tracked pointers (受け入れ基準 6 leak-check). */
   get activeCount(): number {
     return this.active.size;

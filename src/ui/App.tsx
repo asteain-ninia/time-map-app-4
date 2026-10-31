@@ -18,11 +18,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 
-import { createSessionStore } from './state/store';
+import { createSessionStore, TIME_CHANGE_SOURCE } from './state/store';
 import { EDIT_MODE, type ToolId } from './state/session';
 import { TOOL_ID, isSelectTool } from './shell/tools';
-import { APP_STRINGS, DRAFT_DISCARD_STRINGS, MENU_ITEM_LABELS } from './shell/strings';
+import { APP_STRINGS, DRAFT_DISCARD_STRINGS, MENU_ITEM_LABELS, SENTENCE_END } from './shell/strings';
 import { DRAFT_LOSS_CAUSE, type DraftLossCause } from './shell/useDraftTimeGate';
+import { DRAG_CANCEL_CAUSE, type DragYearHost } from './map/drag-year';
 import { AppShell, SIDEBAR_SECTION } from './shell';
 import { buildSidebarContent } from './shell/SidebarContent';
 import { keepPanelsPresent } from './property/detail-panels';
@@ -651,6 +652,9 @@ export function App(): JSX.Element {
   const focusOwnerRef = useRef<FocusOwner>(FOCUS_OWNER.None);
   /** 確認の板が開いた瞬間に呼ぶ、地図の入力の口（地図が載っているあいだだけ入っている）。 */
   const boardOpenedRef = useRef<(() => void) | null>(null);
+  // 引いている最中の年（`map/drag-year.ts`）。地図の押下の層が呼び、ここが再生と状態行へつなぐ。
+  const dragYearHostRef = useRef<DragYearHost | null>(null);
+  const stopPlaybackRef = useRef<(() => boolean) | null>(null);
   /**
    * **道具が下書きを持っているか**（増分 5 の手直し A1）。右クリックの昇格を止める
    * 判定に使う。持ち主の値（`focusOwner`）は文字入力が前に立つと `text` になるので、
@@ -770,6 +774,14 @@ export function App(): JSX.Element {
   const statusMessageStoreRef = useRef<StatusMessageStore | null>(null);
   statusMessageStoreRef.current ??= new StatusMessageStore();
   const statusMessageStore = statusMessageStoreRef.current;
+  // 引いている最中にファイルを開いた・新規にした（描画のあとで言う）。
+  const dragCancelledByLoadRef = useRef(false);
+  const dragLoadNonce = useStore(store, (s) => s.projectLoadNonce);
+  useEffect(() => {
+    if (!dragCancelledByLoadRef.current) return;
+    dragCancelledByLoadRef.current = false;
+    statusMessageStore.notice(APP_STRINGS.dragCancelledByProject);
+  }, [dragLoadNonce, statusMessageStore]);
   // 打ちかけを黙って消さない（設計書 §D.4.1 / §H.5 の「直前の結果」）。
   const onToolDraftDiscarded = useCallback(
     (count: number) => {
@@ -1086,6 +1098,7 @@ export function App(): JSX.Element {
       announceCarryForwardRef,
       announceEditRejectionRef,
       openEditConflictRef,
+      dragYearHostRef,
       contextMenuOpenerRef,
       focusOwnerRef,
       toolDraftRef,
@@ -1101,6 +1114,7 @@ export function App(): JSX.Element {
       cameraInputRef,
       wheelZoomNoticeRef,
       boardOpenedRef,
+      dragYearHostRef,
       hitTester: hitTest.hitTester,
       selectionPort: hitTest.selectionPort,
       editSession: hitTest.editSession,
@@ -1597,6 +1611,52 @@ export function App(): JSX.Element {
     statusMessageStore.failure(editRejectionMessage(rejected));
   };
 
+  dragYearHostRef.current = {
+    pressBegan: () => {
+      if (stopPlaybackRef.current?.() === true) {
+        statusMessageStore.notice(APP_STRINGS.dragStoppedPlayback);
+      }
+    },
+    timeMoveRefused: (source) => {
+      // 引いている最中に再生を始めた（Space・ボタン）。最初の 1 コマで止める。
+      if (source === TIME_CHANGE_SOURCE.Playback && stopPlaybackRef.current?.() === true) {
+        statusMessageStore.notice(APP_STRINGS.dragStoppedPlayback);
+        return;
+      }
+      statusMessageStore.refusalKeepingAction(APP_STRINGS.dragHoldsTime);
+    },
+    cancelled: (cause, time) => {
+      // 店の書き込みの途中で呼ばれるので、書いた側の結果の文（「元に戻しました」など）はこのあとに
+      // 出る。上書きされないよう、今の処理が終わってから同じ文の後ろへ続ける。
+      const sayAfterResult = (text: string): void => {
+        const before = statusMessageStore.get();
+        queueMicrotask(() => {
+          const now = statusMessageStore.get();
+          if (now === null || now === before) {
+            statusMessageStore.notice(text);
+            return;
+          }
+          const lead = now.text.endsWith(SENTENCE_END) ? now.text : `${now.text}${SENTENCE_END}`;
+          statusMessageStore.notice(`${lead}${text}`);
+        });
+      };
+      switch (cause) {
+        case DRAG_CANCEL_CAUSE.Time:
+          sayAfterResult(APP_STRINGS.dragCancelledByRange(formatTimePoint(time)));
+          return;
+        case DRAG_CANCEL_CAUSE.Project:
+          // 読み込みは反映の直後に状態行を消すので、描画のあとで言う（`dragCancelledByLoadRef`）。
+          dragCancelledByLoadRef.current = true;
+          return;
+        case DRAG_CANCEL_CAUSE.Document:
+          sayAfterResult(APP_STRINGS.dragCancelledByDocument);
+          return;
+        case DRAG_CANCEL_CAUSE.Board:
+          statusMessageStore.notice(APP_STRINGS.dragCancelledByBoard);
+          return;
+      }
+    },
+  };
   announceAggregateMoveRef.current = (): void => {
     statusMessageStore.failure(APP_STRINGS.moveAggregateRefused);
   };
@@ -4150,6 +4210,7 @@ export function App(): JSX.Element {
                「どの年に対する答えだったのか」が変わってしまう（板は鍵盤を持つので
                Space でも止められない）。閉じても自動では再開しない。 */
             modalOpen={modalOwnsKeyboard}
+            stopPlaybackRef={stopPlaybackRef}
             // 項目 6（設計書 §I.3）: レールの右クリック。開閉は鍵盤の持ち主へ名乗り、
             // 中身は既存の経路（錨表と同じ影響の板・存続期間の欄）へ渡すだけ。
             onMenuOpenChange={toolModalChange('rail-menu')}

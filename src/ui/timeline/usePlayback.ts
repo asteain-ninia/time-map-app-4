@@ -28,6 +28,8 @@ export interface PlaybackController {
   readonly setSpeed: (speed: PlaybackSpeed) => void;
   readonly play: () => void;
   readonly pause: () => void;
+  /** 再生していれば止めて真を返す（タイマーの現物で見るので、描画を待たない）。 */
+  readonly stopIfRunning: () => boolean;
   readonly toggle: () => void;
 }
 
@@ -71,6 +73,12 @@ export function usePlayback<S>(
     accumulatorRef.current = INITIAL_PLAYBACK_ACCUMULATOR;
     preciseTimeRef.current = null;
   }, [clearTimer]);
+
+  const stopIfRunning = useCallback((): boolean => {
+    if (timerRef.current === null) return false;
+    pause();
+    return true;
+  }, [pause]);
 
   const play = useCallback(() => {
     if (timerRef.current !== null) return;
@@ -119,5 +127,5 @@ export function usePlayback<S>(
   // Clean up the timer on unmount (教訓 5.2: アンマウントで破棄).
   useEffect(() => clearTimer, [clearTimer]);
 
-  return { isPlaying, speed, setSpeed, play, pause, toggle };
+  return { isPlaying, speed, setSpeed, play, pause, stopIfRunning, toggle };
 }
