@@ -7,24 +7,35 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
+import { createAnchor, createAnchorSnapshot } from '../anchor';
+import { deriveAnchorId } from '../anchor-id';
+import { createAnchorEntry } from '../anchor-series';
 import { parentExisting } from '../affiliation/decision';
 import { buildAffiliationProposal } from '../affiliation/proposal';
 import { createBasicAttributes, createColorInfo } from '../attributes';
 import { createCoordinate, type WorldCoordinate } from '../coordinate';
 import { FEATURE_KIND, createLeafFeature, isDirectDomainLeaf, type LeafFeature } from '../feature';
+import { createGeoParams } from '../geo/geo-params';
 import { alignMultiPolygon, wrapLonDeg } from '../geo/index';
 import { intersection, isOk, type GeoMultiPolygon, type GeoRing } from '../geometry/index';
 import { buildForest } from '../hierarchy/forest';
 import { resolveLeafShape } from '../hierarchy/resolve-shape';
 import { createIdGeneratorState } from '../id-generator';
 import { asFeatureId, asRingId, asVertexId, type FeatureId } from '../ids';
+import { checkConsistency } from '../persistence/consistency';
+import { applyRepair, REPAIR_OPTION } from '../persistence/repair';
+import type { DomainProject } from '../persistence/serialize';
 import { RING_KIND, createHoleRing, createShape, createTerritoryRing, type Ring } from '../ring';
 import { validateRingHierarchy } from '../ring-hierarchy';
+import { getCalendar } from '../time/calendar';
+import { timePointYear } from '../time/time-point';
 import { createVertex, createVertexStore, type Vertex, type VertexStore } from '../vertex';
 
 import { buildDirectDomainForLeaf, promoteLeafToAggregate, PROMOTION_STATUS } from './promote';
 
 const COLOR = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
+const CAL = getCalendar('gregorian');
+const Y0 = timePointYear(0);
 const P = asFeatureId('P');
 const C = asFeatureId('C');
 const c = (lon: number, lat: number): WorldCoordinate => createCoordinate(lon, lat);
@@ -292,6 +303,51 @@ describe('B108 継ぎ目にかかる子は、親の全部の周で引かれる',
     if (r.kind !== 'domain') throw new Error(r.kind);
     const next = createVertexStore([...store.byId.values(), ...r.newVertices]);
     expect(netArea(alignMultiPolygon(resolveLeafShape(r.directDomain.shape, next)!))).toBeCloseTo(800, 6);
+  });
+});
+
+describe('B108 読み込みの修復', () => {
+  function projectOf(...items: Built[]): DomainProject {
+    return {
+      histories: items.map((s) => ({
+        featureId: s.feature.id,
+        series: {
+          entries: [
+            createAnchorEntry(
+              createAnchor(
+                deriveAnchorId(s.feature.id, Y0),
+                createAnchorSnapshot([s.feature], createVertexStore(s.vertices)),
+              ),
+              Y0,
+              null,
+            ),
+          ],
+        },
+      })),
+      settings: {
+        calendarId: 'gregorian',
+        geo: createGeoParams(40000, 0.0034),
+        gridSpacingDeg: 10,
+        snapDistancePx: 50,
+        autoColorDefault: true,
+      },
+      baseMap: { source: 's', meta: { lonWest: -180, lonEast: 180, latNorth: 90, latSouth: -90 } },
+    };
+  }
+
+  it.each(CASES)('1 回で解けて不整合が残らない: $name', ({ parent, child, expected }) => {
+    const root = projectOf(leafOf('P', parent), leafOf('C', [{ outer: child }], P));
+    const target = checkConsistency(root, CAL).inconsistencies[0]!;
+    const repaired = applyRepair(root, target, REPAIR_OPTION.MaterializeDirectDomain, CAL);
+    expect(repaired).not.toBe(root);
+    expect(checkConsistency(repaired, CAL).inconsistencies).toEqual([]);
+    const dd = repaired.histories
+      .flatMap((h) => h.series.entries.flatMap((e) => e.anchor.snapshot.features))
+      .find((f): f is LeafFeature => f.kind === FEATURE_KIND.Leaf && isDirectDomainLeaf(f))!;
+    const store = repaired.histories
+      .flatMap((h) => h.series.entries)
+      .find((e) => e.anchor.snapshot.features.some((f) => f.id === dd.id))!.anchor.snapshot.vertices;
+    expect(netArea(alignMultiPolygon(resolveLeafShape(dd.shape, store)!))).toBeCloseTo(expected, 5);
   });
 });
 

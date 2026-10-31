@@ -34,7 +34,7 @@
 // 種別ラベル (kindLabel, FR-40) is never consulted — proven by a regression test.
 
 import { FEATURE_KIND, type Feature } from '../feature';
-import { alignMultiPolygon, referenceLonForMultiPolygon } from '../geo/index';
+import { alignMultiPolygon, referenceLonForMultiPolygon, replicateAcrossSeam } from '../geo/index';
 import { subdivideLongEdges } from '../geo/long-edge';
 import { difference, isOk, union } from '../geometry/boolean-ops';
 import { isMultiPolygonEmpty, type GeoMultiPolygon, type GeoPolygon } from '../geometry/types';
@@ -490,12 +490,12 @@ export function areasEqualWithinTolerance(a: GeoMultiPolygon, b: GeoMultiPolygon
 
 /** True iff (a \ b) reduces to the empty multi-polygon under U06 tolerance. */
 function directionalDiffEmpty(a: GeoMultiPolygon, b: GeoMultiPolygon): boolean {
-  // Align both operands onto one branch (audit root cause A) so two seam-adjacent
-  // areas are not judged "not equal" merely because one is stored a world-turn
-  // away; identity for single-branch input.
-  const diff = alignedDifference(a, b);
-  if (diff === undefined) return false;
-  return isMultiPolygonEmpty(diff);
+  // 同じ周へ揃え、`b` は ±360 の写しで引く（B108）。整列は基準 ±180 の窓の片側にしか置かないので、
+  // 幅いっぱいの面と継ぎ目にかかる子の和では、片側の半分が 1 周ずれて「等しくない」に見える。
+  const ref = commonRef(a, b);
+  const subject = alignMultiPolygon(a, ref);
+  const diff = difference(subject, replicateAcrossSeam(alignMultiPolygon(b, ref), subject));
+  return isOk(diff) && isMultiPolygonEmpty(diff.result);
 }
 
 // --- 0-child aggregate verdict (FR-35, defined here, processed elsewhere) ----

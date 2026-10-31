@@ -35,11 +35,8 @@ import {
 import {
   alignMultiPolygon,
   referenceLonForMultiPolygon,
-  replicateAcrossSeam,
 } from '../geo/index';
 import {
-  difference as geoDifference,
-  isMultiPolygonEmpty,
   isOk,
   union as geoUnion,
   type GeoMultiPolygon,
@@ -48,7 +45,7 @@ import { subdivideLongEdges } from '../geo/long-edge';
 import { sweepAndPruneAnchor } from '../deletion/sweep';
 import { buildForest, directChildIds, hasChildren, type Forest } from '../hierarchy/forest';
 import { resolveFeatureArea, resolveLeafShape } from '../hierarchy/resolve-shape';
-import { validateHierarchy } from '../hierarchy/validate';
+import { areasEqualWithinTolerance, validateHierarchy } from '../hierarchy/validate';
 import {
   asFeatureId,
   asRingId,
@@ -169,27 +166,6 @@ export interface PromoteToAggregateInput {
 // ---------------------------------------------------------------------------
 // 形状解決ヘルパ (R3 seam-unwrap を通してから U06 へ)
 // ---------------------------------------------------------------------------
-
-/**
- * seam (経度 ±180) を考慮した面積等価判定。両辺を連続座標へ展開し、一方向差分ごとに
- * clip 側を ±360° 世界ラップ replica で整列してから U06 差分が空かを判定する。これにより
- * seam をまたぐ領域が representative 空間で別々の 360° 窓に分断されていても正しく一致判定
- * できる。U06 差分が拒否されたら不一致扱い (defense 層が形状を拒んだ = 等価を確認できない)。
- */
-function areasEqualSeamAware(a: GeoMultiPolygon, b: GeoMultiPolygon): boolean {
-  // 片ごとに整列する（B104）。輪を 1 本ずつ展開すると、継ぎ目をまたぐ外周と東側の穴が 1 周離れ、
-  // 正しい分け残しを `shape-mismatch` で断っていた。
-  const ua = alignMultiPolygon(a);
-  const ub = alignMultiPolygon(b);
-  return directionalSeamDiffEmpty(ua, ub) && directionalSeamDiffEmpty(ub, ua);
-}
-
-/** (subject \ clip±replicas) が U06 トレランス内で空かを判定する (連続座標前提)。 */
-function directionalSeamDiffEmpty(subject: GeoMultiPolygon, clip: GeoMultiPolygon): boolean {
-  const diff = geoDifference(subject, replicateAcrossSeam(clip));
-  if (!isOk(diff)) return false;
-  return isMultiPolygonEmpty(diff.result);
-}
 
 // ---------------------------------------------------------------------------
 // 直轄領生成コア (FR-37) — U29 promote と U28 affiliation の単一真実源 (教訓 5.29)
@@ -412,7 +388,7 @@ export function promoteLeafToAggregate(input: PromoteToAggregateInput): Promotio
   // U08 の checkAggregateShapes は集約に stored shape が無いため inter-child gap しか
   // 検査せず、結果集約面積が元形状からはみ出す／隙間を残す不正構成 (直轄領 reparent 誤り・
   // rewrap 誤差・退化) を検出できない。ここで遷移集約の派生面積を forest から解決し、
-  // originalShapeMp と seam を考慮した双方向差分比較 (areasEqualSeamAware) で拒否する。
+  // originalShapeMp と seam を考慮した双方向差分比較 (areasEqualWithinTolerance) で拒否する。
   //
   // R3 注意 (世界端): seam (経度 ±180) をまたぐと比較が窓ズレを起こす。promotedArea は
   // 子 (生 representative 座標) + 直轄領 (rewrapRing 済み representative 座標) を U06 で
@@ -421,14 +397,14 @@ export function promoteLeafToAggregate(input: PromoteToAggregateInput): Promotio
   // 非展開出力で、seam をまたぐ単一リング ([170,-170,...]) は polygon-clipping には世界の
   // 大半を覆うボックスに見える。両者を素朴に (あるいは片ごとに独立 unwrap して) 比較すると、
   // 分断片が別々の 360° 窓 ([170,180] と [-180,-170]) に置かれて連結せず、正当な seam 遷移を
-  // false 拒否する (基準10 回帰)。そこで areasEqualSeamAware で双方を連続座標へ展開し、
+  // false 拒否する (基準10 回帰)。そこで areasEqualWithinTolerance で双方を連続座標へ展開し、
   // 一方を ±360° 世界ラップ replica で整列してから U06 双方向差分が空になるかを判定する。
   const syncedForest = buildForest(synced.features);
   const promotedArea = resolveFeatureArea(syncedForest, nextVertices, targetId);
   if (promotedArea.status !== 'ok') {
     return rejected(PROMOTION_REJECT.GeometryUnresolved, [targetId]);
   }
-  if (!areasEqualSeamAware(promotedArea.area, originalShapeMp)) {
+  if (!areasEqualWithinTolerance(promotedArea.area, originalShapeMp)) {
     return rejected(PROMOTION_REJECT.ShapeMismatch, [targetId]);
   }
 
