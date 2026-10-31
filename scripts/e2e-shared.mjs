@@ -42,10 +42,11 @@ if (existsSync(logPath)) {
   console.log(`\n[起動の使い回し] 使い回し ${String(reused)} 回 / 起動 ${String(launches.length - reused)} 回 / 記録 ${logPath}`);
   const byKey = new Map();
   for (const record of leavers) {
-    for (const key of Object.keys(record.left)) {
-      const group = key.replace(/\.\d+\..*$/, '').replace(/^(driver\.\w+)\..*$/, '$1');
-      byKey.set(group, (byKey.get(group) ?? 0) + 1);
-    }
+    // 1 本が同じ種類の項目を幾つ残しても 1 本と数える（窓の大きさは全体・幅・高さの 3 項目ある）。
+    const groups = new Set(
+      Object.keys(record.left).map((key) => key.replace(/\.\d+\..*$/, '').replace(/^(driver\.\w+)\..*$/, '$1')),
+    );
+    for (const group of groups) byKey.set(group, (byKey.get(group) ?? 0) + 1);
   }
   for (const [key, count] of [...byKey].sort((a, b) => b[1] - a[1]).slice(0, 10)) {
     console.log(`  ${String(count)} 本が残した: ${key}`);
