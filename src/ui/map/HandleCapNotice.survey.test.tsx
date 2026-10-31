@@ -1,9 +1,9 @@
 // 頂点の印の上限の知らせ（増分 8A）と「測る」の帯（増分 8C）が、同じ「次の一手」を取り合わない
 // ことの検査（統合 8A〜8D の継ぎ目の検証 2-1）。
 //
-// **何を守るか**: 頂点の多い地物を選んだまま測ると、測っている間は `activeTool` が null で
-// 「選ぶ」と同じに見えるので、上限の知らせがカメラの動きのたびに次の一手へ書き込み、数が上限を
-// 下回った瞬間の片付けで次の一手を空にしていた（空の次の一手は「選ぶ」の既定の文を出す）。
+// **何を守るか**: 頂点の多い地物を選んだまま測ると、上限の知らせがカメラの動きのたびに次の
+// 一手へ書き込み、数が上限を下回った瞬間の片付けで次の一手を空にしていた（空の次の一手は
+// 「選択」の既定の文を出す）。「頂点」の道具で選んだまま測り始める形で確かめる。
 // 測るの案内（終点を押す・Esc でやめる）が消えて、測るをやめたように見えた。
 //
 // 本物の `HandleCapNotice` と `SurveyOptionBar` を同じ帯に載せ、上限を小さくして確かめる。
@@ -13,6 +13,7 @@
 import { act, render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
+import { TOOL_ID } from '../shell/tools';
 import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
 import { createCoordinate } from '../../domain/coordinate';
 import { createLeafFeature } from '../../domain/feature';
@@ -71,7 +72,7 @@ function mountBoth() {
     initialDomain: ringProject(300),
     initial: {
       mode: EDIT_MODE.Edit,
-      activeTool: null,
+      activeTool: TOOL_ID.EditVertex,
       activeFeature: ID,
       currentTime: T,
       camera: { ...camera, panX: 0, panY: 0 },
@@ -136,11 +137,15 @@ describe('HandleCapNotice × 測る — 測っている間の次の一手は測�
     expect(optionBar.get().nextStep).toBe(SURVEY_STRINGS.guideAwaitingEnd);
   });
 
-  it('測るをやめると、上限の知らせが戻る（帯の持ち直しで押し直す）', () => {
+  it('測るをやめて「頂点」を構え直すと、上限の知らせが戻る（帯の持ち直しで押し直す）', () => {
     const { store, optionBar, moveCamera, hasZoomAction } = mountBoth();
     act(() => store.getState().surveyEnable());
     moveCamera(CLOSER);
     act(() => store.getState().surveyDisable());
+    // 測量で道具は外れている。「選択」と同じで印を描かないので、上限を言う場面ではない（B114）。
+    expect(store.getState().activeTool).toBeNull();
+    expect(optionBar.get().nextStep ?? '').not.toContain('上限 20');
+    act(() => store.getState().setActiveTool(TOOL_ID.EditVertex));
     expect(optionBar.get().nextStep).toContain('上限 20');
     expect(hasZoomAction()).toBe(true);
   });

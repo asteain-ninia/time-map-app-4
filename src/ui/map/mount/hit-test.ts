@@ -14,7 +14,7 @@ import {
   type FocusOwner,
 } from '../../shell/focus-owner';
 import { TOOL_ID, toolShowsVertexHandles } from '../../shell/tools';
-import { EDIT_MODE } from '../../state/session';
+import { EDIT_MODE, type EditMode, type ToolId } from '../../state/session';
 import { createEditSessionPort } from '../edit-session-adapter';
 import {
   buildEditSnapshot,
@@ -99,6 +99,14 @@ type RecordCommit = (
   preference: NextTargetPreference | undefined,
   anchorTime: TimePoint,
 ) => void;
+
+/** 頂点と辺の印を描いているか（描く条件と掴める条件は同じ入力。`mount/render.ts` と同じ 2 つ）。 */
+function handlesDrawnFor(s: {
+  readonly mode: EditMode;
+  readonly activeTool: ToolId | null;
+}): boolean {
+  return s.mode !== EDIT_MODE.View && toolShowsVertexHandles(s.activeTool);
+}
 
 /** {@link createMountHitTest} の入力。 */
 export interface MountHitTestOptions {
@@ -276,13 +284,12 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
           activeFeature: s.selection.activeFeature,
           // **描く条件と掴める条件を同じ入力で決める**（増分 5 の手直し A6）。
           // ハンドルを描くのは `mount/render.ts` の `editHandles` で、条件は
-          // 「鍵が開いている」かつ「掴める道具（選ぶ・頂点・動かす）」である。
-          // 同じ 2 つをここへ渡す ―― 渡さないと、読むだけのときに **見えていない
+          // 「鍵が開いている」かつ「掴める道具（頂点・動かす）」である。
+          // 同じ 2 つをここへ渡す ―― 渡さないと、読むだけのときと「選択」のときに **見えていない
           // 頂点が最優先で掴まれ**、`app-active-vertex` が立って Escape の階段が
           // 1 段増える（GPT #2 / バグ狩り #15）。判定を 2 通りに書かないよう、
           // 述語そのものは `shell/tools.ts` の 1 本を読む（教訓 5.30）。
-          handlesDrawn:
-            s.mode !== EDIT_MODE.View && toolShowsVertexHandles(s.activeTool),
+          handlesDrawn: handlesDrawnFor(s),
           point,
           // 増分 8A: 掴める距離を画面倍率に連動させる（下限 8px。`grab-radius.ts`）。
           radiusPx: grabRadiusPx(camera, viewport),
@@ -307,6 +314,9 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
   const rectangleResolver: RectangleResolver = {
     verticesInRectangle: (a, b) => {
       const s = store.getState();
+      // 描いていない頂点は囲めない（B114。クリックの `handlesDrawn` と同じ入力）。「選択」の空いた
+      // 所からのドラッグは地図の移動へ行くのでここへ来ないが、経路が無いことに頼らない。
+      if (!handlesDrawnFor(s)) return null;
       // wrap: enumerate the SAME ±360° turns the renderer painted (wrapTurnsForLonSpan)
       // so a vertex shown only as a wrap replica on a panned view is rubber-band
       // selectable — parity with the click hit-test (単一真実源, 描画⊇クリック⊇矩形).
@@ -626,8 +636,7 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
         toScreen: (w) => projectWorldToScreen(w, camera, viewport),
         wrap: { camera, viewport },
         activeFeature: s.selection.activeFeature,
-        handlesDrawn:
-          s.mode !== EDIT_MODE.View && toolShowsVertexHandles(s.activeTool),
+        handlesDrawn: handlesDrawnFor(s),
         point,
         // 当たり判定と同じ掴める距離（増分 8A）。
         radiusPx: grabRadiusPx(camera, viewport),

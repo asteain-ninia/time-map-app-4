@@ -43,7 +43,7 @@ import type {
   SelectionPort,
 } from './ports';
 import { zoomStepAtCursor, type ScreenPoint, type ZoomRange } from '../../render';
-import { EDIT_MODE, type EditMode } from '../state/session';
+import type { EditMode } from '../state/session';
 
 /**
  * A DOM-independent normalized pointer sample. The controller accepts these so
@@ -118,6 +118,11 @@ export interface PointerDispatcherOptions {
   readonly editSession?: EditSessionPort;
   readonly add: AddPort;
   readonly contextMenu: ContextMenuPort;
+  /**
+   * 何もないところからの左ドラッグが地図を動かすか（B114。「選択」の道具。押すたびに読む）。
+   * 省略 ＝ 動かさない（頂点を囲む）。
+   */
+  readonly getEmptyPressPans?: () => boolean;
   /** Zoom clamp range (U16 settings); falls through to U17's FR-10 default. */
   readonly zoomRange?: ZoomRange;
   /**
@@ -239,7 +244,8 @@ export class PointerDispatcher {
     const mode = this.opts.getMode();
     const point: ScreenPoint = { x: p.x, y: p.y };
     const hit = this.opts.hitTester.hitTest(point);
-    const target = decideDispatch({ mode, button: p.button, hit });
+    const emptyPressPans = this.opts.getEmptyPressPans?.() ?? false;
+    const target = decideDispatch({ mode, button: p.button, hit, emptyPressPans });
 
     switch (target) {
       case DISPATCH_TARGET.Pan: {
@@ -398,11 +404,10 @@ export class PointerDispatcher {
       // last sample is never lost; a pure click moves nothing.
       if (rec.dragged && rec.panRef !== null) {
         this.opts.camera.write(panCameraTo(rec.panRef, point));
-      } else if (
-        !rec.dragged &&
-        rec.button === POINTER_BUTTON.Left &&
-        this.opts.getMode() === EDIT_MODE.View
-      ) {
+      } else if (!rec.dragged && rec.button === POINTER_BUTTON.Left) {
+        // 左ボタンのパンは、読むだけのときと「選択」の何もないところからの押下だけ（B114）。
+        // どちらも、動かさずに離せばここで選択として解決する（「選択」では選択の解除など）。
+        //
         // **裁定 N-4（2026-09-03）: 読むだけでも地図をクリックして地物を選べる。**
         //
         // 読むだけのときは左ボタンがパンに割り当てられている（`PAN_BUTTONS`）ので、
@@ -412,7 +417,7 @@ export class PointerDispatcher {
         // 読むだけの主要な操作であるパンが左ボタンから消える。
         //
         // **選ぶだけで、掴まない。** `editSession.begin` は呼ばない（頂点ハンドルは
-        // 読むだけでは描かれないので掴む対象も無い）。素性欄は読めて、直せない。
+        // どちらの局面でも描かれないので掴む対象も無い）。読むだけの素性欄は読めて、直せない。
         const hit = this.opts.hitTester.hitTest(point);
         this.opts.selection.start(hit, point, rec.modifiers);
         this.opts.selection.end(point, false);

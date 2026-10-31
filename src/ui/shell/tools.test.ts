@@ -11,6 +11,7 @@ import {
   isSelectTool,
   modeForTool,
   toolBelongsToMode,
+  toolPansFromEmptyPress,
   toolShowsVertexHandles,
   toolsForMode,
 } from './tools';
@@ -91,7 +92,7 @@ describe('内部の mode の導出（設計書 §D.1 / 裁定 1）', () => {
     for (const tool of toolsForMode(EDIT_MODE.Edit)) {
       expect(modeForTool(false, tool)).toBe(EDIT_MODE.Edit);
     }
-    // 道具を外した状態（＝「選ぶ」）も edit。
+    // 道具を外した状態（＝「選択」）も edit。
     expect(modeForTool(false, null)).toBe(EDIT_MODE.Edit);
   });
 
@@ -101,7 +102,7 @@ describe('内部の mode の導出（設計書 §D.1 / 裁定 1）', () => {
     expect(isAddTool(null)).toBe(false);
   });
 
-  it('「選ぶ」は道具を外した状態と同じ扱い', () => {
+  it('「選択」は道具を外した状態と同じ扱い', () => {
     expect(isSelectTool(null)).toBe(true);
     expect(isSelectTool(TOOL_ID.EditSelect)).toBe(true);
     expect(isSelectTool(TOOL_ID.EditVertex)).toBe(false);
@@ -109,11 +110,19 @@ describe('内部の mode の導出（設計書 §D.1 / 裁定 1）', () => {
 });
 
 describe('頂点ハンドルを出す道具（増分 5b。旧「編集モードのときだけ」）', () => {
-  it('選ぶ・頂点・動かす だけが掴める', () => {
-    expect(toolShowsVertexHandles(null)).toBe(true);
-    expect(toolShowsVertexHandles(TOOL_ID.EditSelect)).toBe(true);
+  it('頂点・動かす だけが掴める', () => {
     expect(toolShowsVertexHandles(TOOL_ID.EditVertex)).toBe(true);
     expect(toolShowsVertexHandles(TOOL_ID.EditMove)).toBe(true);
+  });
+
+  it('「選択」と道具なしでは掴めない（所有者の裁定 2026-10-31 / B114）', () => {
+    expect(toolShowsVertexHandles(null)).toBe(false);
+    expect(toolShowsVertexHandles(TOOL_ID.EditSelect)).toBe(false);
+  });
+
+  it('何もないところからの左ドラッグで地図が動くのは「選択」と道具なしだけ（B114）', () => {
+    expect(ALL_TOOLS.filter((t) => toolPansFromEmptyPress(t))).toEqual([TOOL_ID.EditSelect]);
+    expect(toolPansFromEmptyPress(null)).toBe(true);
   });
 
   it('自分の板を持つ道具と、描く道具では掴めない', () => {

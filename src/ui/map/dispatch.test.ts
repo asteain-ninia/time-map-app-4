@@ -147,3 +147,30 @@ describe('drag threshold — shared click/drag judgement (受け入れ基準 4)'
     expect(exceedsDragThreshold(0, 0, 10, 0, 10)).toBe(true);
   });
 });
+
+describe('decideDispatch — 「選択」の何もないところからの左（B114）', () => {
+  it('編集中の左で、何もないところなら地図の移動、地物の上なら今までどおり選択へ', () => {
+    const input = { mode: EDIT_MODE.Edit, button: POINTER_BUTTON.Left, emptyPressPans: true };
+    expect(decideDispatch({ ...input, hit: EMPTY_HIT })).toBe(DISPATCH_TARGET.Pan);
+    expect(decideDispatch({ ...input, hit: featureBodyHit(f) })).toBe(DISPATCH_TARGET.SelectEdit);
+  });
+
+  it('省略・偽なら何もないところも選択へ（「頂点」「動かす」の囲む操作）', () => {
+    const input = { mode: EDIT_MODE.Edit, button: POINTER_BUTTON.Left, hit: EMPTY_HIT };
+    expect(decideDispatch(input)).toBe(DISPATCH_TARGET.SelectEdit);
+    expect(decideDispatch({ ...input, emptyPressPans: false })).toBe(DISPATCH_TARGET.SelectEdit);
+  });
+
+  it('編集中の左以外の行き先は、この項目で変わらない（全組み合わせ）', () => {
+    for (const mode of ALL_MODES) {
+      for (const button of ALL_BUTTONS) {
+        for (const hit of ALL_HITS) {
+          if (mode === EDIT_MODE.Edit && button === POINTER_BUTTON.Left) continue;
+          expect(decideDispatch({ mode, button, hit, emptyPressPans: true })).toBe(
+            decideDispatch({ mode, button, hit }),
+          );
+        }
+      }
+    }
+  });
+});

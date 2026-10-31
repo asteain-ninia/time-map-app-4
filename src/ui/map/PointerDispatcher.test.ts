@@ -724,3 +724,80 @@ describe('A8: pointerMove が 1 度も来ない押下でも、離した位置で
     expect(selection.events).toEqual([]);
   });
 });
+
+describe('「選択」の道具の左ボタン（B114。読むだけと同じ割り当て）', () => {
+  function setupSelectTool(hit: HitResult, emptyPressPans = true) {
+    const camera = new FakeCamera();
+    const selection = new FakeSelection();
+    const begins: string[] = [];
+    const dispatcher = new PointerDispatcher({
+      getMode: () => EDIT_MODE.Edit,
+      getEmptyPressPans: () => emptyPressPans,
+      camera,
+      hitTester: { hitTest: () => hit },
+      selection,
+      editSession: {
+        begin: (h) => {
+          begins.push(h.kind);
+          return false;
+        },
+        update: () => {},
+        release: () => {},
+        cancel: () => {},
+      },
+      add: new FakeAdd(),
+      contextMenu: new FakeContextMenu(),
+    });
+    return { camera, selection, begins, dispatcher };
+  }
+
+  it('何もないところからのドラッグは地図を動かし、選択には触れず、掴みも始めない', () => {
+    const { camera, selection, begins, dispatcher } = setupSelectTool(EMPTY_HIT);
+    expect(dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left))).toBe(DISPATCH_TARGET.Pan);
+    dispatcher.pointerMove(ptr(1, 150, 120, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 150, 120, POINTER_BUTTON.Left));
+    expect(camera.writes.length).toBeGreaterThan(0);
+    expect(selection.events).toEqual([]);
+    expect(begins).toEqual([]);
+  });
+
+  it('何もないところで動かさず離すと、今までどおり選択として解決する（選択の解除）', () => {
+    const { camera, selection, begins, dispatcher } = setupSelectTool(EMPTY_HIT);
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    expect(camera.writes).toEqual([]);
+    expect(selection.events).toEqual([`start:${EMPTY_HIT.kind}`, 'end:click@100,100']);
+    expect(begins).toEqual([]);
+  });
+
+  it('地物の上からは今までどおり選択と掴みの口へ行き、地図は動かない', () => {
+    const hit = featureBodyHit(asFeatureId('f1'));
+    const { camera, selection, begins, dispatcher } = setupSelectTool(hit);
+    expect(dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left))).toBe(
+      DISPATCH_TARGET.SelectEdit,
+    );
+    dispatcher.pointerMove(ptr(1, 150, 120, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 150, 120, POINTER_BUTTON.Left));
+    expect(camera.writes).toEqual([]);
+    expect(begins).toEqual([hit.kind]);
+    expect(selection.events).toContain('end:drag@150,120');
+  });
+
+  it('「頂点」「動かす」（偽）では何もないところからのドラッグは今までどおり囲む口へ行く', () => {
+    const { camera, selection, dispatcher } = setupSelectTool(EMPTY_HIT, false);
+    expect(dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left))).toBe(
+      DISPATCH_TARGET.SelectEdit,
+    );
+    dispatcher.pointerMove(ptr(1, 150, 120, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 150, 120, POINTER_BUTTON.Left));
+    expect(camera.writes).toEqual([]);
+    expect(selection.events).toContain('end:drag@150,120');
+  });
+
+  it('中ボタンのパンを動かさず離しても、選択にはならない', () => {
+    const { selection, dispatcher } = setupSelectTool(EMPTY_HIT);
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Middle));
+    dispatcher.pointerUp(ptr(1, 100, 100, POINTER_BUTTON.Middle));
+    expect(selection.events).toEqual([]);
+  });
+});

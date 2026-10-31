@@ -2703,7 +2703,7 @@ describe('A5 結合: 面の道具 → 測量 ON → 測量 OFF で、地図ク�
 // ============================================================================
 //
 // 増分 5 の手直し A7 / GPT #9。旧版は「直前が `edit.vertex` だったか」で捨てていたので、
-// **「選ぶ」や「動かす」で掴んだ頂点が、ナイフや追加の道具へ移っても見えないまま残り**、
+// **「動かす」で掴んだ頂点が、ナイフや追加の道具へ移っても見えないまま残り**、
 // 下書きを持たないうちに Delete を押すとその頂点が消えた。ハンドルを出す条件
 // （`toolShowsVertexHandles`）と、頂点の選択を残す条件を同じ 1 本の述語にする。
 
@@ -2718,18 +2718,18 @@ describe('A7: 頂点の選択が落ちるのは「掴める道具から出ると
     });
   }
 
-  /** 掴める道具（設計書 §C.3 の「選ぶ・頂点・動かす」）。判定は実装と同じ 1 本を引く。 */
+  /** 掴める道具（「頂点・動かす」。B114 で「選択」を外した）。判定は実装と同じ 1 本を引く。 */
   const GRABBING = ALL_TOOLS.filter((t) => toolShowsVertexHandles(t));
   /** 掴めない道具（残り全部）。 */
   const NOT_GRABBING = ALL_TOOLS.filter((t) => !toolShowsVertexHandles(t));
 
-  it('掴める道具は「選ぶ・頂点・動かす」の 3 つである（表の前提を固定する）', () => {
-    expect(GRABBING).toEqual([TOOL_ID.EditSelect, TOOL_ID.EditVertex, TOOL_ID.EditMove]);
-    expect(NOT_GRABBING.length).toBe(ALL_TOOLS.length - 3);
+  it('掴める道具は「頂点・動かす」の 2 つである（表の前提を固定する）', () => {
+    expect(GRABBING).toEqual([TOOL_ID.EditVertex, TOOL_ID.EditMove]);
+    expect(NOT_GRABBING.length).toBe(ALL_TOOLS.length - 2);
   });
 
-  it('「選ぶ」で掴んだ頂点は、ナイフへ持ち替えると落ちる（旧版は残っていた）', () => {
-    const store = withGrabbedVertex(TOOL_ID.EditSelect);
+  it('「頂点」で掴んだ頂点は、ナイフへ持ち替えると落ちる', () => {
+    const store = withGrabbedVertex(TOOL_ID.EditVertex);
     store.getState().setActiveTool(TOOL_ID.EditKnife);
     expect(store.getState().vertexSelection).toBeNull();
     expect(store.getState().activeFeature).toBe(f('A')); // 地物の選択は残る
@@ -2742,14 +2742,24 @@ describe('A7: 頂点の選択が落ちるのは「掴める道具から出ると
     expect(store.getState().activeFeature).toBe(f('A'));
   });
 
-  it('「選ぶ」→「頂点」→「動かす」の間では落ちない（掴める道具どうしの往来）', () => {
-    const store = withGrabbedVertex(TOOL_ID.EditSelect);
-    store.getState().setActiveTool(TOOL_ID.EditVertex);
-    expect(store.getState().vertexSelection?.vertexIds.size).toBe(1);
+  it('「頂点」→「動かす」→「頂点」の間では落ちない（掴める道具どうしの往来）', () => {
+    const store = withGrabbedVertex(TOOL_ID.EditVertex);
     store.getState().setActiveTool(TOOL_ID.EditMove);
     expect(store.getState().vertexSelection?.vertexIds.size).toBe(1);
-    store.getState().setActiveTool(TOOL_ID.EditSelect);
+    store.getState().setActiveTool(TOOL_ID.EditVertex);
     expect(store.getState().vertexSelection?.vertexIds.size).toBe(1);
+  });
+
+  it('「頂点」→「選択」で落ちる。地物の選択は残る（B114: 見えない頂点を残さない）', () => {
+    for (const from of GRABBING) {
+      const store = withGrabbedVertex(from);
+      store.getState().setActiveTool(TOOL_ID.EditSelect);
+      expect({ from, vertices: store.getState().vertexSelection }).toEqual({
+        from,
+        vertices: null,
+      });
+      expect(store.getState().activeFeature).toBe(f('A'));
+    }
   });
 
   it('掴める道具 → 掴めない道具は、どの組み合わせでも落ちる（全数）', () => {
@@ -2807,11 +2817,29 @@ describe('A7: 頂点の選択が落ちるのは「掴める道具から出ると
     }
   });
 
-  it('道具を外す（null）のは「選ぶ」と同じ扱いなので、頂点は落ちない', () => {
-    // `isSelectTool(null)` が真なので、取り消しで道具が外れただけでは掴んだ頂点は
-    // 残る（利用者から見て「何も構えていない」と「選ぶ」は同じ状態＝設計書 §D.4）。
+  it('道具を外す（null）のは「選択」と同じ扱いなので、頂点は落ちる（B114）', () => {
+    // 利用者から見て「何も構えていない」と「選択」は同じ状態（設計書 §D.4）で、印が描かれない。
     const store = withGrabbedVertex(TOOL_ID.EditVertex);
     store.getState().setActiveTool(null);
-    expect(store.getState().vertexSelection?.vertexIds.size).toBe(1);
+    expect(store.getState().vertexSelection).toBeNull();
+    expect(store.getState().activeFeature).toBe(f('A'));
+  });
+
+  it('鍵を閉めても開けても見えない頂点は残らない。地物の選択は残る（B114）', () => {
+    const store = withGrabbedVertex(TOOL_ID.EditVertex);
+    store.getState().setMode(EDIT_MODE.View);
+    expect(store.getState().vertexSelection).toBeNull();
+    expect(store.getState().activeFeature).toBe(f('A'));
+    store.getState().setMode(EDIT_MODE.Edit);
+    expect(store.getState().vertexSelection).toBeNull();
+    expect(store.getState().activeFeature).toBe(f('A'));
+  });
+
+  it('測量へ入っても見えない頂点は残らない。地物の選択は残る（B114）', () => {
+    const store = withGrabbedVertex(TOOL_ID.EditVertex);
+    store.getState().surveyEnable();
+    expect(store.getState().activeTool).toBeNull();
+    expect(store.getState().vertexSelection).toBeNull();
+    expect(store.getState().activeFeature).toBe(f('A'));
   });
 });

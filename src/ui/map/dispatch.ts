@@ -78,6 +78,8 @@ export function pointerButtonFromCode(code: number): PointerButton {
 //   - Edit mode: MIDDLE only (left is selection / vertex-drag / rubber-band,
 //     driven by U22). Limiting pan to middle structurally guarantees a single
 //     pointerdown can never start both pan AND selection (受け入れ基準 5).
+//     例外は「選択」の道具の何もないところからの左（B114。`decideDispatch` の
+//     `emptyPressPans`）。この表は道具を知らないので、そちらは入力の 1 項目で受ける。
 const PAN_BUTTONS: Readonly<Record<EditMode, ReadonlySet<PointerButton>>> = {
   [EDIT_MODE.View]: new Set([POINTER_BUTTON.Left, POINTER_BUTTON.Middle]),
   [EDIT_MODE.Add]: new Set([POINTER_BUTTON.Middle]),
@@ -123,6 +125,12 @@ export interface DispatchInput {
   readonly mode: EditMode;
   readonly button: PointerButton;
   readonly hit: HitResult;
+  /**
+   * 編集中の左ボタンが、何もないところからなら地図を動かすか（B114。「選択」の道具）。
+   * 読むだけと同じくパンへ送り、動かさず離したときだけ選択として解決する
+   * （`PointerDispatcher.pointerUp`）。省略 ＝ 動かさない。
+   */
+  readonly emptyPressPans?: boolean;
 }
 
 /**
@@ -132,6 +140,7 @@ export interface DispatchInput {
  *
  *   - Right button → ContextMenu in every mode (never pan).
  *   - A button in the mode's PAN_BUTTONS set → Pan.
+ *   - 編集中の左ボタンで、何もないところを押し、`emptyPressPans` が真 → Pan（B114）。
  *   - Otherwise the LEFT button routes per mode: Add mode → Add, Edit mode →
  *     SelectEdit. (In View mode left is already a pan button above, so it never
  *     reaches here; View has no select/add destination — editing is disabled.)
@@ -139,12 +148,13 @@ export interface DispatchInput {
  *
  * Pan割当 is read from {@link panStartsFor} so this function never re-encodes the
  * mode×button table (single truth, 受け入れ基準 1). The `hit` is part of the input
- * (and exhaustively varied in tests) even though it does not change the
- * destination today — it is the contract U22 consumes after delegation, and
- * keeping it in the signature fixes the layer-crossing data shape (教訓 5.34).
+ * (and exhaustively varied in tests). It changes the destination only for the
+ * `emptyPressPans` case above — otherwise it is the contract U22 consumes after
+ * delegation, and keeping it in the signature fixes the layer-crossing data shape
+ * (教訓 5.34).
  */
 export function decideDispatch(input: DispatchInput): DispatchTarget {
-  const { mode, button } = input;
+  const { mode, button, hit } = input;
 
   // Right button is always a context-menu request, never a pan (受け入れ基準 3).
   if (button === POINTER_BUTTON.Right) {
@@ -161,7 +171,11 @@ export function decideDispatch(input: DispatchInput): DispatchTarget {
   // (教訓 5.30 過剰共有の戒め: add-mode left ≠ edit-mode left).
   if (button === POINTER_BUTTON.Left) {
     if (mode === EDIT_MODE.Add) return DISPATCH_TARGET.Add;
-    if (mode === EDIT_MODE.Edit) return DISPATCH_TARGET.SelectEdit;
+    if (mode === EDIT_MODE.Edit) {
+      return input.emptyPressPans === true && hit.kind === HIT_KIND.Empty
+        ? DISPATCH_TARGET.Pan
+        : DISPATCH_TARGET.SelectEdit;
+    }
   }
 
   return DISPATCH_TARGET.Ignore;

@@ -57,7 +57,7 @@ const NO_TOOLS: readonly ToolId[] = [];
 // から面を選ぶ」という 2 手が「面を押す」の 1 手になる。
 //
 // 群は設計書 §C.3 の「近接で 4 群」に **1 つ足して 5 群**にしてある。足したのは
-// 「動かす」で、設計書は「選ぶ道具に吸収して廃止」としているが **廃止はまだ済んで
+// 「動かす」で、設計書は「「選択」の道具に吸収して廃止」としているが **廃止はまだ済んで
 // いない**（`edit.move` は実装にも E2E 8 本にも生きている）。吸収するには Alt＋ドラッグ
 // という別の口を作る必要があり、それは増分 5 の「緑に戻す条件」に含まれていない。
 // **実装者の判断**（司令塔未確認）として、いまは 1 段の中に残してある。
@@ -126,10 +126,10 @@ export function modeForTool(locked: boolean, tool: ToolId | null): EditMode {
 }
 
 /**
- * 「選ぶ」道具を構えているか。**道具を外した状態（`null`）も「選ぶ」とみなす** ――
+ * 「選択」の道具を構えているか。**道具を外した状態（`null`）も「選択」とみなす** ――
  * 道具のコントローラは取り消し（Escape）で `activeTool` を `null` に戻すので、
- * 「何も構えていない」と「選ぶを構えている」は利用者から見て同じ状態である
- * （設計書 §D.4 の階段の最後「道具が『選ぶ』以外 → 『選ぶ』道具に戻る」）。
+ * 「何も構えていない」と「選択を構えている」は利用者から見て同じ状態である
+ * （設計書 §D.4 の階段の最後「道具が『選択』以外 → 『選択』の道具に戻る」）。
  */
 export function isSelectTool(tool: ToolId | null): boolean {
   return tool === null || tool === TOOL_ID.EditSelect;
@@ -137,13 +137,26 @@ export function isSelectTool(tool: ToolId | null): boolean {
 
 /**
  * 頂点ハンドルを出す道具か（設計書 §C.3。旧実装は「編集モードのときだけ」だったが、
- * モードの段が消えたので **道具で決める**）。「選ぶ」「頂点」「動かす」の 3 つが、
- * 選んだ地物の頂点・辺を掴める道具である。
+ * モードの段が消えたので **道具で決める**）。「頂点」と「動かす」の 2 つが、頂点・辺を
+ * 掴める道具である。
+ *
+ * **「選択」（道具なしの `null` も）は入らない**（所有者の裁定 2026-10-31 / B114）。
+ * 「選択」は地物だけを選ぶ。増分 5b から 2026-10-31 までは入っていて、全体図では小さな国の
+ * 内側が全部 8px 以内の頂点に当たり、国を選べなかった。
+ *
+ * 描く条件・掴める条件・頂点の選択を残す条件は、この 1 本を読む（`mount/render.ts`、
+ * `mount/hit-test.ts`、`HandleCapNotice.tsx`、`store.ts` の `selectionAcrossToolSwitch`）。
  */
 export function toolShowsVertexHandles(tool: ToolId | null): boolean {
-  return (
-    isSelectTool(tool) || tool === TOOL_ID.EditVertex || tool === TOOL_ID.EditMove
-  );
+  return tool === TOOL_ID.EditVertex || tool === TOOL_ID.EditMove;
+}
+
+/**
+ * 何もないところからの左ドラッグが地図を動かす道具か（B114）。「選択」では読むだけと同じく
+ * 地図が動く。「頂点」「動かす」では頂点を四角く囲む。
+ */
+export function toolPansFromEmptyPress(tool: ToolId | null): boolean {
+  return isSelectTool(tool);
 }
 
 /**

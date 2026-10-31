@@ -683,9 +683,9 @@ interface SelectionPatch {
  * 次の操作の対象が画面と食い違う（ナイフを構えているのに頂点が選ばれている、など）。
  *
  * **判定は「直前が『頂点』の道具だったか」ではなく、掴める道具かどうかの変化で行う**
- * （増分 5 の手直し A7 / GPT #9）。頂点と辺のハンドルを掴めるのは「選ぶ」「頂点」
- * 「動かす」の 3 つで（`toolShowsVertexHandles`）、旧版は `edit.vertex` から出るときしか
- * 捨てていなかった。だから **「選ぶ」や「動かす」で掴んだ頂点が、ナイフや追加の道具へ
+ * （増分 5 の手直し A7 / GPT #9）。頂点と辺のハンドルを掴めるのは「頂点」「動かす」の
+ * 2 つで（`toolShowsVertexHandles`。B114 で「選択」を外した）、旧版は `edit.vertex` から出る
+ * ときしか捨てていなかった。だから **「動かす」で掴んだ頂点が、ナイフや追加の道具へ
  * 移っても見えないまま残り**、下書きを持たないうちに Delete を押すとその頂点が消えた。
  * ハンドルを出す条件（`toolShowsVertexHandles`）と、頂点の選択を残す条件を **同じ 1 本の
  * 述語**にすれば、「見えていないのに選ばれている」が構造的に起きない（教訓 5.30）。
@@ -710,7 +710,7 @@ function selectionAcrossToolSwitch(
  * 編集`）。ところが `activeTool` を書く場所は `setActiveTool` だけではなく、測量を
  * 始めるときにも「地図を覆う入力層を 1 枚に保つ」ために `activeTool: null` を書いていた。
  * そこだけ `mode` を書き忘れていたので、**面を描いている最中に測量を入り切りすると、
- * 画面は「選ぶ」なのに内部は「追加」のまま**になった ―― 左クリックは追加の経路へ送られる
+ * 画面は「選択」なのに内部は「追加」のまま**になった ―― 左クリックは追加の経路へ送られる
  * のに追加のコントローラは居らず、選ぶことも追加することもできなくなる。
  *
  * 導出を関数 1 本に閉じ込め、**`activeTool` を書く set() は必ずこの関数の戻り値を
@@ -1660,7 +1660,10 @@ export function createSessionStore<S>(
       const acrossViewOnly = cur === EDIT_MODE.View || patch.mode === EDIT_MODE.View;
       set({
         ...patch,
-        ...(acrossViewOnly ? {} : selectionPatch(EMPTY_SELECTION)),
+        // 鍵の開け閉めでも道具は外れるので、見えなくなる頂点の選択は捨てる（B114）。地物は残す。
+        ...selectionPatch(
+          acrossViewOnly ? selectionAcrossToolSwitch(get(), null) : EMPTY_SELECTION,
+        ),
         // 鍵の切り替え・道具を外すのも持ち替えなので、消した線の覚えを捨てる（増分 8C の手直し）。
         ...forgetRemovedSurveyPatch(get()),
       });
@@ -1870,11 +1873,16 @@ export function createSessionStore<S>(
       // atomically with the survey bridge mounting (入力軸の相互排他 — at most one
       // map-covering input layer). Unlike setActiveTool this does NOT clear the
       // selection: survey is a viewing aid, not a tool switch (U37 §2.1).
+      // ただし道具は外れるので、見えなくなる頂点の選択だけは捨てる（B114）。
       //
       // **`mode` も一緒に書く**（増分 5 の手直し A5）。道具の欄を書くのに `mode` の
       // 導出を書き忘れると、面を描いている最中に測量を入り切りしたとき「画面は選ぶ、
       // 内部は追加」という食い違いが残る。{@link toolPatch} が 1 か所で両方を作る。
-      set({ survey: enableSurveyMode(get().survey), ...toolPatch(get(), null) });
+      set({
+        survey: enableSurveyMode(get().survey),
+        ...toolPatch(get(), null),
+        ...selectionPatch(selectionAcrossToolSwitch(get(), null)),
+      });
     },
 
     surveyDisable() {
