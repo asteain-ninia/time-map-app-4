@@ -12,16 +12,22 @@ import { fileURLToPath } from 'node:url';
 import { test, expect, type Page } from '@playwright/test';
 
 import { PROPERTY_STRINGS } from '../src/ui/property/messages';
+import { SYNTHETIC_NEST_PARENT_ID } from '../src/ui/e2e/synthetic-project';
 import {
   armVertexTool,
+  besideSquareX,
   commitOneFace,
+  commitSquareFace,
+  committedVertices,
   jumpToYear,
   launchApp,
   launchAppWithProject,
   leafReport,
   leaveViewMode,
   liveCamera,
+  loadSyntheticNested,
   loadSyntheticProject,
+  openDepthOptions,
   projectStats,
   returnToViewMode,
   selectedVertexIds,
@@ -102,15 +108,20 @@ test.describe('B114: 「選択」の動き', () => {
       await expect.poll(async () => (await vertexHandlePositions(page)).length).toBe(0);
 
       const before = await projectStats(page);
-      // 隅（頂点の上）と、上の辺の中点（頂点の足し口があった所）を順に押す。
+      // 隅（頂点の上）と、上の辺の中点（頂点の足し口があった所）を順に押す。辺に頂点が足されるのは
+      // その面を選んでいるときなので、面を選び直してから押す。
       const [ax, ay] = face.corners[0]!;
       const [bx, by] = face.corners[1]!;
       await page.mouse.click(ax, ay);
       await expect(page.getByTestId('vertex-candidates')).toHaveCount(0);
       await expect(page.getByTestId('app-active-vertex')).toHaveText('');
+
+      await page.mouse.click(face.cx, face.cy);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(face.faceId);
       await page.mouse.click((ax + bx) / 2, (ay + by) / 2);
       await expect(page.getByTestId('app-active-vertex')).toHaveText('');
       expect(await projectStats(page)).toEqual(before);
+      expect((await committedVertices(page, face.faceId)).size).toBe(4);
     } finally {
       await app.close();
     }
@@ -238,6 +249,311 @@ test.describe('B114: 「選択」の動き', () => {
       await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
       await expect(page.getByTestId('vertex-candidates')).toHaveCount(0);
       await expect(page.getByTestId('app-active-vertex')).toHaveText('');
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+/**
+ * 「選択」へ持ち替えたあと、見えない頂点が残っていないことを見る。残っていると Delete が頂点を消す
+ * 板を出し、Escape に頂点を外すだけの段が余分に残る（B114 の検証で見つけた形）。
+ */
+async function expectNoHiddenVertexOnSelectTool(page: Page, faceId: string): Promise<void> {
+  await page.getByTestId('tool-edit.select').click();
+  await expect(page.getByTestId('tool-edit.select')).toHaveAttribute('aria-pressed', 'true');
+  expect(await selectedVertexIds(page)).toEqual([]);
+  await expect(page.getByTestId('app-active-vertex')).toHaveText('');
+  await expect.poll(async () => (await vertexHandlePositions(page)).length).toBe(0);
+  await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+
+  const before = await projectStats(page);
+  await page.keyboard.press('Delete');
+  await expect(page.getByTestId('delete-impact')).toBeVisible();
+  await expect(page.getByTestId('vertex-delete-impact')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('delete-impact')).toHaveCount(0);
+  expect(await projectStats(page)).toEqual(before);
+
+  // Escape の 1 回で地物の選択が外れる（頂点を外すだけの段が無い）。
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('app-active-feature')).toHaveText('');
+}
+
+test.describe('B114 の検証: 選択を持ったまま道具を替える経路でも、見えない頂点が残らない', () => {
+  /** 左の面の隅を「頂点」で押した状態を作る（右の面は「所属」の持ち替え先）。 */
+  async function twoFacesWithGrabbedCorner(page: Page): Promise<{
+    readonly faceId: string;
+    readonly corner: readonly [number, number];
+  }> {
+    await leaveViewMode(page);
+    const box = (await page.getByTestId('map-input-layer').boundingBox())!;
+    const cx = box.x + box.width * 0.3;
+    const cy = box.y + box.height * 0.5;
+    const faceId = await commitSquareFace(page, cx, cy, 80);
+    await commitSquareFace(page, besideSquareX(cx, 80, 80, 20), cy, 80);
+    await armVertexTool(page);
+    await page.mouse.click(cx, cy);
+    await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+    const corner = [cx - 80, cy - 80] as const;
+    await page.mouse.click(corner[0], corner[1]);
+    expect(await selectedVertexIds(page)).toHaveLength(1);
+    await expect.poll(async () => (await vertexHandlePositions(page)).length).toBe(4);
+    return { faceId, corner };
+  }
+
+  test('素性欄の親のボタンから所属の板を開き、Escape で閉じて「選択」へ', async () => {
+    const { app, page } = await launchApp();
+    try {
+      const { faceId } = await twoFacesWithGrabbedCorner(page);
+      await page.getByTestId('sidebar-tab-properties').click();
+      await page.getByTestId('parent-pick').click();
+      await expect(page.getByTestId('tool-edit.reparent')).toHaveAttribute('aria-pressed', 'true');
+      await page.keyboard.press('Escape');
+      await expectNoHiddenVertexOnSelectTool(page, faceId);
+    } finally {
+      await app.close();
+    }
+  });
+
+  for (const [kind, tool] of [
+    ['split', 'tool-edit.knife'],
+    ['changeAffiliation', 'tool-edit.reparent'],
+  ] as const) {
+    test(`頂点の右クリックの「${kind}」から「選択」へ`, async () => {
+      const { app, page } = await launchApp();
+      try {
+        const { faceId, corner } = await twoFacesWithGrabbedCorner(page);
+        await page.mouse.click(corner[0], corner[1], { button: 'right' });
+        await page.getByTestId('context-menu').locator(`[data-item-kind="${kind}"]`).click();
+        await expect(page.getByTestId(tool)).toHaveAttribute('aria-pressed', 'true');
+        // 道具は頂点の選択を読まない。対象の地物は残っていて、道具の働きは変わらない。
+        await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+        await expectNoHiddenVertexOnSelectTool(page, faceId);
+      } finally {
+        await app.close();
+      }
+    });
+  }
+
+  test('頂点の右クリックの「所属をまとめて変える」から「選択」へ。印は残る', async () => {
+    const { app, page } = await launchApp();
+    try {
+      const { faceId, corner } = await twoFacesWithGrabbedCorner(page);
+      await page.getByTestId('sidebar-tab-list').click();
+      await page.getByTestId(`ledger-mark-${faceId}`).check();
+      expect(await selectedVertexIds(page)).toHaveLength(1);
+      await page.mouse.click(corner[0], corner[1], { button: 'right' });
+      await page.getByTestId('context-menu').locator('[data-item-kind="reparentMarked"]').click();
+      await expect(page.getByTestId('tool-edit.reparent')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByTestId('ledger-marked-count')).toBeVisible();
+      await page.getByTestId('tool-edit.select').click();
+      expect(await selectedVertexIds(page)).toEqual([]);
+      await expect(page.getByTestId('app-active-vertex')).toHaveText('');
+      await expect(page.getByTestId('ledger-marked-count')).toBeVisible();
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('B114 の検証: 押している最中の入力', () => {
+  test('何もないところを押したまま Delete で板が開くと、離しても板の裏の選択は外れない', async () => {
+    const { app, page } = await launchApp();
+    try {
+      const face = await commitOneFace(page);
+      await page.getByTestId('tool-edit.select').click();
+      await page.mouse.click(face.cx, face.cy);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(face.faceId);
+
+      const box = (await page.getByTestId('map-input-layer').boundingBox())!;
+      await page.mouse.move(box.x + 20, box.y + 20);
+      await page.mouse.down();
+      await page.keyboard.press('Delete');
+      await expect(page.getByTestId('delete-impact')).toBeVisible();
+      await page.mouse.up();
+      await expect(page.getByTestId('app-active-feature')).toHaveText(face.faceId);
+
+      // 板を閉じても選択は残り、次の押下は素直に動く。
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('delete-impact')).toHaveCount(0);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(face.faceId);
+      await page.mouse.click(box.x + 20, box.y + 20);
+      await expect(page.getByTestId('app-active-feature')).toHaveText('');
+    } finally {
+      await app.close();
+    }
+  });
+
+  /** 押す → 動かす → ホイール → 動かす。ホイールの倍率が戻らないことを見る。 */
+  async function wheelWhilePanning(page: Page): Promise<void> {
+    const box = (await page.getByTestId('map-input-layer').boundingBox())!;
+    const from = { x: box.x + 20, y: box.y + 20 };
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x + 40, from.y + 30, { steps: 3 });
+    const beforeWheel = await liveCamera(page);
+    await page.mouse.wheel(0, -240);
+    await expect.poll(async () => (await liveCamera(page)).zoom).toBeGreaterThan(beforeWheel.zoom);
+    const afterWheel = await liveCamera(page);
+    await page.mouse.move(from.x + 80, from.y + 30, { steps: 3 });
+    const moved = await liveCamera(page);
+    expect(moved.zoom).toBe(afterWheel.zoom);
+    // 指を右へ 40px 動かした分だけ、ホイールのあとの倍率で中心が動く。
+    expect(moved.centerLon).toBeCloseTo(afterWheel.centerLon - 40 / afterWheel.zoom, 3);
+    await page.mouse.up();
+    expect((await liveCamera(page)).zoom).toBe(afterWheel.zoom);
+  }
+
+  test('「選択」で地図を動かしている最中のホイールが、次の移動で元の倍率へ戻らない', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await commitOneFace(page);
+      await page.getByTestId('tool-edit.select').click();
+      await wheelWhilePanning(page);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('読むだけで地図を動かしている最中のホイールも同じ', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await commitOneFace(page);
+      await returnToViewMode(page);
+      await wheelWhilePanning(page);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('B114 の検証: 「選択」で選べるもの', () => {
+  test('まとめ役の子（合成データ）: 深さ 0 ではまとめ役、深さを上げると子が選べ、頂点には当たらない', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await loadSyntheticNested(page, 6, [1000, 1200]);
+      await jumpToYear(page, 1000);
+      await leaveViewMode(page);
+      await page.getByTestId('tool-edit.select').click();
+
+      const childId = 'syn-nest-child-2';
+      const vertices = [...(await committedVertices(page, childId)).values()];
+      expect(vertices).toHaveLength(4);
+      const center = {
+        lon: vertices.reduce((a, p) => a + p.lon, 0) / 4,
+        lat: vertices.reduce((a, p) => a + p.lat, 0) / 4,
+      };
+
+      const at = await worldToClient(page, center);
+      await page.mouse.click(at.x, at.y);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(SYNTHETIC_NEST_PARENT_ID);
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('app-active-feature')).toHaveText('');
+
+      await openDepthOptions(page);
+      await page.getByTestId('global-depth-slider').fill('1');
+      await expect(page.getByTestId('global-depth-readout')).toContainText('1');
+      await page.keyboard.press('Escape');
+      const atExpanded = await worldToClient(page, center);
+      await page.mouse.click(atExpanded.x, atExpanded.y);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(childId);
+      await expect(page.getByTestId('app-active-vertex')).toHaveText('');
+      await expect(page.getByTestId('vertex-candidates')).toHaveCount(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('穴の中の飛び地: 飛び地は面として選べ、穴は何もないところとして扱う', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await leaveViewMode(page);
+      const box = (await page.getByTestId('map-input-layer').boundingBox())!;
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+      const half = 160;
+      const faceId = await commitSquareFace(page, cx, cy, half);
+      const ringOn = async (tx: number, ty: number, r: number): Promise<void> => {
+        await page.getByTestId('tool-edit.ring').click();
+        await expect(page.getByTestId('ring-edit-tool')).toBeVisible();
+        await page.mouse.click(tx, ty);
+        await expect(page.getByTestId('ring-edit-tool')).toHaveAttribute('data-flow', 'drafting');
+        for (const [x, y] of [
+          [cx - r, cy - r],
+          [cx + r, cy - r],
+          [cx + r, cy + r],
+          [cx - r, cy + r],
+        ] as const) {
+          await page.mouse.click(x, y);
+        }
+        await page.getByTestId('ring-edit-confirm').click();
+        await expect(page.getByTestId('conflict-dialog')).toHaveCount(0);
+        await page.getByTestId('tool-edit.select').click();
+      };
+      // 面の中へ大きな穴、その穴の中へ小さな飛び地（対象は穴の外の面の部分を押して選ぶ）。
+      await ringOn(cx - half + 20, cy, 100);
+      await expect.poll(async () => (await committedVertices(page, faceId)).size).toBe(8);
+      await ringOn(cx - half + 20, cy, 30);
+      await expect.poll(async () => (await committedVertices(page, faceId)).size).toBe(12);
+
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('app-active-feature')).toHaveText('');
+      // 飛び地の真ん中。
+      await page.mouse.click(cx, cy);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+      await expect(page.getByTestId('app-active-vertex')).toHaveText('');
+      // 飛び地と穴のふちのあいだは、面の外。
+      await page.mouse.click(cx + 65, cy);
+      await expect(page.getByTestId('app-active-feature')).toHaveText('');
+      // 飛び地の内側の隅の近く（「頂点」なら頂点に当たる距離）でも、頂点は選ばれず面が選ばれる。
+      await page.mouse.click(cx + 26, cy + 26);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+      await expect(page.getByTestId('app-active-vertex')).toHaveText('');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('-360 の側の写しも +360 の側の写しも選べる', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      const face = await commitOneFace(page);
+      await page.getByTestId('tool-edit.select').click();
+      const vertices = [...(await committedVertices(page, face.faceId)).values()];
+      const center = {
+        lon: vertices.reduce((a, p) => a + p.lon, 0) / vertices.length,
+        lat: vertices.reduce((a, p) => a + p.lat, 0) / vertices.length,
+      };
+      const box = (await page.getByTestId('map-input-layer').boundingBox())!;
+
+      for (const turn of [-360, 360]) {
+        // 写しが地図に入るまで、上の端（面に当たらない所）から地図を動かす（「選択」の左ドラッグ）。
+        const margin = box.width * 0.25;
+        for (let i = 0; i < 12; i += 1) {
+          const now = await worldToClient(page, { lon: center.lon + turn, lat: center.lat });
+          if (now.x > box.x + margin && now.x < box.x + box.width - margin) break;
+          const dx = now.x < box.x + margin ? 200 : -200;
+          const from = { x: box.x + box.width / 2, y: box.y + 8 };
+          await page.mouse.move(from.x, from.y);
+          await page.mouse.down();
+          await page.mouse.move(from.x + dx, from.y, { steps: 3 });
+          await page.mouse.up();
+        }
+        const at = await worldToClient(page, { lon: center.lon + turn, lat: center.lat });
+        expect(at.x).toBeGreaterThan(box.x + margin);
+        expect(at.x).toBeLessThan(box.x + box.width - margin);
+        // 地図を動かしたあと、本物の位置が地図の外（写しを押している）ことも確かめる。
+        const real = await worldToClient(page, center);
+        expect(Math.abs(real.x - at.x)).toBeGreaterThan(100);
+        await page.keyboard.press('Escape');
+        await expect(page.getByTestId('app-active-feature')).toHaveText('');
+        await page.mouse.click(at.x, at.y);
+        await expect(page.getByTestId('app-active-feature')).toHaveText(face.faceId);
+        await expect(page.getByTestId('app-active-vertex')).toHaveText('');
+      }
     } finally {
       await app.close();
     }

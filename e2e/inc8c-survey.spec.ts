@@ -373,6 +373,16 @@ test.describe('増分 8C の手直し — 線の上の右クリックの相手�
       await page.keyboard.press('Escape');
       // 線は消えていない（押した相手は頂点）。
       await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+
+      // 「選択」では同じ場所に頂点の当たりが無いので、線が相手になる（B114）。
+      await page.getByTestId('tool-edit.select').click();
+      await page.mouse.click(vx, vy, { button: 'right' });
+      await expect(menu).toBeVisible();
+      await expect(surveyItems(page).first()).toBeVisible();
+      await expect(menu.locator('[data-item-kind="deleteVertex"]')).toHaveCount(0);
+      await expect(page.getByTestId('app-active-vertex')).toHaveText('');
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
     } finally {
       await app.close();
     }

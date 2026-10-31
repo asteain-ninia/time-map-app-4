@@ -123,6 +123,11 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
 
       // --- 3. 右クリック「この地物を非表示」: cull + un-selectable, then 全て再表示 で復活. ---
       await enterEditMode(page);
+      // 隠す前は「頂点」で印が出る（下の「隠すと印が出ない」の比較の相手）。
+      await page.mouse.click(cx, cy);
+      await page.getByTestId('tool-edit.vertex').click();
+      await expect.poll(async () => readVertexHandleCount(page)).toBeGreaterThan(0);
+      await page.getByTestId('tool-edit.select').click();
       await page.mouse.click(cx, cy, { button: 'right' });
       const menu = page.getByTestId('context-menu');
       await expect(menu).toBeVisible();
@@ -155,7 +160,11 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
       // ただし **掴めるハンドルは出ない** ―― 隠れているものは道具の取得から外れる
       // （`isToolTargetVisible`）。「見えているのに掴めない」の裏返しで、隠れているものは
       // 見るために描いているだけで、触るために描いているのではない。
+      // 印を出すのは「頂点」の道具なので、構えて確かめる（B114。「選択」では常に 0）。
+      await page.getByTestId('tool-edit.vertex').click();
+      await expect(page.getByTestId('tool-edit.vertex')).toHaveAttribute('aria-pressed', 'true');
       await expect.poll(async () => readVertexHandleCount(page)).toBe(0);
+      await page.getByTestId('tool-edit.select').click();
 
       // 選択を外すと、そこで初めて描画から落ちる。
       await page.mouse.click(cx + 300, cy); // 空き地を押す → 選択が外れる

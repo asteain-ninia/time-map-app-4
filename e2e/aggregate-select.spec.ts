@@ -26,6 +26,7 @@ import { test, expect } from '@playwright/test';
 import {
   addInputLayerBox,
   armAddAreaTool,
+  armVertexTool,
   commitFace,
   drawFace,
   enterEditMode,
@@ -94,6 +95,14 @@ test.describe('Codex #2 — 集約表示中のクリックは集約地物を選�
       // 2) Click just INSIDE a CHILD corner vertex (within the grab radius of it). The
       //    hidden child vertex must NOT be grabbed; the cursor sits inside the aggregate
       //    body, so the selection stays the PARENT body and no vertex is selected.
+      //    「選択」は頂点に当たらないので、掴める道具を構えて確かめる（B114）。
+      await armVertexTool(page);
+      await page.mouse.click(ccx - 58, ccy - 58);
+      await expect(page.getByTestId('app-active-vertex')).toHaveText('');
+      await expect(activeFeature).toHaveText(parentId);
+
+      // 3) 「選択」でも同じ場所はまとめ役の本体に当たる。
+      await page.getByTestId('tool-edit.select').click();
       await page.mouse.click(ccx - 58, ccy - 58);
       await expect(page.getByTestId('app-active-vertex')).toHaveText('');
       await expect(activeFeature).toHaveText(parentId);
