@@ -18,7 +18,9 @@ import { createVertex, createVertexStore } from '../../domain/vertex';
 import {
   KEEP_LEAF_WITH_CHILDREN_NOTE,
   REPAIR_OPTION,
+  applyRepair,
   checkConsistency,
+  repairOptionsInContext,
   type DomainProject,
   type FeatureHistory,
 } from '../../domain/persistence/index';
@@ -162,7 +164,7 @@ function heavy3Project(): DomainProject {
 }
 
 describe('勧められるまま押して記録が消えない（ガード）', () => {
-  it('ガード B: 重 3 の形では、子を持つ末端の行の既定が「そのまま残す」で理由が付き、開いても何も変わらない', () => {
+  it('B93: 解ける形（重 3）は既定が「分け残しを作る」で理由を出さない。勧められるまま押して 1 枚で解け、誰も消えない', () => {
     const project = heavy3Project();
     const report = checkConsistency(project, CAL);
     const rows = buildRepairRows(report, { project, calendar: CAL });
@@ -171,19 +173,74 @@ describe('勧められるまま押して記録が消えない（ガード）', (
     );
     expect(lwc).toBeDefined();
     expect(lwc!.options.map((o) => o.id)).toEqual([
+      REPAIR_OPTION.MaterializeDirectDomain,
+      REPAIR_OPTION.KeepLeafWithChildren,
+      REPAIR_OPTION.DropShapeRoleFeature,
+    ]);
+    expect(lwc!.note).toBeUndefined();
+    const result = applyChosenRepairs(project, rows, defaultRepairChoices(rows), CAL);
+    expect(result.outcome).toBe(REPAIR_OUTCOME.Applied);
+    if (result.outcome !== REPAIR_OUTCOME.Applied) return;
+    expect(checkConsistency(result.project, CAL).inconsistencies).toEqual([]);
+    // 元の地物は 1 つも消えない（隣 Q も、500 年の親の記録も）。分け残しが 1 つ増えるだけ。
+    const ids = new Set(result.project.histories.map((h) => String(h.featureId)));
+    for (const id of ['P', 'Q', 'C']) expect(ids.has(id)).toBe(true);
+    expect(result.project.histories).toHaveLength(project.histories.length + 1);
+  });
+
+  it('B93: 修復が何も変えられない形だけ、既定が「そのまま残す」で理由が付く。除外は既定にならない', () => {
+    const healthy: DomainProject = {
+      ...heavy3Project(),
+      histories: [leafHistory('P', 0, 100, 0), leafHistory('C', 10, 30, 0, asFeatureId('P'))],
+    };
+    const inc = checkConsistency(healthy, CAL).inconsistencies.find(
+      (i) => i.kind === 'shape-preservation' && i.detail === 'leaf-with-children',
+    )!;
+    // 親の頂点の体を 1 つ落とす: 面積が解決できないので、修復は入力をそのまま返す。
+    const parent = healthy.histories[0]!;
+    const entry = parent.series.entries[0]!;
+    const snapshot = entry.anchor.snapshot;
+    const broken: DomainProject = {
+      ...healthy,
+      histories: [
+        {
+          featureId: parent.featureId,
+          series: {
+            entries: [
+              {
+                ...entry,
+                anchor: {
+                  ...entry.anchor,
+                  snapshot: createAnchorSnapshot(
+                    snapshot.features,
+                    createVertexStore(
+                      [...snapshot.vertices.byId.values()].filter((v) => v.id !== asVertexId('P-0')),
+                    ),
+                  ),
+                },
+              },
+            ],
+          },
+        },
+        healthy.histories[1]!,
+      ],
+    };
+    expect(applyRepair(broken, inc, REPAIR_OPTION.MaterializeDirectDomain, CAL)).toBe(broken);
+
+    const inContext = repairOptionsInContext(inc, broken, CAL);
+    expect(inContext.options.map((o) => o.id)).toEqual([
       REPAIR_OPTION.KeepLeafWithChildren,
       REPAIR_OPTION.MaterializeDirectDomain,
       REPAIR_OPTION.DropShapeRoleFeature,
     ]);
-    expect(lwc!.note).toBe(KEEP_LEAF_WITH_CHILDREN_NOTE);
-    // 1 枚目を勧められるまま押す → 開ける、記録は何も変わらない（隣 Q も、500 年の親の 8,000 も）。
-    const result = applyChosenRepairs(project, rows, defaultRepairChoices(rows), CAL);
-    expect(result.outcome).toBe(REPAIR_OUTCOME.Applied);
-    if (result.outcome !== REPAIR_OUTCOME.Applied) return;
-    expect(result.project).toBe(project);
+    expect(inContext.note).toBe(KEEP_LEAF_WITH_CHILDREN_NOTE);
+    // 解ける側でも、既定は記録を消す選択肢にならない。
+    expect(repairOptionsInContext(inc, healthy, CAL).options[0]!.id).toBe(
+      REPAIR_OPTION.MaterializeDirectDomain,
+    );
   });
 
-  it('同じ年に描いた子（居続ける）なら、ガード B は掛からず既定は「分け残しを作る」のまま', () => {
+  it('同じ年に描いた子（居続ける）も、既定は「分け残しを作る」のまま', () => {
     const p = rect('P', 0, 0, 100, 100, ['p0', 'p1', 'p2', 'p3']);
     const c = rect('C', 10, 10, 30, 30, ['c0', 'c1', 'c2', 'c3'], 'P');
     const project: DomainProject = {

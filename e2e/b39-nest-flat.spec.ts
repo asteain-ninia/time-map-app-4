@@ -11,7 +11,7 @@
 //     始まりの年にしか子を探さず、解けずに読み込みが止まった）。
 //   - 子が途中で終わる形は、勧められる既定が「そのまま残す」（理由の 1 行つき）で、何も変えずに
 //     開く。「直轄領を生成」を選べば、子の居た年だけ平らになり、子の居なくなった年から親は元の形の
-//     まま（2026-10-04、B39 の戻しの再検証の守り B と幾何の直し）。
+//     まま（2026-10-04、B39 の戻しの再検証の幾何の直しと、2026-11-01 の B93）。
 //
 // 単体（`src/domain/persistence/repair-leaf-with-children-later.test.ts`）はドメインの修復を、
 // ここは実アプリの描く → 保存 → 開き直す → 修復の経路を見る。
@@ -202,11 +202,11 @@ test.describe('B39 前の期待 — 面の中に子を描くと、開き直し�
     }
   });
 
-  // 2026-10-04（B39 の戻しの再検証）: 子が途中で終わる形は、勧められる修復 1 回で解けるとは限らない
-  // （守り B: 分け残しを作っても解けきらないかもしれない形は、既定を「そのまま残す」にして理由を出す）。
-  // ここでは ① 勧められるまま（そのまま残す）で何も変えずに開くこと、② 2 番目の「直轄領を生成」を
-  // 選べば幾何の直しで解けること（子の居なくなった年から親は元の形のまま）を見る。
-  test('子が途中で終わる形 → 開き直し: 既定は「そのまま残す」で何も変えずに開き、「直轄領を生成」を選べば解ける', async () => {
+  // 子が途中で終わる形も、勧められる修復（直轄領を生成）1 回で解ける。既定を「そのまま残す」に
+  // するのは修復が何も変えられない形だけで、この形には掛からない（B93）。ここでは ① 既定と理由の
+  // 行が出ないこと、「そのまま残す」を選べば何も変えずに開くこと、② 勧められるまま押せば解けること
+  // （子の居なくなった年から親は元の形のまま）を見る。
+  test('子が途中で終わる形 → 開き直し: 既定は「直轄領を生成」で 1 回で解ける。「そのまま残す」を選べば何も変えずに開く', async () => {
     test.setTimeout(240_000);
     const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-b39e-'));
     const target = join(workDir, 'b39e.gimoza');
@@ -230,12 +230,14 @@ test.describe('B39 前の期待 — 面の中に子を描くと、開き直し�
       await page.keyboard.press('Control+s');
       await expect(page.getByTestId('statusbar-result')).toContainText('保存しました');
 
-      // ① 勧められるまま: 既定は「そのまま残す」で、理由の 1 行が出る。何も変えずに開く。
+      // ① 既定は「直轄領を生成」で、「自動では整わない」の行は出ない。「そのまま残す」を選ぶと
+      //    何も変えずに開く。
       const loading = loadProject(page, target);
       const board = page.getByTestId('repair-dialog');
       await expect(board).toBeVisible();
-      await expect(page.getByTestId('repair-note-0')).toContainText('自動では整わない');
-      await expect(page.getByTestId('repair-option-0-keep-leaf-with-children')).toBeChecked();
+      await expect(page.getByTestId('repair-note-0')).toHaveCount(0);
+      await expect(page.getByTestId('repair-option-0-materialize-direct-domain')).toBeChecked();
+      await page.getByTestId('repair-option-0-keep-leaf-with-children').check();
       await page.getByTestId('repair-apply').click();
       expect(await loading).toBe('loaded');
       await expect(page.getByTestId('statusbar-result')).toContainText('そのまま残した');
@@ -244,10 +246,9 @@ test.describe('B39 前の期待 — 面の中に子を描くと、開き直し�
         ['子', '親'].sort(),
       );
 
-      // ② もう一度開き直して「直轄領を生成」を選ぶ → 1 回で解ける（やり直しの板が出ない）。
+      // ② もう一度開き直して勧められるまま押す → 1 回で解ける（やり直しの板が出ない）。
       const loading2 = loadProject(page, target);
       await expect(board).toBeVisible();
-      await page.getByTestId('repair-option-0-materialize-direct-domain').check();
       await page.getByTestId('repair-apply').click();
       await expect(board).toHaveCount(0);
       expect(await loading2).toBe('loaded');

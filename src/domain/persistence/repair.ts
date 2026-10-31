@@ -1302,10 +1302,10 @@ export interface RepairOptionsInContext {
 export const KEEP_LEAF_WITH_CHILDREN_NOTE = PERSISTENCE_MESSAGES.repairKeepLeafWithChildrenNote;
 
 /**
- * 読み込んだプロジェクトを見て選択肢を並べる（2026-10-04、B39 の戻しの再検証のガード B）。
- * 子を持つ末端の行で、分け残しを作る修復では解けきらない形なら、既定（先頭）を「そのまま残す」
- * にし、「分け残しを作る」を 2 番目に置く。判定は修復を当てずにできる
- * （{@link leafWithChildrenMayNotSettle}）。それ以外は {@link repairOptionsFor} のまま。純粋。
+ * 読み込んだプロジェクトを見て選択肢を並べる（2026-10-04 のガード B。判定は 2026-11-01、B93）。
+ * 子を持つ末端の行で、分け残しを作る修復が何も変えられない形なら、既定（先頭）を「そのまま残す」に
+ * し、「分け残しを作る」を 2 番目に置く。それ以外は {@link repairOptionsFor} のまま。既定が記録を
+ * 消す選択肢になることは無い（除外は常に最後）。純粋。
  */
 export function repairOptionsInContext(
   inc: Inconsistency,
@@ -1318,7 +1318,7 @@ export function repairOptionsInContext(
     inc.kind !== INCONSISTENCY.ShapePreservation ||
     inc.detail !== SHAPE_DETAIL_LEAF_WITH_CHILDREN ||
     targetId === undefined ||
-    !leafWithChildrenMayNotSettle(project, targetId, calendar)
+    !leafWithChildrenCannotSettle(project, inc, calendar)
   ) {
     return { options };
   }
@@ -1331,73 +1331,19 @@ export function repairOptionsInContext(
 }
 
 /**
- * 子を持つ末端 `targetId` が、分け残しを作る修復で解けきらないかもしれない形か（修復を当てずに
- * 判定する）。次のどちらかなら真:
+ * 子を持つ末端の行で、分け残しを作る修復が何も変えられないか（B93）。**修復を実際に当てて、入力と
+ * 同じものが返るかで判定する**。修復は面積が保てない・差分が解けないときに入力をそのまま返すので、
+ * 画面の理由「自動では整わない」と修復の実際の結果が食い違わない。
  *
- *   - 親が、子の現れる年より後・子の居なくなる年より前に錨を持つ（親の記録が子の居る間に変わる）。
- *   - 子が、親の次の錨より前に居なくなる（子の居なくなった年から親の錨が作り替えられない）。
- *
- * どちらも、分け残しが親の後ろの記録の上に居残る・親の土地に穴があく・隣を除外する修復へ
- * 進む形（再検証 3-1・2-1）。純粋。
+ * 以前は修復を当てずに錨の並びの形で推測していて、掛かる形はどれも 1 枚で解け、本当に解けない形には
+ * 掛からなかった（修復の守りの再検証の重 2）。純粋。
  */
-export function leafWithChildrenMayNotSettle(
+export function leafWithChildrenCannotSettle(
   project: DomainProject,
-  targetId: FeatureId,
+  inc: Inconsistency,
   calendar: Calendar,
 ): boolean {
-  const parentStarts: TimePoint[] = [];
-  const pieces = new Map<FeatureId, TimeInterval[]>();
-  for (const history of project.histories) {
-    const entries = history.series.entries;
-    entries.forEach((entry, i) => {
-      const feats = entry.anchor.snapshot.features;
-      if (feats.some((f) => f.id === targetId)) parentStarts.push(entry.start);
-      const next = entries[i + 1];
-      const end =
-        entry.end === null
-          ? (next?.start ?? null)
-          : next !== undefined && compare(next.start, entry.end, calendar) < 0
-            ? next.start
-            : entry.end;
-      for (const f of feats) {
-        if (f.id === targetId || f.parentId !== targetId) continue;
-        const list = pieces.get(f.id) ?? [];
-        list.push({ start: entry.start, end });
-        pieces.set(f.id, list);
-      }
-    });
-  }
-  // 子ごとに、途切れずに続いている区間へつなぐ（錨が割れているだけの所は「居なくなる」ではない）。
-  const childRuns: TimeInterval[] = [];
-  for (const list of pieces.values()) {
-    const sorted = [...list].sort((x, y) => compare(x.start, y.start, calendar));
-    let cur: { start: TimePoint; end: TimePoint | null } | null = null;
-    for (const iv of sorted) {
-      if (cur !== null && cur.end !== null && compare(iv.start, cur.end, calendar) <= 0) {
-        if (iv.end === null || compare(iv.end, cur.end, calendar) > 0) cur.end = iv.end;
-        continue;
-      }
-      if (cur !== null) childRuns.push(cur);
-      cur = { start: iv.start, end: iv.end };
-    }
-    if (cur !== null) childRuns.push(cur);
-  }
-  for (const run of childRuns) {
-    // 親が子の居る間（現れた年より後・居なくなる年より前）に錨を持つ。
-    const inside = parentStarts.some(
-      (s) =>
-        compare(s, run.start, calendar) > 0 && (run.end === null || compare(s, run.end, calendar) < 0),
-    );
-    if (inside) return true;
-    // 子が親の次の錨より前に居なくなる（親の次の錨が無ければ、居なくなること自体）。
-    if (run.end !== null) {
-      const nextParent = parentStarts
-        .filter((s) => compare(s, run.start, calendar) > 0)
-        .sort((a, b) => compare(a, b, calendar))[0];
-      if (nextParent === undefined || compare(run.end, nextParent, calendar) < 0) return true;
-    }
-  }
-  return false;
+  return materializeDirectDomain(project, inc, calendar) === project;
 }
 
 export function applyRepairWithReport(

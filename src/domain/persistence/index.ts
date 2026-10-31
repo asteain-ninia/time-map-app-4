@@ -121,7 +121,7 @@ export {
   type RepairOptionsInContext,
   KEEP_REPAIR_OPTIONS,
   KEEP_LEAF_WITH_CHILDREN_NOTE,
-  leafWithChildrenMayNotSettle,
+  leafWithChildrenCannotSettle,
   applyRepair,
   type RepairApplication,
   applyRepairChecked,
