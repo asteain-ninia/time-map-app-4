@@ -304,7 +304,7 @@ test.describe('BUGHUNT R2 — deeper user-like exploration of the live composite
       }
       await shot(page, 'edit-tools');
 
-      // --- Vertex drag on the 'other' face (move tool) --------------------------
+      // --- 面の移動: 'other' の面を［動かす］で引く -------------------------------
       await page.getByTestId('tool-edit.move').click();
       await page.mouse.click(cx + 160, cy - 10); // select other face
       const beforeSel = await activeFeature(page);

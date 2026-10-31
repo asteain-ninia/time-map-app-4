@@ -162,7 +162,6 @@ test.describe('B113 — 継ぎ目を越えた頂点と面の経度', () => {
     const { app, page } = await launchApp();
     try {
       await bringSeamIntoView(page);
-      // 全体図で押した点が頂点や辺の中点の掴める距離に入らないよう、大きめの面にする。
       const id = await faceAt(page, 150, 176, -15, 15, '面');
       const before = await committedVertices(page, id);
       await selectWithTool(page, { lon: 163, lat: 0 }, id, 'tool-edit.move');

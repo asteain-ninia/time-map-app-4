@@ -601,6 +601,37 @@ export function buildActiveFeatureHandlePrimitives(
 }
 
 /**
+ * 「動かす」の道具で地物を引いている間の下書きだけを描く（裁定 2026-11-01）。「動かす」は頂点の印を
+ * 描かないので {@link buildActiveFeatureHandlePrimitives} を通らない。線で輪郭をなぞるだけなので、
+ * 頂点の印の数を抑える上限（FR-110）は掛けない（理屈は {@link featureHandleParts} の注記と同じ）。
+ * 引いていない・別の地物・隠れているときは空を返す。
+ */
+export function buildFeatureMovePreviewPrimitives(
+  root: DomainProject,
+  time: TimePoint,
+  activeFeature: FeatureId | null,
+  displayControl: DisplayControlInput,
+  session: DragSession | null,
+  filter: FilterState = DEFAULT_FILTER_STATE,
+  previewStyle?: EditPreviewStyle,
+): DrawPrimitive[] {
+  if (activeFeature === null || session === null) return [];
+  if (session.target.tool !== EDIT_TOOL.FeatureMove) return [];
+  if (session.target.featureId !== activeFeature) return [];
+  const resolution = resolveDisplayFor(root, time, displayControl);
+  if (!isFeatureVisibleUnderFilter(resolution, filter, activeFeature)) return [];
+  const committed =
+    resolution.areaFeaturesById.get(activeFeature) ??
+    resolution.features.find((f) => f.id === activeFeature);
+  if (committed === undefined) return [];
+  return buildEditPreviewPrimitives(
+    committed,
+    previewVertexStore(committed, resolution.vertices, session),
+    previewStyle,
+  );
+}
+
+/**
  * The feature that must be drawn as the FR-82 頂点選択コンテキスト地物, or null.
  *
  * Delegates the decision to the domain classifier (`classifyFeatureHighlights` →

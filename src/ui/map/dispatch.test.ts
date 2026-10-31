@@ -148,17 +148,29 @@ describe('drag threshold — shared click/drag judgement (受け入れ基準 4)'
   });
 });
 
-describe('decideDispatch — 「選択」の何もないところからの左（B114）', () => {
-  it('編集中の左で、何もないところなら地図の移動、地物の上なら今までどおり選択へ', () => {
-    const input = { mode: EDIT_MODE.Edit, button: POINTER_BUTTON.Left, emptyPressPans: true };
+describe('decideDispatch — 編集中の左が地図を動かす条件（B114 / 裁定 2026-11-01）', () => {
+  const EDIT_LEFT = { mode: EDIT_MODE.Edit, button: POINTER_BUTTON.Left };
+
+  it('「選択」: 何もないところからも地物の上からも地図の移動', () => {
+    const input = { ...EDIT_LEFT, leftPan: { fromEmpty: true, fromFeature: true } };
+    expect(decideDispatch({ ...input, hit: EMPTY_HIT })).toBe(DISPATCH_TARGET.Pan);
+    expect(decideDispatch({ ...input, hit: featureBodyHit(f) })).toBe(DISPATCH_TARGET.Pan);
+  });
+
+  it('「動かす」: 何もないところからは地図の移動、地物の上からは選択と掴みの口へ', () => {
+    const input = { ...EDIT_LEFT, leftPan: { fromEmpty: true, fromFeature: false } };
     expect(decideDispatch({ ...input, hit: EMPTY_HIT })).toBe(DISPATCH_TARGET.Pan);
     expect(decideDispatch({ ...input, hit: featureBodyHit(f) })).toBe(DISPATCH_TARGET.SelectEdit);
   });
 
-  it('省略・偽なら何もないところも選択へ（「頂点」「動かす」の囲む操作）', () => {
-    const input = { mode: EDIT_MODE.Edit, button: POINTER_BUTTON.Left, hit: EMPTY_HIT };
-    expect(decideDispatch(input)).toBe(DISPATCH_TARGET.SelectEdit);
-    expect(decideDispatch({ ...input, emptyPressPans: false })).toBe(DISPATCH_TARGET.SelectEdit);
+  it('省略・どちらも偽なら、どこからでも選択と掴みの口へ（「頂点」の囲む操作）', () => {
+    for (const hit of [EMPTY_HIT, featureBodyHit(f)]) {
+      const input = { ...EDIT_LEFT, hit };
+      expect(decideDispatch(input)).toBe(DISPATCH_TARGET.SelectEdit);
+      expect(decideDispatch({ ...input, leftPan: { fromEmpty: false, fromFeature: false } })).toBe(
+        DISPATCH_TARGET.SelectEdit,
+      );
+    }
   });
 
   it('編集中の左以外の行き先は、この項目で変わらない（全組み合わせ）', () => {
@@ -166,7 +178,8 @@ describe('decideDispatch — 「選択」の何もないところからの左（
       for (const button of ALL_BUTTONS) {
         for (const hit of ALL_HITS) {
           if (mode === EDIT_MODE.Edit && button === POINTER_BUTTON.Left) continue;
-          expect(decideDispatch({ mode, button, hit, emptyPressPans: true })).toBe(
+          const leftPan = { fromEmpty: true, fromFeature: true };
+          expect(decideDispatch({ mode, button, hit, leftPan })).toBe(
             decideDispatch({ mode, button, hit }),
           );
         }

@@ -45,6 +45,7 @@ import {
   buildActiveFeatureHandlePrimitives,
   buildContextOutlinePrimitives,
   buildEditPreviewPrimitives,
+  buildFeatureMovePreviewPrimitives,
 } from './active-feature-handles';
 import { clearDisplayResolutionCache } from './display-resolution-cache';
 import { clearFilteredDisplayCache } from './filtered-display';
@@ -413,6 +414,41 @@ function maxAdjacentGap(points: readonly { lon: number; lat: number }[]): number
   }
   return max;
 }
+
+describe('buildFeatureMovePreviewPrimitives（「動かす」の下書き。裁定 2026-11-01）', () => {
+  const ID = asFeatureId('leaf-1');
+  const moveSession = (): DragSession =>
+    updateDrag(beginDrag({ tool: EDIT_TOOL.FeatureMove, featureId: ID }, { lon: 1, lat: 1 }), {
+      preview: { lon: 6, lat: 3 },
+    });
+
+  it('輪郭だけを引いた分ずらして描き、頂点の印は 1 つも出さない', () => {
+    const { root } = leafProject();
+    const prims = buildFeatureMovePreviewPrimitives(root, timePointYear(0), ID, DISPLAY, moveSession());
+    expect(handles(prims)).toEqual([]);
+    const points = lines(prims).flatMap((l) => l.points);
+    // (0,0) の角が (+5,+2) へ。元の位置は残らない。
+    expect(points.some((p) => p.lon === 5 && p.lat === 2)).toBe(true);
+    expect(points.some((p) => p.lon === 0 && p.lat === 0)).toBe(false);
+  });
+
+  it('引いていない・頂点の掴み・別の地物・隠れているときは何も描かない', () => {
+    const { root } = leafProject();
+    const t = timePointYear(0);
+    expect(buildFeatureMovePreviewPrimitives(root, t, ID, DISPLAY, null)).toEqual([]);
+    expect(buildFeatureMovePreviewPrimitives(root, t, null, DISPLAY, moveSession())).toEqual([]);
+    const vertexDrag = beginDrag(
+      { tool: EDIT_TOOL.VertexMove, featureId: ID, vertexId: asVertexId('leaf-1-0') },
+      { lon: 0, lat: 0 },
+    );
+    expect(buildFeatureMovePreviewPrimitives(root, t, ID, DISPLAY, vertexDrag)).toEqual([]);
+    expect(
+      buildFeatureMovePreviewPrimitives(root, t, asFeatureId('other'), DISPLAY, moveSession()),
+    ).toEqual([]);
+    const hidden = setIndividualHidden(DEFAULT_FILTER_STATE, ID, true);
+    expect(buildFeatureMovePreviewPrimitives(root, t, ID, DISPLAY, moveSession(), hidden)).toEqual([]);
+  });
+});
 
 describe('buildEditPreviewPrimitives (Fix C #4 — seam-crossing preview outline unwrap)', () => {
   it('unwraps a seam-crossing LINE preview to a continuous run [179,181] (parity with committed)', () => {

@@ -11,7 +11,10 @@ import { createAddHostPorts, type AddHostPorts } from '../../add/host-ports';
 import { isFilterInert } from '../../discovery/index';
 import { toolShowsVertexHandles } from '../../shell/tools';
 import { EDIT_MODE } from '../../state/session';
-import { buildActiveFeatureHandlePrimitives } from '../active-feature-handles';
+import {
+  buildActiveFeatureHandlePrimitives,
+  buildFeatureMovePreviewPrimitives,
+} from '../active-feature-handles';
 import { buildCommittedFeatures } from '../committed-features';
 import { resolveDisplayFor } from '../display-resolution-cache';
 import {
@@ -198,7 +201,7 @@ export function createMountRender(options: MountRenderOptions): MountRender {
       // （設計書 §C.3 / 実装計画 §5 の 5b）。モードの 3 ボタンが消えて `mode` が
       // 道具からの導出値になったので、`mode === Edit` は「面・線・点 以外の道具を
       // 構えている」とほぼ同義になり、条件として何も言わなくなる。**掴めるのは
-      // 「頂点」「動かす」の 2 つだけ**である（「選択」は地物だけを選ぶ。B114）。
+      // 「頂点」だけ**である（「選択」は地物だけを選ぶ B114。「動かす」は地物だけを動かす 2026-11-01）。
       //
       // 読むだけ（鍵が閉じている）ときはハンドルを出さない ―― 選べる・読めるが
       // 直せない（裁定 N-4）ので、掴める印を出すのは嘘になる。
@@ -208,7 +211,18 @@ export function createMountRender(options: MountRenderOptions): MountRender {
       // draw vertex/edge handles on that target during those tools (cosmetic bleed under
       // the tool overlay). **その除外はいま `toolShowsVertexHandles` の中にある** ――
       // 同じ判断を 2 か所に書くと、道具が増えたときに片方だけ直して食い違う（教訓 5.44）。
-      if (!toolShowsVertexHandles(s.activeTool)) return [];
+      //
+      // 「動かす」は印を描かないが、引いている間の下書き（輪郭）はここで描く。
+      if (!toolShowsVertexHandles(s.activeTool)) {
+        return buildFeatureMovePreviewPrimitives(
+          s.domain,
+          s.currentTime,
+          s.activeFeature,
+          s.displayControl,
+          transients.liveEditSession,
+          s.filter,
+        );
+      }
       // HB3-4: pass the LIVE drag session so the active feature's handles + a preview
       // outline are drawn at the PREVIEW position (follows the cursor) during a drag,
       // and at the committed position otherwise. The builder ignores a session for a
@@ -275,7 +289,7 @@ export function createMountRender(options: MountRenderOptions): MountRender {
       const s = store.getState();
       return (
         s.mode !== EDIT_MODE.View &&
-        toolShowsVertexHandles(s.activeTool) &&
+        // 掴みは「頂点」「動かす」でしか始まらず、道具を替えると捨てられるので、道具は見ない。
         transients.liveEditSession !== null &&
         transients.liveEditSession.target.featureId === s.activeFeature
       );

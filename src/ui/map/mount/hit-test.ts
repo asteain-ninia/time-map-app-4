@@ -284,7 +284,7 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
           activeFeature: s.selection.activeFeature,
           // **描く条件と掴める条件を同じ入力で決める**（増分 5 の手直し A6）。
           // ハンドルを描くのは `mount/render.ts` の `editHandles` で、条件は
-          // 「鍵が開いている」かつ「掴める道具（頂点・動かす）」である。
+          // 「鍵が開いている」かつ「掴める道具（頂点）」である。
           // 同じ 2 つをここへ渡す ―― 渡さないと、読むだけのときと「選択」のときに **見えていない
           // 頂点が最優先で掴まれ**、`app-active-vertex` が立って Escape の階段が
           // 1 段増える（GPT #2 / バグ狩り #15）。判定を 2 通りに書かないよう、
@@ -314,8 +314,8 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
   const rectangleResolver: RectangleResolver = {
     verticesInRectangle: (a, b) => {
       const s = store.getState();
-      // 描いていない頂点は囲めない（B114。クリックの `handlesDrawn` と同じ入力）。「選択」の空いた
-      // 所からのドラッグは地図の移動へ行くのでここへ来ないが、経路が無いことに頼らない。
+      // 描いていない頂点は囲めない（B114。クリックの `handlesDrawn` と同じ入力）。「選択」「動かす」の
+      // 空いた所からのドラッグは地図の移動へ行くのでここへ来ないが、経路が無いことに頼らない。
       if (!handlesDrawnFor(s)) return null;
       // wrap: enumerate the SAME ±360° turns the renderer painted (wrapTurnsForLonSpan)
       // so a vertex shown only as a wrap replica on a panned view is rubber-band

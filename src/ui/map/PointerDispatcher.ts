@@ -29,6 +29,7 @@ import {
   DISPATCH_TARGET,
   POINTER_BUTTON,
   type DispatchTarget,
+  type LeftPanRule,
   type PointerButton,
 } from './dispatch';
 import { panCameraTo, type PanReference } from './pan';
@@ -119,10 +120,10 @@ export interface PointerDispatcherOptions {
   readonly add: AddPort;
   readonly contextMenu: ContextMenuPort;
   /**
-   * 何もないところからの左ドラッグが地図を動かすか（B114。「選択」の道具。押すたびに読む）。
-   * 省略 ＝ 動かさない（頂点を囲む）。
+   * 編集中の左ボタンが地図を動かす条件（{@link LeftPanRule}。「選択」「動かす」の道具。押すたびに
+   * 読む）。省略 ＝ 動かさない。
    */
-  readonly getEmptyPressPans?: () => boolean;
+  readonly getLeftPan?: () => LeftPanRule;
   /** Zoom clamp range (U16 settings); falls through to U17's FR-10 default. */
   readonly zoomRange?: ZoomRange;
   /**
@@ -251,8 +252,13 @@ export class PointerDispatcher {
     const mode = this.opts.getMode();
     const point: ScreenPoint = { x: p.x, y: p.y };
     const hit = this.opts.hitTester.hitTest(point);
-    const emptyPressPans = this.opts.getEmptyPressPans?.() ?? false;
-    const target = decideDispatch({ mode, button: p.button, hit, emptyPressPans });
+    const leftPan = this.opts.getLeftPan?.();
+    const target = decideDispatch({
+      mode,
+      button: p.button,
+      hit,
+      ...(leftPan !== undefined ? { leftPan } : {}),
+    });
 
     switch (target) {
       case DISPATCH_TARGET.Pan: {
@@ -416,8 +422,8 @@ export class PointerDispatcher {
       if (rec.dragged) {
         this.writePan(rec, point);
       } else if (rec.button === POINTER_BUTTON.Left) {
-        // 左ボタンのパンは、読むだけのときと「選択」の何もないところからの押下だけ（B114）。
-        // どちらも、動かさずに離せばここで選択として解決する（「選択」では選択の解除など）。
+        // 左ボタンのパンは、読むだけのときと「選択」の押下、「動かす」の何もないところからの押下だけ
+        // （B114 / 裁定 2026-11-01）。どれも、動かさずに離せばここで選択として解決する。
         //
         // **裁定 N-4（2026-09-03）: 読むだけでも地図をクリックして地物を選べる。**
         //

@@ -12,7 +12,7 @@ import {
   CursorPositionStore,
 } from '../../shell/cursor-position';
 import { BROWSER_CLOCK, throttleTrailing } from '../../shell/map-resize';
-import { toolPansFromEmptyPress } from '../../shell/tools';
+import { toolPansFromEmptyPress, toolPansFromFeaturePress } from '../../shell/tools';
 import { EDIT_MODE } from '../../state/session';
 import { POINTER_BUTTON, pointerButtonFromCode } from '../dispatch';
 import { PointerDispatcher } from '../PointerDispatcher';
@@ -139,7 +139,13 @@ export function createMountInput(options: MountInputOptions): MountInput {
 
   const dispatcher = new PointerDispatcher({
     getMode: () => store.getState().mode,
-    getEmptyPressPans: () => toolPansFromEmptyPress(store.getState().activeTool),
+    getLeftPan: () => {
+      const tool = store.getState().activeTool;
+      return {
+        fromEmpty: toolPansFromEmptyPress(tool),
+        fromFeature: toolPansFromFeaturePress(tool),
+      };
+    },
     camera: cameraPort,
     hitTester,
     selection: selectionPort,

@@ -725,14 +725,19 @@ describe('A8: pointerMove が 1 度も来ない押下でも、離した位置で
   });
 });
 
-describe('「選択」の道具の左ボタン（B114。読むだけと同じ割り当て）', () => {
-  function setupSelectTool(hit: HitResult, emptyPressPans = true) {
+/** 道具ごとの左ボタンの割り当て（`mount/input.ts` が `shell/tools.ts` の述語から作るものと同じ）。 */
+const SELECT_LEFT_PAN = { fromEmpty: true, fromFeature: true };
+const MOVE_LEFT_PAN = { fromEmpty: true, fromFeature: false };
+const VERTEX_LEFT_PAN = { fromEmpty: false, fromFeature: false };
+
+describe('「選択」「動かす」の道具の左ボタン（B114 / 裁定 2026-11-01。読むだけと同じ割り当て）', () => {
+  function setupSelectTool(hit: HitResult, leftPan = SELECT_LEFT_PAN) {
     const camera = new FakeCamera();
     const selection = new FakeSelection();
     const begins: string[] = [];
     const dispatcher = new PointerDispatcher({
       getMode: () => EDIT_MODE.Edit,
-      getEmptyPressPans: () => emptyPressPans,
+      getLeftPan: () => leftPan,
       camera,
       hitTester: { hitTest: () => hit },
       selection,
@@ -770,9 +775,30 @@ describe('「選択」の道具の左ボタン（B114。読むだけと同じ割
     expect(begins).toEqual([]);
   });
 
-  it('地物の上からは今までどおり選択と掴みの口へ行き、地図は動かない', () => {
+  it('「選択」: 地物の上からのドラッグは地図を動かし、選択には触れず、掴みも始めない', () => {
     const hit = featureBodyHit(asFeatureId('f1'));
     const { camera, selection, begins, dispatcher } = setupSelectTool(hit);
+    expect(dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left))).toBe(DISPATCH_TARGET.Pan);
+    dispatcher.pointerMove(ptr(1, 150, 120, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 150, 120, POINTER_BUTTON.Left));
+    expect(camera.writes.length).toBeGreaterThan(0);
+    expect(selection.events).toEqual([]);
+    expect(begins).toEqual([]);
+  });
+
+  it('「選択」: 地物の上で動かさず離すと、その地物の選択として解決する', () => {
+    const hit = featureBodyHit(asFeatureId('f1'));
+    const { camera, selection, begins, dispatcher } = setupSelectTool(hit);
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    expect(camera.writes).toEqual([]);
+    expect(selection.events).toEqual([`start:${hit.kind}`, 'end:click@100,100']);
+    expect(begins).toEqual([]);
+  });
+
+  it('「動かす」: 地物の上からは選択と掴みの口へ行き、地図は動かない', () => {
+    const hit = featureBodyHit(asFeatureId('f1'));
+    const { camera, selection, begins, dispatcher } = setupSelectTool(hit, MOVE_LEFT_PAN);
     expect(dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left))).toBe(
       DISPATCH_TARGET.SelectEdit,
     );
@@ -783,8 +809,21 @@ describe('「選択」の道具の左ボタン（B114。読むだけと同じ割
     expect(selection.events).toContain('end:drag@150,120');
   });
 
-  it('「頂点」「動かす」（偽）では何もないところからのドラッグは今までどおり囲む口へ行く', () => {
-    const { camera, selection, dispatcher } = setupSelectTool(EMPTY_HIT, false);
+  it('「動かす」: 何もないところからのドラッグは地図を動かし、動かさず離せば選択の解除', () => {
+    const { camera, selection, begins, dispatcher } = setupSelectTool(EMPTY_HIT, MOVE_LEFT_PAN);
+    expect(dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left))).toBe(DISPATCH_TARGET.Pan);
+    dispatcher.pointerMove(ptr(1, 150, 120, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 150, 120, POINTER_BUTTON.Left));
+    expect(camera.writes.length).toBeGreaterThan(0);
+    expect(selection.events).toEqual([]);
+    dispatcher.pointerDown(ptr(2, 100, 100, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(2, 100, 100, POINTER_BUTTON.Left));
+    expect(selection.events).toEqual([`start:${EMPTY_HIT.kind}`, 'end:click@100,100']);
+    expect(begins).toEqual([]);
+  });
+
+  it('「頂点」では何もないところからのドラッグは今までどおり囲む口へ行く', () => {
+    const { camera, selection, dispatcher } = setupSelectTool(EMPTY_HIT, VERTEX_LEFT_PAN);
     expect(dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left))).toBe(
       DISPATCH_TARGET.SelectEdit,
     );
@@ -809,7 +848,7 @@ describe('左の押下の途中で板が開いたとき（B114 の検証の指�
     const capture = new FakeCaptureTarget();
     const dispatcher = new PointerDispatcher({
       getMode: () => mode,
-      getEmptyPressPans: () => true,
+      getLeftPan: () => SELECT_LEFT_PAN,
       camera,
       hitTester: { hitTest: () => EMPTY_HIT },
       selection,
@@ -863,11 +902,31 @@ describe('左の押下の途中で板が開いたとき（B114 の検証の指�
     expect(camera.writes.length).toBe(1);
   });
 
-  it('地物の上からの選択の押下は畳まない（板の覆いへ移った時点で別の経路が畳む）', () => {
+  it('「選択」で地物の上からの押下も畳む。離しても選択を解決しない（裁定 2026-11-01）', () => {
+    const selection = new FakeSelection();
+    const camera = new FakeCamera();
+    const dispatcher = new PointerDispatcher({
+      getMode: () => EDIT_MODE.Edit,
+      getLeftPan: () => SELECT_LEFT_PAN,
+      camera,
+      hitTester: { hitTest: () => featureBodyHit(asFeatureId('f1')) },
+      selection,
+      add: new FakeAdd(),
+      contextMenu: new FakeContextMenu(),
+    });
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    expect(dispatcher.foldPressedLeftPans()).toBe(true);
+    dispatcher.pointerMove(ptr(1, 180, 140, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 180, 140, POINTER_BUTTON.Left));
+    expect(camera.writes).toEqual([]);
+    expect(selection.events).toEqual([]);
+  });
+
+  it('「動かす」で地物の上からの押下は畳まない（板の覆いへ移った時点で別の経路が畳む）', () => {
     const selection = new FakeSelection();
     const dispatcher = new PointerDispatcher({
       getMode: () => EDIT_MODE.Edit,
-      getEmptyPressPans: () => true,
+      getLeftPan: () => MOVE_LEFT_PAN,
       camera: new FakeCamera(),
       hitTester: { hitTest: () => featureBodyHit(asFeatureId('f1')) },
       selection,
@@ -902,7 +961,7 @@ describe('地図を動かしている最中のカメラの変更（B114 の検�
     const camera = new FakeCamera();
     const dispatcher = new PointerDispatcher({
       getMode: () => mode,
-      getEmptyPressPans: () => true,
+      getLeftPan: () => SELECT_LEFT_PAN,
       camera,
       hitTester: { hitTest: () => EMPTY_HIT },
       selection: new FakeSelection(),

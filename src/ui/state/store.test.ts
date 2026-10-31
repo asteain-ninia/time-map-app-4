@@ -2728,7 +2728,8 @@ describe('A5 結合: 面の道具 → 測量 ON → 測量 OFF で、地図ク�
 // ============================================================================
 //
 // 増分 5 の手直し A7 / GPT #9。旧版は「直前が `edit.vertex` だったか」で捨てていたので、
-// **「動かす」で掴んだ頂点が、ナイフや追加の道具へ移っても見えないまま残り**、
+// **「動かす」で掴んだ頂点が、ナイフや追加の道具へ移っても見えないまま残り**（当時は「動かす」でも
+// 頂点を掴めた。2026-11-01 の裁定で掴めるのは「頂点」だけになった）、
 // 下書きを持たないうちに Delete を押すとその頂点が消えた。ハンドルを出す条件
 // （`toolShowsVertexHandles`）と、頂点の選択を残す条件を同じ 1 本の述語にする。
 
@@ -2743,14 +2744,14 @@ describe('A7: 頂点の選択が落ちるのは「掴める道具から出ると
     });
   }
 
-  /** 掴める道具（「頂点・動かす」。B114 で「選択」を外した）。判定は実装と同じ 1 本を引く。 */
+  /** 掴める道具（「頂点」。B114 で「選択」を、2026-11-01 の裁定で「動かす」を外した）。判定は実装と同じ 1 本を引く。 */
   const GRABBING = ALL_TOOLS.filter((t) => toolShowsVertexHandles(t));
   /** 掴めない道具（残り全部）。 */
   const NOT_GRABBING = ALL_TOOLS.filter((t) => !toolShowsVertexHandles(t));
 
-  it('掴める道具は「頂点・動かす」の 2 つである（表の前提を固定する）', () => {
-    expect(GRABBING).toEqual([TOOL_ID.EditVertex, TOOL_ID.EditMove]);
-    expect(NOT_GRABBING.length).toBe(ALL_TOOLS.length - 2);
+  it('掴める道具は「頂点」だけである（表の前提を固定する）', () => {
+    expect(GRABBING).toEqual([TOOL_ID.EditVertex]);
+    expect(NOT_GRABBING.length).toBe(ALL_TOOLS.length - 1);
   });
 
   it('「頂点」で掴んだ頂点は、ナイフへ持ち替えると落ちる', () => {
@@ -2760,19 +2761,21 @@ describe('A7: 頂点の選択が落ちるのは「掴める道具から出ると
     expect(store.getState().activeFeature).toBe(f('A')); // 地物の選択は残る
   });
 
-  it('「動かす」から追加の道具へでも落ちる', () => {
-    const store = withGrabbedVertex(TOOL_ID.EditMove);
+  it('「頂点」から追加の道具へでも落ちる', () => {
+    const store = withGrabbedVertex(TOOL_ID.EditVertex);
     store.getState().setActiveTool(TOOL_ID.AddArea);
     expect(store.getState().vertexSelection).toBeNull();
     expect(store.getState().activeFeature).toBe(f('A'));
   });
 
-  it('「頂点」→「動かす」→「頂点」の間では落ちない（掴める道具どうしの往来）', () => {
+  it('「頂点」→「動かす」で落ちる。地物の選択は残り、「頂点」へ戻しても頂点は戻らない（裁定 2026-11-01）', () => {
     const store = withGrabbedVertex(TOOL_ID.EditVertex);
     store.getState().setActiveTool(TOOL_ID.EditMove);
-    expect(store.getState().vertexSelection?.vertexIds.size).toBe(1);
+    expect(store.getState().vertexSelection).toBeNull();
+    expect(store.getState().activeFeature).toBe(f('A'));
     store.getState().setActiveTool(TOOL_ID.EditVertex);
-    expect(store.getState().vertexSelection?.vertexIds.size).toBe(1);
+    expect(store.getState().vertexSelection).toBeNull();
+    expect(store.getState().activeFeature).toBe(f('A'));
   });
 
   it('「頂点」→「選択」で落ちる。地物の選択は残る（B114: 見えない頂点を残さない）', () => {
