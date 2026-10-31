@@ -19,6 +19,7 @@ import { createLeafFeature, type LeafFeature } from '../feature';
 import { createGeoParams } from '../geo/geo-params';
 import { wrapLonDeg } from '../geo/index';
 import type { GeoRing } from '../geometry/index';
+import { buildForest } from '../hierarchy/forest';
 import { createIdGeneratorState } from '../id-generator';
 import { asFeatureId, asRingId, asVertexId, type FeatureId } from '../ids';
 import { checkConsistency } from '../persistence/consistency';
@@ -29,7 +30,12 @@ import { getCalendar } from '../time/calendar';
 import { timePointYear } from '../time/time-point';
 import { createVertex, createVertexStore, type Vertex } from '../vertex';
 
-import { PROMOTION_REJECT, PROMOTION_STATUS, promoteLeafToAggregate } from './promote';
+import {
+  buildDirectDomainForLeaf,
+  PROMOTION_REJECT,
+  PROMOTION_STATUS,
+  promoteLeafToAggregate,
+} from './promote';
 
 const fakes = vi.hoisted(() => ({ reportNoLongEdges: false }));
 
@@ -110,6 +116,27 @@ function project(...items: { feature: LeafFeature; vertices: Vertex[] }[]): Doma
     baseMap: { source: 's', meta: { lonWest: -180, lonEast: 180, latNorth: 90, latSouth: -90 } },
   };
 }
+
+describe('長い辺が残ったら断る（読み直しの面積が合う形でも）', () => {
+  it('ちょうど 180 度の辺は読み直しても面積が同じなので、長い辺の検査だけが断る', () => {
+    // 南北の辺がちょうど 180 度。読み直すと西回りの -180〜0 に裏返るが、面積は変わらない。
+    const parent = leafOf('P', [c(0, 0), c(90, 0), c(180, 0), c(180, 10), c(90, 10), c(0, 10)]);
+    const child = leafOf('C', [c(40, 2), c(42, 2), c(42, 4), c(40, 4)], P);
+    let n = 0;
+    const r = buildDirectDomainForLeaf(
+      parent.feature,
+      buildForest([parent.feature, child.feature]),
+      [C],
+      createVertexStore([...parent.vertices, ...child.vertices]),
+      {
+        nextVertexId: () => asVertexId(`n${(n += 1)}`),
+        nextRingId: () => asRingId(`nr${(n += 1)}`),
+        nextFeatureId: () => asFeatureId(`nf${(n += 1)}`),
+      },
+    );
+    expect(r).toEqual({ kind: 'unresolved', stage: 'long-edge' });
+  });
+});
 
 describe.each([
   ['(a) 長い辺が残る', false],

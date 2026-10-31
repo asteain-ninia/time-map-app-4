@@ -390,9 +390,56 @@ function alignPiece(
 }
 
 /**
+ * 片の周を、自分より幅の広い片の範囲の中へ入れ直す（B108 の穴の中の飛び地）。
+ *
+ * 飛び地は保存では穴の子だが、`resolveLeafShape` では独立の片になる。片を 1 つずつ基準へ寄せると、
+ * 窓（基準 ±180）の外まで広がる片の中にある飛び地が反対側の周へ行き、穴と 1 周離れる。輪の入れ子が
+ * 組めなくなり、最上位の領土が重なった形で確定する。幅の広い片が窓の外へ出ていないなら、窓の中の
+ * 片は動かす先が無いので何もしない。
+ */
+function placePiecesInsideWiderPieces(pieces: WorldCoordinate[][][], ref: number): WorldCoordinate[][][] {
+  if (pieces.length < 2) return pieces;
+  const extents = pieces.map((piece) => {
+    const lons = (piece[0] ?? []).map((c) => c.lon);
+    return lons.length === 0
+      ? { min: 0, max: 0 }
+      : { min: lons.reduce((a, b) => Math.min(a, b)), max: lons.reduce((a, b) => Math.max(a, b)) };
+  });
+  if (!extents.some((e) => e.min < ref - 180 || e.max > ref + 180)) return pieces;
+  const inside = (min: number, max: number, outer: { min: number; max: number }): boolean =>
+    min >= outer.min && max <= outer.max;
+  const out = [...pieces];
+  const widestFirst = extents
+    .map((e, i) => ({ i, width: e.max - e.min }))
+    .sort((a, b) => b.width - a.width);
+  widestFirst.forEach(({ i, width }, rank) => {
+    const e = extents[i]!;
+    const wider = widestFirst
+      .slice(0, rank)
+      .filter((o) => o.width > width)
+      .map((o) => extents[o.i]!);
+    if (wider.some((w) => inside(e.min, e.max, w))) return;
+    for (const turn of [-1, 1]) {
+      const delta = turn * LONGITUDE_PERIOD;
+      if (!wider.some((w) => inside(e.min + delta, e.max + delta, w))) continue;
+      out[i] = shiftPiece(out[i]!, delta);
+      extents[i] = { min: e.min + delta, max: e.max + delta };
+      return;
+    }
+  });
+  return out;
+}
+
+function shiftPiece(piece: WorldCoordinate[][], delta: number): WorldCoordinate[][] {
+  return piece.map((ring) => ring.map((c) => createCoordinate(c.lon + delta, c.lat)));
+}
+
+/**
  * Align a multi-polygon onto the common branch `ref` (defaulting to the
  * multi-polygon's own outer-ring reference), PIECE BY PIECE: each piece's outer ring
  * is anchored to `ref`, and its holes follow that outer ring (see {@link alignPiece}).
+ * A piece that lies within a wider piece's longitude extent goes on that piece's
+ * branch (see {@link placePiecesInsideWiderPieces}).
  * The single helper drill, the aggregate union, and the display unwrap all funnel
  * through, so a seam-crossing outer ring and its holes never land a world turn apart
  * (audit root cause A / B106). Pieces are kept intact (教訓5.1) — no ring is merged or
@@ -402,5 +449,50 @@ export function alignMultiPolygon(
   mp: readonly (readonly (readonly WorldCoordinate[])[])[],
   ref: number = referenceLonForMultiPolygon(mp),
 ): WorldCoordinate[][][] {
-  return mp.map((poly) => alignPiece(poly, ref));
+  return placePiecesInsideWiderPieces(
+    mp.map((poly) => alignPiece(poly, ref)),
+    ref,
+  );
+}
+
+/**
+ * 引く形を、`subject` の全部の周で引けるように ±360 度の写しを作る（B108）。整列は基準 ±180 の窓の
+ * 片側にしか置かないので、窓の外へ出ている `subject` の片と重なる部分は 1 周ずれている。`subject` の
+ * 経度の範囲にかからない写しは作らない（継ぎ目から遠い形では入力のままになり、演算の結果も変わらない）。
+ * 2 つの形の中央の差は 360 度未満に揃っているので、写しは前後 1 周ずつで足りる。
+ * `subject` を渡さないと全部の写しを作る。穴は外周と同じだけずらす（片落とし禁止、教訓 5.1）。
+ */
+export function replicateAcrossSeam(
+  clip: readonly (readonly (readonly WorldCoordinate[])[])[],
+  subject?: readonly (readonly (readonly WorldCoordinate[])[])[],
+): WorldCoordinate[][][] {
+  let minLon = Number.NEGATIVE_INFINITY;
+  let maxLon = Number.POSITIVE_INFINITY;
+  if (subject !== undefined) {
+    minLon = Number.POSITIVE_INFINITY;
+    maxLon = Number.NEGATIVE_INFINITY;
+    for (const poly of subject) {
+      for (const c of poly[0] ?? []) {
+        if (c.lon < minLon) minLon = c.lon;
+        if (c.lon > maxLon) maxLon = c.lon;
+      }
+    }
+  }
+  const out: WorldCoordinate[][][] = [];
+  for (const poly of clip) {
+    const outer = poly[0];
+    if (outer === undefined) continue;
+    let west = Number.POSITIVE_INFINITY;
+    let east = Number.NEGATIVE_INFINITY;
+    for (const c of outer) {
+      if (c.lon < west) west = c.lon;
+      if (c.lon > east) east = c.lon;
+    }
+    for (const rep of worldWrapReplicas(outer)) {
+      const delta = rep.turns * LONGITUDE_PERIOD;
+      if (west + delta > maxLon || east + delta < minLon) continue;
+      out.push(poly.map((ring) => ring.map((c) => createCoordinate(c.lon + delta, c.lat))));
+    }
+  }
+  return out;
 }

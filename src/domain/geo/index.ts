@@ -49,4 +49,5 @@ export {
   ringLonExtentCenter,
   referenceLonForMultiPolygon,
   alignMultiPolygon,
+  replicateAcrossSeam,
 } from './seam';
