@@ -157,3 +157,8 @@ paths:
 - 正しい道: 面から別の形を引くときは `promotion/subtract-across-seam.ts` を通す。引く形を ±360 度に写してから差分し（`geo/seam.ts` の `replicateAcrossSeam`）、面 = 差分 + 共通部分 を確かめ、消えた点を戻して長い辺を刻み、組み立てた形を読み直して面積を確かめる。面積の許容は「周の長さ × 格子の幅」で、面積に比例させない。穴の中の飛び地は、写した外周が穴の輪の中に入るならその周へ置く（経度の範囲だけで見ると、南北の外の飛び地まで動かして刃物・穴あけ・結合が壊れる）。
 - 誤った道の兆候: `difference(alignMultiPolygon(a, ref), alignMultiPolygon(b, ref))` で面積の差が b の半分だけ足りない、または b のぶんだけ足りない（整列は基準 ±180 の窓に置くだけなので、窓の外へ出ている片や幅いっぱいの片とは 1 周ずれる）。検算が差分の結果を読み直すだけ（差分自体の誤りを通す。経度 179.5〜180.5 の子で分け残しと子が重なったまま検算を通った）。子の面積と比べる（所属変更は子が親の外へはみ出してよい）。性質テストで子を枠の中にしか置かない。基準を面の先頭の頂点にする（幅の広い面の東側を貫く線が面から外れて「貫いていない」と断られ、穴が別の周へ行って埋まる）。長い辺を持つ途中の形から基準を計算する（裏回りの中央になり、結合が順によって断られる）。
 - 確かめ方: `src/domain/promotion/direct-domain.seam-child.test.ts`（継ぎ目にかかる子を所属変更と細分へ）、`subtract-across-seam.guard.test.ts`（複製を外して検算が断る）、`src/ui/consistency-binding.wide-trim.test.tsx`（重なりの解決の削り）、`src/domain/knife/split-geometry.wide.test.ts`、`src/domain/hierarchy/validate.wide.test.ts`、`src/domain/geo/seam.piece-placement.test.ts`、`e2e/b105-wide-reparent.spec.ts`。実データでは全部の面に継ぎ目にかかる子を足して、分け残しの面積と子との重なりを測る。
+
+### 5.110 画面の px で決めた許容は、縮小すると地図上で際限なく広がる ―― 地図上の上限を一緒に持つ
+- 正しい道: 地物の形や共有を変える判定の許容を画面の px で決めるなら、地図上の度数の上限も一緒に決め、全経路で同じ 1 本を通す（`src/domain/editing/snap.ts` の `snapRadiusPx`）。上限は動作を保証する窓のいちばん低い倍率で実測する。頂点を掴む操作の当たりやすさ（`grab-radius.ts`）は形を変えないので別である。
+- 誤った道の兆候: 「50px なら小さい」と px だけで考える（全体図の 2.5 px/度では 20 度）。寄った表示でだけ検査している。上限を付けたあと、再現の距離を測らずに直ったと言う（近いほうの候補が上限の内側にあれば何も変わらない）。半径を呼び出し側ごとに写している。
+- 確かめ方: 窓と倍率を変えて半径のすぐ内側・すぐ外側を実際に引く（`e2e/b102-snap-cap.spec.ts`。呼び出し側の結線は単体では見えない）。関数は `src/domain/editing/snap.test.ts`、作図の経路は `src/ui/add/snap-ports.test.ts`。
