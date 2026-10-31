@@ -228,11 +228,6 @@ interface Case {
   readonly parent: Omit<LeafSpec, 'id'>;
   readonly child: Box;
   readonly expected: { readonly territories: number; readonly holes: number };
-  /**
-   * 細分の面積の検算（`areasEqualSeamAware`）が、輪を別々に展開するので断る形。
-   * 分け残しそのものは正しい（ほかの入口と性質の検査で見る）。現状.md の B104。
-   */
-  readonly promoteFalselyRejected?: true;
 }
 
 // 期待の穴の数は、もとの穴 + 面の内側に描いた子のぶん。
@@ -266,7 +261,6 @@ const CASES: readonly Case[] = [
     parent: { outer: boxRing([170, 0, 190, 20]), holes: [boxRing([183, 5, 186, 8])] },
     child: [172, 5, 175, 8],
     expected: { territories: 1, holes: 2 },
-    promoteFalselyRejected: true,
   },
   {
     name: '穴そのものが継ぎ目をまたぐ',
@@ -336,7 +330,6 @@ const CASES: readonly Case[] = [
     },
     child: [100, 5, 105, 15],
     expected: { territories: 2, holes: 2 },
-    promoteFalselyRejected: true,
   },
 ];
 
@@ -376,10 +369,6 @@ describe('B90 分け残しの輪の階層（継ぎ目に接する・またぐ形
         idState: createIdGeneratorState(),
         now: NOW,
       });
-      if (k.promoteFalselyRejected === true) {
-        expect(r.status).toBe(PROMOTION_STATUS.Rejected);
-        return;
-      }
       if (r.status !== PROMOTION_STATUS.Committed) throw new Error(`確定しない: ${r.status}`);
       const dd = r.nextFeatures.find(
         (f): f is LeafFeature => f.kind === FEATURE_KIND.Leaf && isDirectDomainLeaf(f),

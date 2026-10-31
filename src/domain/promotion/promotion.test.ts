@@ -14,7 +14,7 @@ import {
   type LeafFeature,
 } from '../feature';
 import { createShape, createTerritoryRing, RING_KIND } from '../ring';
-import { unwrapRing, worldWrapReplicas } from '../geo/index';
+import { alignMultiPolygon, worldWrapReplicas } from '../geo/index';
 import {
   difference as geoDifference,
   isMultiPolygonEmpty,
@@ -116,7 +116,7 @@ function feat(features: readonly Feature[], id: string): Feature {
 // またぐ領域が representative 空間で別片に分断されても面積が一致する」ことを独立に検証する。
 
 function unwrapMp(mp: GeoMultiPolygon): GeoMultiPolygon {
-  return mp.map((poly) => poly.map((ring: GeoRing) => unwrapRing([...ring])));
+  return alignMultiPolygon(mp);
 }
 
 function replicateAcrossSeam(clip: GeoMultiPolygon): GeoMultiPolygon {

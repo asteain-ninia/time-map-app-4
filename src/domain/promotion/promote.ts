@@ -35,7 +35,6 @@ import {
 import {
   alignMultiPolygon,
   referenceLonForMultiPolygon,
-  unwrapRing,
   worldWrapReplicas,
 } from '../geo/index';
 import {
@@ -175,11 +174,6 @@ export interface PromoteToAggregateInput {
 // 形状解決ヘルパ (R3 seam-unwrap を通してから U06 へ)
 // ---------------------------------------------------------------------------
 
-/** 多重ポリゴンの各リングを seam-unwrap して連続経度にする (技術方針 R3)。 */
-function unwrapMultiPolygon(mp: GeoMultiPolygon): GeoMultiPolygon {
-  return mp.map((poly) => poly.map((ring: GeoRing) => unwrapRing([...ring])));
-}
-
 /**
  * `clip` の全片を ±360° 世界ラップ replica で複製し、連続座標上で 1 つの多重ポリゴンへ
  * 合成する (技術方針 R3 / U05 worldWrapReplicas)。`subject` を固定し `clip` を replica で
@@ -211,8 +205,10 @@ function replicateAcrossSeam(clip: GeoMultiPolygon): GeoMultiPolygon {
  * できる。U06 差分が拒否されたら不一致扱い (defense 層が形状を拒んだ = 等価を確認できない)。
  */
 function areasEqualSeamAware(a: GeoMultiPolygon, b: GeoMultiPolygon): boolean {
-  const ua = unwrapMultiPolygon(a);
-  const ub = unwrapMultiPolygon(b);
+  // 片ごとに整列する（B104）。輪を 1 本ずつ展開すると、継ぎ目をまたぐ外周と東側の穴が 1 周離れ、
+  // 正しい分け残しを `shape-mismatch` で断っていた。
+  const ua = alignMultiPolygon(a);
+  const ub = alignMultiPolygon(b);
   return directionalSeamDiffEmpty(ua, ub) && directionalSeamDiffEmpty(ub, ua);
 }
 
