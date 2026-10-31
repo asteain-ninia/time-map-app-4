@@ -250,7 +250,7 @@ describe('OptionBar — 設定欄の畳み「≫」', () => {
 
   it('「≫」の中の部品の中身が縮めば、顔ぶれが同じでも帯へ戻す（B103。閉じた板は閉じたまま）', () => {
     // 読み取りが測っている間は 400px で、先頭から全部「≫」へ入る。切ると 0px になる。
-    const widths: Record<string, number> = { readout: 400, display: 60 };
+    const widths: Record<string, number> = { readout: 400, display: 60, grid: 80 };
     restoreWidths = stubWidths({ bar: 260, slot: 60, button: 30, slotById: widths });
     const store = new OptionBarStore();
     render(<OptionBar store={store} />);
