@@ -96,6 +96,11 @@ function coordKey(c: WorldCoordinate): string {
 interface RawRing {
   readonly id: RingId;
   readonly vertexIds: readonly VertexId[];
+  /**
+   * 差分の出力のままの、**畳む前の連続の座標**。包含と面積はこれで見る（B90）。保存する頂点の
+   * 座標（畳んだ値）を使ってはいけない。経度 180 の頂点は -180 に畳まれるので、畳んだ外周は
+   * 「世界を一周する輪」になり、中の穴を含まなくなる。
+   */
   readonly coords: GeoRing;
   /** True for a polygon piece's index-0 ring (an outer / territory boundary). */
   readonly isOuter: boolean;
@@ -180,11 +185,11 @@ function reparentByContainment(raws: readonly RawRing[]): Ring[] {
 /**
  * Build ONE 直轄領 末端地物 形状 from the difference multi-polygon. Mints a vertex per
  * distinct quantized node (shared between rings that meet at the same node) and a
- * ring per piece-ring, REWRAPPING each coordinate back into the representative
- * [-180,180) interval (技術方針 R3): the difference is computed on seam-unwrapped
- * coordinates, so the stored 直轄領 形状 must be rewrapped to the canonical interval,
- * keeping a seam-straddling 飛び地 whole. EVERY piece / ring is materialised
- * (片落とし禁止, 教訓 5.1).
+ * ring per piece-ring. EVERY piece / ring is materialised (片落とし禁止, 教訓 5.1).
+ *
+ * `difference` は 1 つの連続の枠の座標で渡す（`buildDirectDomainForLeaf` が整列して差分した
+ * 結果）。**畳むのは保存する頂点だけ**で（代表区間 [-180,180)。技術方針 R3）、輪の入れ子は
+ * 渡された連続の座標のまま組む（B90）。
  *
  * Returns `undefined` only if the input holds no usable ring (an empty difference
  * — the caller decides "no 直轄領" before calling, so this is a defensive guard).
@@ -203,10 +208,9 @@ export function buildDirectDomainShape(
   const reusable = new Map<string, VertexId>();
   for (const v of reuseVertices) reusable.set(coordKey(v.coordinate), v.id);
 
-  const mintRingVertices = (ring: GeoRing): { ids: VertexId[]; coords: GeoRing } => {
+  const mintRingVertices = (ring: GeoRing): VertexId[] => {
     const out: VertexId[] = [];
-    const rewrapped = rewrapRing([...ring]);
-    for (const c of rewrapped) {
+    for (const c of rewrapRing([...ring])) {
       const key = coordKey(c);
       let vid = byCoord.get(key);
       if (vid === undefined) {
@@ -216,17 +220,16 @@ export function buildDirectDomainShape(
       }
       out.push(vid);
     }
-    return { ids: out, coords: rewrapped };
+    return out;
   };
 
   const raws: RawRing[] = [];
   for (const poly of difference) {
     poly.forEach((ring, index) => {
-      const minted = mintRingVertices(ring);
       raws.push({
         id: ids.nextRingId(),
-        vertexIds: minted.ids,
-        coords: minted.coords,
+        vertexIds: mintRingVertices(ring),
+        coords: ring,
         isOuter: index === 0,
       });
     });
