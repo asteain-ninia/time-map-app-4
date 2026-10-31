@@ -18,6 +18,7 @@
 import type { Feature, LeafFeature } from '../feature';
 import { FEATURE_KIND } from '../feature';
 import { alignMultiPolygon, referenceLonForMultiPolygon } from '../geo/index';
+import { subdivideLongEdges } from '../geo/long-edge';
 import { union, BOOLEAN_OP_STATUS } from '../geometry/boolean-ops';
 import type { InvariantViolation as GeoInvariantViolation } from '../geometry/invariants';
 import { EMPTY_MULTI_POLYGON, type GeoMultiPolygon, type GeoRing } from '../geometry/types';
@@ -251,7 +252,9 @@ function unionAreasPairwise(
           violations: merged.violations,
         });
       }
-      next.push(merged.result);
+      // 派生の形の長い辺を刻む（B105）。集合演算は一直線上の点を消すので、幅の広い面の和は
+      // 経度 180 度以上の 1 本の辺を持ちうる。そのまま次の整列や画面へ渡すと別の形になる。
+      next.push(subdivideLongEdges(merged.result));
     }
     level = next;
   }

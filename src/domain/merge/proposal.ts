@@ -28,7 +28,7 @@
 import { createBasicAttributes, type BasicAttributes, type ColorInfo } from '../attributes';
 import { quantizeCoordinate } from '../geometry/index';
 import { alignMultiPolygon, normalizeCoordinate, referenceLonForMultiPolygon } from '../geo/index';
-import { countLongEdgesInMultiPolygon } from '../geo/long-edge';
+import { countLongEdgesInMultiPolygon, subdivideLongEdges } from '../geo/long-edge';
 import { vertexCoordKey } from '../vertex-weld';
 import { union, BOOLEAN_OP_STATUS } from '../geometry/boolean-ops';
 import type { GeoMultiPolygon, GeoRing } from '../geometry/types';
@@ -368,7 +368,12 @@ function unionLeafShapes(
     // identity, so the common case is unchanged.
     const ref =
       acc.length > 0 ? referenceLonForMultiPolygon(acc) : referenceLonForMultiPolygon(area);
-    const merged = union(alignMultiPolygon(acc, ref), alignMultiPolygon(area, ref));
+    // 途中の和に長い辺があると、整列で別の形になるので先に刻む（B105）。最後の和の長い辺は
+    // 刻まずに返す（呼び出し側が結合を断る）。
+    const merged = union(
+      alignMultiPolygon(subdivideLongEdges(acc), ref),
+      alignMultiPolygon(area, ref),
+    );
     if (merged.status === BOOLEAN_OP_STATUS.Rejected) return { ok: false };
     acc = merged.result;
   }

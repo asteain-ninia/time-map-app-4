@@ -10,7 +10,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { createCoordinate, type WorldCoordinate } from '../coordinate';
-import { wrapLonDeg } from '../geo/index';
+import { alignMultiPolygon, wrapLonDeg } from '../geo/index';
+import { resolveLeafShape } from '../hierarchy/resolve-shape';
 import { createLeafFeature, type Feature, type LeafFeature } from '../feature';
 import { asFeatureId, asRingId, asVertexId, type FeatureId, type VertexId } from '../ids';
 import { createHoleRing, createShape, createTerritoryRing, RING_KIND } from '../ring';
@@ -455,5 +456,52 @@ describe('B106 離れた片の穴が結合で消えない・領土にならな�
     const near = quadLeaf('near', box(-10, 0, 10, 20));
     const far = donutLeaf('far', box(168, 0, 190, 20), box(178, 5, 184, 8));
     expect(ringCounts(merge(near, far))).toEqual({ territories: 2, holes: 1 });
+  });
+});
+
+describe('B105 途中の和に長い辺ができても、次の和で形が崩れない', () => {
+  /** 南北の辺を 40 度ごとにまっすぐ刻んだ帯。 */
+  function band(w: number, e: number): WorldCoordinate[] {
+    const ring: WorldCoordinate[] = [];
+    for (let lon = w; lon < e; lon += 40) ring.push(createCoordinate(lon, 0));
+    ring.push(createCoordinate(e, 0), createCoordinate(e, 30));
+    for (let lon = e - 40; lon > w; lon -= 40) ring.push(createCoordinate(lon, 30));
+    ring.push(createCoordinate(w, 30));
+    return ring;
+  }
+
+  it('2 つの帯の和（幅 340 度の 1 本の辺）に、辺を南北に断つ 3 つ目を足す', () => {
+    const a = quadLeaf('a', band(-170, 0));
+    const b = quadLeaf('b', band(0, 170));
+    // 経度 -5..5 を南北に貫くので、最後の和の辺はどれも 180 度未満になる。
+    const cut = quadLeaf('c', [
+      createCoordinate(-5, -20),
+      createCoordinate(5, -20),
+      createCoordinate(5, 50),
+      createCoordinate(-5, 50),
+    ]);
+    const p = proposalOf(
+      buildMergeProposal({
+        features: [a.feature, b.feature, cut.feature],
+        vertices: storeOf(a, b, cut),
+        targetIds: [a.feature.id, b.feature.id, cut.feature.id],
+        atTime: 0,
+        parentDecision: parentNone,
+        propertyDecision: propertyNew({
+          attributes: createBasicAttributes('結合', 0, 100),
+          color: COLOR,
+        }),
+        ids: makeIdPorts('b105'),
+      }),
+    );
+    const leaf = p.nextFeatures.find((f) => f.id === p.resultFeatureId) as LeafFeature;
+    const mp = alignMultiPolygon(resolveLeafShape(leaf.shape, p.nextVertices)!);
+    let doubled = 0;
+    mp[0]![0]!.forEach((q, i, ring) => {
+      const r = ring[(i + 1) % ring.length]!;
+      doubled += q.lon * r.lat - r.lon * q.lat;
+    });
+    // 340×30 ＋ 10×70 − 重なり 10×30。
+    expect(Math.abs(doubled) / 2).toBeCloseTo(10_600, 5);
   });
 });

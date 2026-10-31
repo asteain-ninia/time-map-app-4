@@ -19,7 +19,6 @@
 // proven split-side builder, kept here as a focused local copy because that one is
 // module-private (we share the *idea*, not a leaked private function).
 
-import { type WorldCoordinate } from '../coordinate';
 import {
   quantizeCoordinate,
   ringStrictlyContains,
@@ -36,6 +35,7 @@ import {
   type Shape,
 } from '../ring';
 import { createVertex, type Vertex } from '../vertex';
+import { vertexCoordKey } from '../vertex-weld';
 import { MSG_DIRECT_DOMAIN_NAME_SUFFIX } from './messages';
 
 // ---------------------------------------------------------------------------
@@ -88,11 +88,6 @@ export interface BuiltDirectDomainShape {
   readonly vertices: readonly Vertex[];
 }
 
-function coordKey(c: WorldCoordinate): string {
-  const q = quantizeCoordinate(c);
-  return `${q.lon},${q.lat}`;
-}
-
 interface RawRing {
   readonly id: RingId;
   readonly vertexIds: readonly VertexId[];
@@ -107,7 +102,7 @@ interface RawRing {
 }
 
 /** Signed-area magnitude of a coordinate ring (for "smallest enclosing" choice). */
-function ringAreaAbs(ring: GeoRing): number {
+export function ringAreaAbs(ring: GeoRing): number {
   let sum = 0;
   const n = ring.length;
   for (let i = 0; i < n; i += 1) {
@@ -205,18 +200,29 @@ export function buildDirectDomainShape(
   // （所属変更・細分・読み込みの修復。`promote.ts` の `buildDirectDomainForLeaf`）は元の面の
   // 頂点を渡すので、分け残しの外周は元の頂点 id のまま残り、元の面と境を共有していた隣との
   // 共有が切れない。新しく生まれる角だけを採番する。渡さなければ全部を新しく採番する。
-  const reusable = new Map<string, VertexId>();
-  for (const v of reuseVertices) reusable.set(coordKey(v.coordinate), v.id);
+  // 鍵は畳んだ座標で作る（B107。経度 +180 で保存された頂点は、照合の座標 -180 と同じ鍵になる）。
+  // 使い回す頂点の体は元のまま返す。同じ id の体が履歴の間で食い違わない（§5.103）。
+  const reusable = new Map<string, Vertex>();
+  for (const v of reuseVertices) {
+    const key = vertexCoordKey(v.coordinate);
+    if (!reusable.has(key)) reusable.set(key, v);
+  }
 
   const mintRingVertices = (ring: GeoRing): VertexId[] => {
     const out: VertexId[] = [];
     for (const c of rewrapRing([...ring])) {
-      const key = coordKey(c);
+      const key = vertexCoordKey(c);
       let vid = byCoord.get(key);
       if (vid === undefined) {
-        vid = reusable.get(key) ?? ids.nextVertexId();
+        const reuse = reusable.get(key);
+        if (reuse !== undefined) {
+          vid = reuse.id;
+          vertices.push(reuse);
+        } else {
+          vid = ids.nextVertexId();
+          vertices.push(createVertex(vid, quantizeCoordinate(c)));
+        }
         byCoord.set(key, vid);
-        vertices.push(createVertex(vid, quantizeCoordinate(c)));
       }
       out.push(vid);
     }

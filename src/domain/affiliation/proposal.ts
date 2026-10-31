@@ -52,6 +52,7 @@ import {
   MSG_AFFILIATION_EXISTENCE,
   MSG_AFFILIATION_HIERARCHY,
   MSG_AFFILIATION_INTERNAL,
+  MSG_AFFILIATION_LONG_EDGE,
   MSG_AFFILIATION_TARGET_KIND,
   MSG_AFFILIATION_TARGET_MISSING,
   affiliationRejectMessage,
@@ -99,7 +100,7 @@ export interface AffiliationProposal {
 
 export interface AffiliationRejected {
   readonly status: typeof AFFILIATION_STATUS.Rejected;
-  readonly kind: AffiliationRejectKind | 'hierarchy' | 'internal';
+  readonly kind: AffiliationRejectKind | 'hierarchy' | 'internal' | 'long-edge';
   readonly message: string;
   /** 機械可読詳細 (関与地物 ID 等)。 */
   readonly detail?: unknown;
@@ -601,6 +602,13 @@ function generateDirectDomains(
       ports,
       override !== undefined && override !== '' ? override : undefined,
     );
+    if (result.kind === 'unresolved' && result.stage === 'long-edge') {
+      // 分け残しを保存できる形に打ち直せなかった。確定すると面積が黙って変わる（B105）。
+      return {
+        status: 'rejected',
+        rejection: reject('long-edge', MSG_AFFILIATION_LONG_EDGE, { featureId: f.id }),
+      };
+    }
     if (result.kind === 'unresolved') {
       // 元形状/子の和/差分が U06 で解決できなかった。直轄領なしでは元形状が沈黙裡に
       // 失われるため、データ損失を防いで拒否する (教訓 5.26)。

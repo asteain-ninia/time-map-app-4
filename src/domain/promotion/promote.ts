@@ -46,6 +46,11 @@ import {
   type GeoMultiPolygon,
   type GeoRing,
 } from '../geometry/index';
+import {
+  countLongEdgesInMultiPolygon,
+  restoreDroppedPoints,
+  subdivideLongEdges,
+} from '../geo/long-edge';
 import { sweepAndPruneAnchor } from '../deletion/sweep';
 import { buildForest, directChildIds, hasChildren, type Forest } from '../hierarchy/forest';
 import { resolveFeatureArea, resolveLeafShape } from '../hierarchy/resolve-shape';
@@ -60,8 +65,8 @@ import {
 } from '../ids';
 import { nextRawId, type IdGeneratorState, type TimeSource } from '../id-generator';
 import type { Vertex, VertexStore } from '../vertex';
-import { setVertex } from '../vertex';
-import { buildDirectDomainShape, directDomainName } from './direct-domain';
+import { createVertexStore, setVertex } from '../vertex';
+import { buildDirectDomainShape, directDomainName, ringAreaAbs } from './direct-domain';
 
 // ---------------------------------------------------------------------------
 // 公開する判別共用体 — 遷移結果 (spec §成果物)
@@ -241,7 +246,28 @@ export type DirectDomainForLeafResult =
       readonly originalShape: GeoMultiPolygon;
     }
   | { readonly kind: 'empty'; readonly originalShape: GeoMultiPolygon }
-  | { readonly kind: 'unresolved'; readonly stage: 'original' | 'children' | 'diff' | 'build' };
+  | {
+      readonly kind: 'unresolved';
+      /**
+       * `long-edge`: 長い辺を打ち直しても、保存して読み直した形が差分の結果と合わない。確定すると
+       * 面積が黙って変わるので、呼び出し側は確定を断る（B105）。
+       */
+      readonly stage: 'original' | 'children' | 'diff' | 'build' | 'long-edge';
+    };
+
+/** 組み立てた形を読み直したときの面積の、差分の面積との差の許容（度²。相対と絶対の大きいほう）。 */
+const READ_BACK_AREA_TOLERANCE = 1e-5;
+
+/** 連続の座標の正味の面積（外周 − 穴）。 */
+function netLonLatArea(mp: GeoMultiPolygon): number {
+  let total = 0;
+  for (const poly of mp) {
+    poly.forEach((ring, i) => {
+      total += i === 0 ? ringAreaAbs(ring) : -ringAreaAbs(ring);
+    });
+  }
+  return total;
+}
 
 /**
  * FR-37 直轄領 materialisation for ONE 末端地物 `leaf` that is `childIds` を獲得したとき。
@@ -297,8 +323,18 @@ export function buildDirectDomainForLeaf(
       if (body !== undefined) ownVertices.push(body);
     }
   }
+  // **集合演算が消した点を打ち直す**（B105）。一直線上の点が消えると、幅の広い面の辺が経度 180 度
+  // 以上の 1 本になり、保存形式では表せない（技術方針 §6.8）。まず元の面の頂点を元の座標で挿し
+  // （同じ id に当たる。隣との共有も切れない）、それでも長い辺だけ新しい点で刻む。
+  const restored = subdivideLongEdges(
+    restoreDroppedPoints(
+      diff.result,
+      ownVertices.map((v) => v.coordinate),
+    ),
+  );
+  if (countLongEdgesInMultiPolygon(restored) > 0) return { kind: 'unresolved', stage: 'long-edge' };
   const built = buildDirectDomainShape(
-    diff.result,
+    restored,
     {
       nextVertexId: ports.nextVertexId,
       nextRingId: ports.nextRingId,
@@ -306,6 +342,15 @@ export function buildDirectDomainForLeaf(
     ownVertices,
   );
   if (built === undefined) return { kind: 'unresolved', stage: 'build' };
+  // **保存して読み直した形の面積を検算する**（所属変更には面積の守りがここしか無い）。読み直しは
+  // 隣り合う頂点を最短方向で繋ぐので、打ち直せていない形はここで面積が変わる。
+  const readBack = resolveLeafShape(built.shape, createVertexStore(built.vertices));
+  if (readBack === undefined) return { kind: 'unresolved', stage: 'long-edge' };
+  const expectedArea = netLonLatArea(diff.result);
+  const readBackArea = netLonLatArea(alignMultiPolygon(readBack));
+  if (Math.abs(readBackArea - expectedArea) > READ_BACK_AREA_TOLERANCE * Math.max(1, expectedArea)) {
+    return { kind: 'unresolved', stage: 'long-edge' };
+  }
 
   const ddName = directDomainName(leaf.attributes.name, nameOverride);
   const ddAttrs: BasicAttributes = withName(leaf.attributes, ddName);
@@ -523,7 +568,8 @@ function unionChildAreas(
       acc.length > 0 ? referenceLonForMultiPolygon(acc) : referenceLonForMultiPolygon(res.area);
     const merged = geoUnion(alignMultiPolygon(acc, ref), alignMultiPolygon(res.area, ref));
     if (!isOk(merged)) return undefined;
-    acc = merged.result;
+    // 和の結果の長い辺は、次の整列で別の形になるので先に刻む（B105）。
+    acc = subdivideLongEdges(merged.result);
   }
   return acc;
 }

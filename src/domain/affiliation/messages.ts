@@ -46,6 +46,10 @@ export const MSG_AFFILIATION_HIERARCHY =
   '階層の整合性に違反するため、所属変更を確定できません。';
 
 /** 想定外の内部不整合 (開発者向け)。 */
+export const MSG_AFFILIATION_LONG_EDGE =
+  '上位領域の残りの部分が世界を半周以上する形になり、保存できる形に直せませんでした。別の上位領域を選ぶか、上位領域の形を分けてからやり直してください。';
+
+/** 想定外の内部不整合 (開発者向け)。 */
 export const MSG_AFFILIATION_INTERNAL =
   '内部処理で想定外の問題が発生しました。お手数ですが開発者へ報告してください。';
 

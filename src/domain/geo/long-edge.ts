@@ -18,8 +18,9 @@
 //
 // 純粋（I/O・時計・乱数なし）。
 
-import type { WorldCoordinate } from '../coordinate';
-import type { GeoMultiPolygon } from '../geometry/types';
+import { createCoordinate, type WorldCoordinate } from '../coordinate';
+import { QUANTIZE_SCALE, quantizeScalar } from '../geometry/quantize';
+import type { GeoMultiPolygon, GeoRing } from '../geometry/types';
 
 /**
  * 1 辺で許される経度差の上限（度）。技術方針 §6.8:「読み込み側は隣り合う頂点の経度差が
@@ -74,4 +75,148 @@ export function countLongEdgesInMultiPolygon(mp: GeoMultiPolygon): number {
     }
   }
   return count;
+}
+
+/** 長い辺を刻むときの、1 辺の経度差の上限（度）。{@link MAX_EDGE_LON_SPAN_DEG} より十分小さい。 */
+export const LONG_EDGE_FILL_STEP_DEG = 90;
+
+/** 量子化の格子の 1 周（整数）。 */
+const TURN_CELLS = 360 * QUANTIZE_SCALE;
+
+const toCell = (v: number): number => Math.round(v * QUANTIZE_SCALE);
+
+/**
+ * 長い辺を {@link LONG_EDGE_FILL_STEP_DEG} 度以下に刻む（輪を閉じる辺も見る）。長い辺が無ければ
+ * 入力をそのまま返す。**渡す多角形は連続経度でなければならない。**
+ *
+ * 集合演算は一直線上の点を消すので、幅の広い面の和や差の結果には長い辺ができる。その座標は
+ * 1 度でも整列（`alignMultiPolygon`）を通すと最短方向へ繋ぎ直され、別の形になる。
+ * だから次の演算や画面へ渡す前にここを通す（B105）。
+ */
+export function subdivideLongEdges(mp: GeoMultiPolygon): GeoMultiPolygon {
+  if (countLongEdgesInMultiPolygon(mp) === 0) return mp;
+  return mp.map((polygon) =>
+    polygon.map((ring) => {
+      const starts = new Set(longEdgeStartIndexes(ring, true));
+      if (starts.size === 0) return ring;
+      const out: WorldCoordinate[] = [];
+      ring.forEach((a, i) => {
+        out.push(a);
+        if (!starts.has(i)) return;
+        const b = ring[(i + 1) % ring.length]!;
+        const parts = Math.ceil(Math.abs(b.lon - a.lon) / LONG_EDGE_FILL_STEP_DEG);
+        for (let k = 1; k < parts; k += 1) {
+          const t = k / parts;
+          out.push(
+            createCoordinate(
+              quantizeScalar(a.lon + (b.lon - a.lon) * t),
+              quantizeScalar(a.lat + (b.lat - a.lat) * t),
+            ),
+          );
+        }
+      });
+      return out;
+    }),
+  );
+}
+
+interface CellPoint {
+  readonly lon: number;
+  readonly lat: number;
+}
+
+/**
+ * 集合演算が消した `candidates` の点のうち、結果の辺の上に**ちょうど**乗るものを、元の座標の
+ * まま辺へ挿し直す（経度は結果の枠の周へ置く）。形は 1 格子も変わらない。
+ *
+ * 分け残しの辺で、消えた点を挿し直す理由は 2 つある。(1) 頂点が消えると 1 本の長い辺になり
+ * 保存できない（B105）。(2) 消えた頂点を隣も引いていると、隣との共有が切れる。元の座標へ
+ * 戻せば、組み立ての座標の照合で同じ id に当たる。
+ *
+ * 「乗る」の判定は格子の整数の外積が 0 のときだけ（§5.45。実在の頂点と、同じ格子の結果の辺を
+ * 比べるので許容値を持たない）。整数は最大で 3.6e9 なので、積は BigInt で計算する。
+ * 渡す多角形は連続経度で、量子化された座標であること。
+ */
+export function restoreDroppedPoints(
+  mp: GeoMultiPolygon,
+  candidates: readonly WorldCoordinate[],
+): GeoMultiPolygon {
+  const wrap = (lon: number): number => ((lon % TURN_CELLS) + TURN_CELLS) % TURN_CELLS;
+  const keyOf = (lon: number, lat: number): string => `${String(wrap(lon))},${String(lat)}`;
+  const present = new Set<string>();
+  let minLon = Number.POSITIVE_INFINITY;
+  let maxLon = Number.NEGATIVE_INFINITY;
+  for (const polygon of mp) {
+    for (const ring of polygon) {
+      for (const c of ring) {
+        const lon = toCell(c.lon);
+        present.add(keyOf(lon, toCell(c.lat)));
+        if (lon < minLon) minLon = lon;
+        if (lon > maxLon) maxLon = lon;
+      }
+    }
+  }
+  const missing: CellPoint[] = [];
+  for (const c of candidates) {
+    const lat = toCell(c.lat);
+    const stored = toCell(c.lon);
+    const key = keyOf(stored, lat);
+    if (present.has(key)) continue;
+    present.add(key); // 同じ座標を 2 度数えない（+180 と -180 も同じ点）。
+    const first = Math.ceil((minLon - stored) / TURN_CELLS);
+    const last = Math.floor((maxLon - stored) / TURN_CELLS);
+    for (let turn = first; turn <= last; turn += 1) {
+      missing.push({ lon: stored + turn * TURN_CELLS, lat });
+    }
+  }
+  if (missing.length === 0) return mp;
+  missing.sort((p, q) => p.lon - q.lon);
+
+  const firstAtOrAbove = (lon: number): number => {
+    let lo = 0;
+    let hi = missing.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (missing[mid]!.lon < lon) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+
+  const restoreOnRing = (ring: GeoRing): GeoRing => {
+    const out: WorldCoordinate[] = [];
+    let changed = false;
+    ring.forEach((a, i) => {
+      out.push(a);
+      const b = ring[(i + 1) % ring.length]!;
+      const ax = toCell(a.lon);
+      const ay = toCell(a.lat);
+      const bx = toCell(b.lon);
+      const by = toCell(b.lat);
+      const loX = Math.min(ax, bx);
+      const hiX = Math.max(ax, bx);
+      const loY = Math.min(ay, by);
+      const hiY = Math.max(ay, by);
+      const hits: CellPoint[] = [];
+      for (let j = firstAtOrAbove(loX); j < missing.length; j += 1) {
+        const p = missing[j]!;
+        if (p.lon > hiX) break;
+        if (p.lat < loY || p.lat > hiY) continue;
+        if ((p.lon === ax && p.lat === ay) || (p.lon === bx && p.lat === by)) continue;
+        const cross =
+          BigInt(bx - ax) * BigInt(p.lat - ay) - BigInt(by - ay) * BigInt(p.lon - ax);
+        if (cross === 0n) hits.push(p);
+      }
+      if (hits.length === 0) return;
+      const along = (p: CellPoint): number => Math.abs(p.lon - ax) + Math.abs(p.lat - ay);
+      hits.sort((p, q) => along(p) - along(q));
+      for (const h of hits) {
+        out.push(createCoordinate(h.lon / QUANTIZE_SCALE, h.lat / QUANTIZE_SCALE));
+      }
+      changed = true;
+    });
+    return changed ? out : ring;
+  };
+
+  return mp.map((polygon) => polygon.map(restoreOnRing));
 }
