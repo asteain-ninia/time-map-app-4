@@ -43,10 +43,20 @@ export default defineConfig({
     // a future default change) and is the build-health complement to the results-
     // cache being disabled below (single, reproducible source of truth for "what
     // passed", 開発ガイド §4).
+    //
+    // isolate を外す軽い構成は試して、やめた（2026-10-31）。src/domain だけで 18 秒が 7 秒になるが、
+    // モジュールの状態が漏れて 7〜9 件が赤になり、落ちる件数も回ごとに変わる。threads に替えても
+    // 2 秒しか縮まない。ここの幻のエラーと同じ種類の事故なので、隔離は保つ。
     pool: 'forks',
     poolOptions: {
       forks: {
         isolate: true,
+        // 同じ PC で所有者の作業が動いているので、既定（24 スレッドなら 23）まで広げない。
+        // 実測（全件。CPU は PC 全体の平均）: 23 本 84 秒・95%、12 本 102 秒・83%、8 本 119 秒・69%。
+        // 待ちは 35 秒延びるが、PC に 3 割の余裕が残る。急ぐときは
+        // `npx vitest run --poolOptions.forks.maxForks=23`。
+        maxForks: 8,
+        minForks: 1,
       },
     },
     // Domain tests + the framework-free UI/session state store tests (U16) + the
