@@ -15,7 +15,7 @@
 // imperatively on map mount (技術方針 2.3) and its `screenToWorld` / `drawBatch`
 // back the controller's ports.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 
 import { createSessionStore } from './state/store';
@@ -215,6 +215,7 @@ import {
   FOCUS_OWNER,
   deriveFocusOwner,
   explainsRefusal,
+  suspendsContextMenu,
   suspendsShortcuts,
   type FocusOwner,
 } from './shell/focus-owner';
@@ -647,6 +648,8 @@ export function App(): JSX.Element {
   // 下書きを持っているときは **メニューは開くが選択を変えない**。真偽値 1 個では後者を
   // 表現できず、作図中の右クリックが下書きを壊していた（バグ狩り #1。重症度 4）。
   const focusOwnerRef = useRef<FocusOwner>(FOCUS_OWNER.None);
+  /** 確認の板が開いた瞬間に呼ぶ、地図の入力の口（地図が載っているあいだだけ入っている）。 */
+  const boardOpenedRef = useRef<(() => void) | null>(null);
   /**
    * **道具が下書きを持っているか**（増分 5 の手直し A1）。右クリックの昇格を止める
    * 判定に使う。持ち主の値（`focusOwner`）は文字入力が前に立つと `text` になるので、
@@ -1049,7 +1052,7 @@ export function App(): JSX.Element {
       cursorPositionStore,
       cameraInputRef,
       wheelZoomNoticeRef,
-      focusOwnerRef,
+      boardOpenedRef,
       hitTester: hitTest.hitTester,
       selectionPort: hitTest.selectionPort,
       editSession: hitTest.editSession,
@@ -3234,6 +3237,12 @@ export function App(): JSX.Element {
   // ふるまいなので、ここで真偽値へ潰さず、持ち主そのものを渡す。
   focusOwnerRef.current = focusOwner;
   toolDraftRef.current = toolOwnsKeyboard;
+  // 確認の板が開いた瞬間を地図の入力へ知らせる（B114 の検証。押している最中の押下を畳む）。判定は
+  // 右クリックを止めるのと同じ 1 本。描画の確定と同時に走らせ、次のポインタの合図より必ず先に畳む。
+  const boardHoldsInput = suspendsContextMenu(focusOwner);
+  useLayoutEffect(() => {
+    if (boardHoldsInput) boardOpenedRef.current?.();
+  }, [boardHoldsInput]);
 
   // Re-arm the active tool after a paused-conflict modal closes, discarding any
   // transient tool draft (教訓 5.2 全経路で破棄) WHILE retaining the committed

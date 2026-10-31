@@ -807,47 +807,80 @@ describe('左の押下の途中で板が開いたとき（B114 の検証の指�
     const camera = new FakeCamera();
     const selection = new FakeSelection();
     const capture = new FakeCaptureTarget();
-    const board = { open: false };
     const dispatcher = new PointerDispatcher({
       getMode: () => mode,
       getEmptyPressPans: () => true,
-      suspendsPressedPan: () => board.open,
       camera,
       hitTester: { hitTest: () => EMPTY_HIT },
       selection,
       add: new FakeAdd(),
       contextMenu: new FakeContextMenu(),
     });
-    return { camera, selection, capture, board, dispatcher };
+    return { camera, selection, capture, dispatcher };
   }
 
-  it('動かさず離しても、板の裏の選択を解決しない。掴みは放す', () => {
-    const { selection, capture, board, dispatcher } = setupBoard();
+  it('開いた合図の時点で押下を捨て、掴みも放す（板を閉じたあとの合図を待たない）', () => {
+    const { selection, capture, dispatcher } = setupBoard();
     dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left), capture);
-    board.open = true;
-    dispatcher.pointerUp(ptr(1, 100, 100, POINTER_BUTTON.Left));
-    expect(selection.events).toEqual([]);
+    expect(capture.captured.size).toBe(1);
+    expect(dispatcher.foldPressedLeftPans()).toBe(true);
     expect(capture.captured.size).toBe(0);
     expect(dispatcher.activeCount).toBe(0);
+    expect(selection.events).toEqual([]);
   });
 
-  it('動かしても、板の裏で地図を動かさない', () => {
-    const { camera, capture, board, dispatcher } = setupBoard();
-    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left), capture);
-    board.open = true;
+  it('動かさず離しても、選択を解決しない', () => {
+    const { selection, dispatcher } = setupBoard();
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    dispatcher.foldPressedLeftPans();
+    dispatcher.pointerUp(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    expect(selection.events).toEqual([]);
+  });
+
+  it('動かしても地図を動かさない', () => {
+    const { camera, dispatcher } = setupBoard();
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    dispatcher.foldPressedLeftPans();
     dispatcher.pointerMove(ptr(1, 180, 140, POINTER_BUTTON.Left));
     dispatcher.pointerUp(ptr(1, 180, 140, POINTER_BUTTON.Left));
     expect(camera.writes).toEqual([]);
-    expect(capture.captured.size).toBe(0);
-    expect(dispatcher.activeCount).toBe(0);
   });
 
-  it('中ボタンの移動は板が開いていても今までどおり', () => {
-    const { camera, board, dispatcher } = setupBoard();
+  it('畳んだあとの次の押下は今までどおり動く', () => {
+    const { camera, dispatcher } = setupBoard();
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    dispatcher.foldPressedLeftPans();
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    dispatcher.pointerMove(ptr(1, 180, 140, POINTER_BUTTON.Left));
+    expect(camera.writes.length).toBe(1);
+  });
+
+  it('中ボタンの移動は畳まない', () => {
+    const { camera, dispatcher } = setupBoard();
     dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Middle));
-    board.open = true;
+    expect(dispatcher.foldPressedLeftPans()).toBe(false);
     dispatcher.pointerMove(ptr(1, 180, 140, POINTER_BUTTON.Middle));
     expect(camera.writes.length).toBe(1);
+  });
+
+  it('地物の上からの選択の押下は畳まない（板の覆いへ移った時点で別の経路が畳む）', () => {
+    const selection = new FakeSelection();
+    const dispatcher = new PointerDispatcher({
+      getMode: () => EDIT_MODE.Edit,
+      getEmptyPressPans: () => true,
+      camera: new FakeCamera(),
+      hitTester: { hitTest: () => featureBodyHit(asFeatureId('f1')) },
+      selection,
+      add: new FakeAdd(),
+      contextMenu: new FakeContextMenu(),
+    });
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    expect(dispatcher.foldPressedLeftPans()).toBe(false);
+    expect(dispatcher.activeCount).toBe(1);
+  });
+
+  it('押下が無ければ何も畳まない', () => {
+    expect(setupBoard().dispatcher.foldPressedLeftPans()).toBe(false);
   });
 
   it('板が開いていなければ、今までどおり選択として解決する', () => {

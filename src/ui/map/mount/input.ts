@@ -12,7 +12,6 @@ import {
   CursorPositionStore,
 } from '../../shell/cursor-position';
 import { BROWSER_CLOCK, throttleTrailing } from '../../shell/map-resize';
-import { suspendsContextMenu, type FocusOwner } from '../../shell/focus-owner';
 import { toolPansFromEmptyPress } from '../../shell/tools';
 import { EDIT_MODE } from '../../state/session';
 import { POINTER_BUTTON, pointerButtonFromCode } from '../dispatch';
@@ -74,8 +73,11 @@ export interface MountInputOptions {
     }) => readonly DescribedVertexCandidate[];
     readonly nameOf: (featureId: FeatureId) => string;
   };
-  /** 鍵盤の持ち主の現在値（押している最中に確認の板が開いたかを読む）。 */
-  readonly focusOwnerRef: MutableRefObject<FocusOwner>;
+  /**
+   * 確認の板が開いたことを受ける口の置き場（ここへ入れる。宿主が開いた瞬間に呼ぶ）。押している最中に
+   * 板が開いたら、その押下を畳む。
+   */
+  readonly boardOpenedRef: MutableRefObject<(() => void) | null>;
   /**
    * ホイールの 1 ノッチごとに、倍率を書く前に呼ぶ口の置き場（増分 8E の手直し / G-21）。
    * 宿主が上下限での断りを出すのに使う。渡さなければ何もしない。
@@ -138,10 +140,6 @@ export function createMountInput(options: MountInputOptions): MountInput {
   const dispatcher = new PointerDispatcher({
     getMode: () => store.getState().mode,
     getEmptyPressPans: () => toolPansFromEmptyPress(store.getState().activeTool),
-    // 「選択」の押下の途中で開いた確認の板（Delete）の裏で、選択を動かさない。判定は右クリックを
-    // 止めるのと同じ 1 本。読むだけの動きは変えない（裁定どおり読むだけの左押下は従来の経路）。
-    suspendsPressedPan: () =>
-      store.getState().mode !== EDIT_MODE.View && suspendsContextMenu(options.focusOwnerRef.current),
     camera: cameraPort,
     hitTester,
     selection: selectionPort,
@@ -411,14 +409,27 @@ export function createMountInput(options: MountInputOptions): MountInput {
   // switch and still commit on release (bughunt root: the abort fired only on mode).
   let prevMode = store.getState().mode;
   let prevActiveTool = store.getState().activeTool;
+  // 測量の入り切りも入力の切り替えである（B114 の検証）。測量の橋渡しが地図を覆う／外れるのに、道具が
+  // `null` のままだと `mode` も `activeTool` も変わらず、明示の「選択」からだけ破棄されていた。読むだけの
+  // 動きは変えない（鍵を開けているときだけ畳む）。
+  let prevSurveyActive = store.getState().survey.active;
   const unsubscribeMode = store.subscribe((s) => {
-    if (s.mode === prevMode && s.activeTool === prevActiveTool) return;
+    const surveySwitched = s.survey.active !== prevSurveyActive && s.mode !== EDIT_MODE.View;
+    prevSurveyActive = s.survey.active;
+    if (s.mode === prevMode && s.activeTool === prevActiveTool && !surveySwitched) return;
     prevMode = s.mode;
     prevActiveTool = s.activeTool;
     dispatcher.onModeChange();
   });
 
+  // 確認の板が開いた瞬間に、左の押下を畳む（B114 の検証）。読むだけの動きは変えない。
+  options.boardOpenedRef.current = (): void => {
+    if (store.getState().mode === EDIT_MODE.View) return;
+    if (dispatcher.foldPressedLeftPans()) candidateGesture?.cancel();
+  };
+
   const dispose = (): void => {
+    options.boardOpenedRef.current = null;
     unsubscribeMode();
     unwatchCandidates();
     unwatchHover();

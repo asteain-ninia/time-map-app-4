@@ -123,14 +123,6 @@ export interface PointerDispatcherOptions {
    * 省略 ＝ 動かさない（頂点を囲む）。
    */
   readonly getEmptyPressPans?: () => boolean;
-  /**
-   * 左の押下で地図を動かしている途中に、確認の板が開いたか（読むたびに読む）。真なら、その押下は
-   * そこで畳む ―― 板の裏で地図を動かさず、離しても選択を解決しない。
-   *
-   * 左のパンは押した要素へ入力を捕まえるので、板の覆いが開いても離す合図がここへ届く
-   * （捕まえない「選択」の押下は覆いが受けるので起きなかった形）。省略 ＝ 畳まない。
-   */
-  readonly suspendsPressedPan?: () => boolean;
   /** Zoom clamp range (U16 settings); falls through to U17's FR-10 default. */
   readonly zoomRange?: ZoomRange;
   /**
@@ -364,7 +356,6 @@ export class PointerDispatcher {
   pointerMove(p: NormalizedPointer): void {
     const rec = this.active.get(p.pointerId);
     if (rec === undefined) return;
-    if (this.foldPanUnderBoard(rec, p.pointerId)) return;
 
     if (!rec.dragged && exceedsDragThreshold(rec.originX, rec.originY, p.x, p.y)) {
       rec.dragged = true;
@@ -395,7 +386,6 @@ export class PointerDispatcher {
   pointerUp(p: NormalizedPointer): void {
     const rec = this.active.get(p.pointerId);
     if (rec === undefined) return;
-    if (this.foldPanUnderBoard(rec, p.pointerId)) return;
     // Drop the record FIRST so any downstream callback cannot observe stale
     // transient state, and so an early return can never skip teardown.
     this.active.delete(p.pointerId);
@@ -498,6 +488,25 @@ export class PointerDispatcher {
   }
 
   /**
+   * **確認の板が開いた合図を受けて、左の押下で始まった地図の移動を畳む**（B114 の検証）。板の裏で
+   * 地図を動かさず、離しても選択を解決せず、板を閉じたあとに同じ押下の続きで動き出さない。あとに届く
+   * 同じポインタの合図は、記録が無いので何もしない。
+   *
+   * 左のパンは押した要素へ入力を捕まえるので、板の覆いが開いても離す合図がここへ届く（捕まえない
+   * 押下は覆いへ移った時点で `pointerLeave` が畳む）。中ボタンの移動は畳まない。畳んだものがあれば true。
+   */
+  foldPressedLeftPans(): boolean {
+    let folded = false;
+    for (const [pointerId, rec] of this.active) {
+      if (rec.kind !== DISPATCH_TARGET.Pan || rec.button !== POINTER_BUTTON.Left) continue;
+      this.active.delete(pointerId);
+      releasePointerCapture(rec, pointerId);
+      folded = true;
+    }
+    return folded;
+  }
+
+  /**
    * The pointer left the map area (pointerleave). Treated like a cancel for every
    * live pointer so a pan/selection can never be left dangling when the cursor
    * exits (教訓 5.2, 受け入れ基準 6). Does NOT apply a final camera move.
@@ -573,18 +582,6 @@ export class PointerDispatcher {
     // 読み直す: 書く側が丸めた値（緯度の上下限など）を「外からの変更」と読まないため。
     rec.panCamera = this.opts.camera.read().camera;
     rec.panPoint = point;
-  }
-
-  /**
-   * 左のパンの途中で板が開いていたら、その押下を畳む（{@link PointerDispatcherOptions.suspendsPressedPan}）。
-   * 畳んだら true。あとに届く同じポインタの合図は、記録が無いので何もしない。
-   */
-  private foldPanUnderBoard(rec: ActivePointer, pointerId: number): boolean {
-    if (rec.kind !== DISPATCH_TARGET.Pan || rec.button !== POINTER_BUTTON.Left) return false;
-    if (this.opts.suspendsPressedPan?.() !== true) return false;
-    this.active.delete(pointerId);
-    releasePointerCapture(rec, pointerId);
-    return true;
   }
 
   /** Drop EVERY live pointer's transient (the shared全経路破棄 helper, 教訓 5.2). */

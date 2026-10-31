@@ -385,6 +385,134 @@ test.describe('B114 の検証: 押している最中の入力', () => {
     }
   });
 
+  /** 面を選んで、地図の左上の隅（面から十分遠い何もないところ）へポインタを置く。 */
+  async function selectFaceAndHoverEmpty(
+    page: Page,
+    tool: 'edit.select' | 'none',
+  ): Promise<{ readonly faceId: string; readonly from: { readonly x: number; readonly y: number } }> {
+    const face = await commitOneFace(page);
+    if (tool === 'edit.select') {
+      await page.getByTestId('tool-edit.select').click();
+    } else {
+      // 鍵を開けた直後は道具なし（押されて見えるのは「選択」だが、店の値は null）。
+      await returnToViewMode(page);
+      await leaveViewMode(page);
+    }
+    await expect(page.getByTestId('app-active-tool')).toHaveText(tool === 'none' ? '' : tool);
+    await page.mouse.click(face.cx, face.cy);
+    await expect(page.getByTestId('app-active-feature')).toHaveText(face.faceId);
+    const box = (await page.getByTestId('map-input-layer').boundingBox())!;
+    const from = { x: box.x + 20, y: box.y + 20 };
+    await page.mouse.move(from.x, from.y);
+    return { faceId: face.faceId, from };
+  }
+
+  for (const [name, open, opened] of [
+    ['Delete の確認の板', 'Delete', 'delete-impact'],
+    ['Ctrl+P の「どこへでも移動」', 'Control+p', 'jump-palette'],
+  ] as const) {
+    test(`何もないところを押したまま${name}を開いて閉じ、動かさず離しても選択は外れない`, async () => {
+      const { app, page } = await launchApp();
+      try {
+        const { faceId, from } = await selectFaceAndHoverEmpty(page, 'edit.select');
+        await page.mouse.down();
+        await page.keyboard.press(open);
+        await expect(page.getByTestId(opened)).toBeVisible();
+        await page.keyboard.press('Escape');
+        await expect(page.getByTestId(opened)).toHaveCount(0);
+        await page.mouse.up();
+        await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+
+        // 次の押下は素直に動く。
+        await page.mouse.click(from.x, from.y);
+        await expect(page.getByTestId('app-active-feature')).toHaveText('');
+      } finally {
+        await app.close();
+      }
+    });
+  }
+
+  test('何もないところを押したまま板を開いて閉じたあと動かしても、地図は動かない。次の押下は動かせる', async () => {
+    const { app, page } = await launchApp();
+    try {
+      const { faceId, from } = await selectFaceAndHoverEmpty(page, 'edit.select');
+      const before = await liveCamera(page);
+      await page.mouse.down();
+      await page.keyboard.press('Delete');
+      await expect(page.getByTestId('delete-impact')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('delete-impact')).toHaveCount(0);
+      await page.mouse.move(from.x + 150, from.y + 100, { steps: 5 });
+      expect(await liveCamera(page)).toEqual(before);
+      await page.mouse.up();
+      expect(await liveCamera(page)).toEqual(before);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+
+      await page.mouse.move(from.x, from.y);
+      await page.mouse.down();
+      await page.mouse.move(from.x + 150, from.y + 100, { steps: 5 });
+      await page.mouse.up();
+      expect((await liveCamera(page)).centerLon).not.toBeCloseTo(before.centerLon, 3);
+    } finally {
+      await app.close();
+    }
+  });
+
+  for (const tool of ['none', 'edit.select'] as const) {
+    test(`道具が ${tool} のとき、何もないところを押したまま U で測量へ入り、離しても動かしても元の押下は働かない`, async () => {
+      const { app, page } = await launchApp();
+      try {
+        const { faceId, from } = await selectFaceAndHoverEmpty(page, tool);
+        const before = await liveCamera(page);
+        await page.mouse.down();
+        await page.keyboard.press('u');
+        await expect(page.getByTestId('survey-toggle')).toHaveAttribute('aria-pressed', 'true');
+        await page.mouse.up();
+        await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+        // 測量の点も打たれない（押したのは測量へ入る前）。
+        await expect(page.getByTestId('app-focus-owner')).toHaveText('map');
+
+        await page.keyboard.press('u');
+        await expect(page.getByTestId('survey-toggle')).toHaveAttribute('aria-pressed', 'false');
+        // 測量へ入ると道具は外れるので、明示の「選択」は構え直して同じ形にする。
+        if (tool === 'edit.select') await page.getByTestId('tool-edit.select').click();
+        await expect(page.getByTestId('app-active-tool')).toHaveText(tool === 'none' ? '' : tool);
+        await page.mouse.move(from.x, from.y);
+        await page.mouse.down();
+        await page.keyboard.press('u');
+        await expect(page.getByTestId('survey-toggle')).toHaveAttribute('aria-pressed', 'true');
+        await page.mouse.move(from.x + 150, from.y + 100, { steps: 5 });
+        expect(await liveCamera(page)).toEqual(before);
+        await page.mouse.up();
+        expect(await liveCamera(page)).toEqual(before);
+        await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+      } finally {
+        await app.close();
+      }
+    });
+  }
+
+  test('測量の左ドラッグで地図を動かしている途中に U で切ると、そこで移動が止まる', async () => {
+    const { app, page } = await launchApp();
+    try {
+      const { faceId, from } = await selectFaceAndHoverEmpty(page, 'none');
+      await page.keyboard.press('u');
+      await expect(page.getByTestId('survey-toggle')).toHaveAttribute('aria-pressed', 'true');
+      await page.mouse.down();
+      await page.mouse.move(from.x + 60, from.y + 40, { steps: 3 });
+      const panned = await liveCamera(page);
+      await page.keyboard.press('u');
+      await expect(page.getByTestId('survey-toggle')).toHaveAttribute('aria-pressed', 'false');
+      await page.mouse.move(from.x + 200, from.y + 120, { steps: 3 });
+      expect(await liveCamera(page)).toEqual(panned);
+      await page.mouse.up();
+      expect(await liveCamera(page)).toEqual(panned);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+    } finally {
+      await app.close();
+    }
+  });
+
   /** 押す → 動かす → ホイール → 動かす。ホイールの倍率が戻らないことを見る。 */
   async function wheelWhilePanning(page: Page): Promise<void> {
     const box = (await page.getByTestId('map-input-layer').boundingBox())!;
