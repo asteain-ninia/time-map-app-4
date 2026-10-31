@@ -69,6 +69,16 @@ describe('設計変数', () => {
   });
 });
 
+describe('バックアップの一覧の行の高さ', () => {
+  it('見出しと同じ 32px の変数を使い、行の規則で上書きしない', () => {
+    const css = stripComments(readSourceText(resolve(uiRoot, 'file-ops', 'file-ops.css')));
+    expect(decl(ruleBody('.backup-dialog__head,\n.backup-row', css), 'min-height')).toBe(
+      'var(--control-h-lg)',
+    );
+    expect(decl(ruleBody('.backup-row', css), 'min-height')).toBeUndefined();
+  });
+});
+
 describe('ボタンの土台（N-24 / N-26 / N-28）', () => {
   it('土台は詳細度 0 で、変数だけから見た目を決める', () => {
     const base = ruleBody(':where(button)');

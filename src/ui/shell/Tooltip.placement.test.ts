@@ -28,6 +28,20 @@ describe('bubbleBesideMenu', () => {
     expect(placed.left).toBe(96);
   });
 
+  it('左右に入らず器の下にも入らなければ、窓の中へ寄せる', () => {
+    // 窓 800×600、器は左右 300〜500・下端 580、吹き出し 700×40。器の下なら下端 624 で窓を越える。
+    const lowMenu = { left: 300, right: 500, top: 300, bottom: 580 };
+    const placed = bubbleBesideMenu(
+      { left: 300, right: 500, top: 540, bottom: 570 },
+      lowMenu,
+      { width: 700, height: 40 },
+      windowSize,
+    );
+    expect(placed.left).toBe(96);
+    expect(placed.top).toBe(556);
+    expect(placed.top + 40).toBeLessThanOrEqual(windowSize.height);
+  });
+
   it('窓の下へ出るなら上へ寄せる', () => {
     const low = { left: 0, right: 200, top: 580, bottom: 600 };
     expect(bubbleBesideMenu(low, menu, { width: 300, height: 40 }, windowSize).top).toBe(556);

@@ -53,7 +53,8 @@ interface Box {
 
 /**
  * メニューの項目の吹き出しの位置。器の右 → 左 → 器の下の順に、窓に入る最初の場所へ置く。
- * どの場所も器の外なので、項目の文字を隠さない。
+ * どの場所も器の外なので、項目の文字を隠さない。器の下にも入らないときは窓の中へ寄せる
+ * （器に重なるが、窓の外へ切れて読めないよりよい）。
  */
 export function bubbleBesideMenu(
   item: Box,
@@ -70,7 +71,7 @@ export function bubbleBesideMenu(
   const maxLeft = Math.max(VIEWPORT_MARGIN, windowSize.width - bubble.width - VIEWPORT_MARGIN);
   return {
     left: Math.min(Math.max(menu.left, VIEWPORT_MARGIN), maxLeft),
-    top: menu.bottom + ANCHOR_GAP,
+    top: Math.min(menu.bottom + ANCHOR_GAP, maxTop),
   };
 }
 
