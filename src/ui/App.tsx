@@ -1049,6 +1049,7 @@ export function App(): JSX.Element {
       cursorPositionStore,
       cameraInputRef,
       wheelZoomNoticeRef,
+      focusOwnerRef,
       hitTester: hitTest.hitTester,
       selectionPort: hitTest.selectionPort,
       editSession: hitTest.editSession,

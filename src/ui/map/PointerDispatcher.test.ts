@@ -801,3 +801,125 @@ describe('「選択」の道具の左ボタン（B114。読むだけと同じ割
     expect(selection.events).toEqual([]);
   });
 });
+
+describe('左の押下の途中で板が開いたとき（B114 の検証の指摘）', () => {
+  function setupBoard(mode: EditMode = EDIT_MODE.Edit) {
+    const camera = new FakeCamera();
+    const selection = new FakeSelection();
+    const capture = new FakeCaptureTarget();
+    const board = { open: false };
+    const dispatcher = new PointerDispatcher({
+      getMode: () => mode,
+      getEmptyPressPans: () => true,
+      suspendsPressedPan: () => board.open,
+      camera,
+      hitTester: { hitTest: () => EMPTY_HIT },
+      selection,
+      add: new FakeAdd(),
+      contextMenu: new FakeContextMenu(),
+    });
+    return { camera, selection, capture, board, dispatcher };
+  }
+
+  it('動かさず離しても、板の裏の選択を解決しない。掴みは放す', () => {
+    const { selection, capture, board, dispatcher } = setupBoard();
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left), capture);
+    board.open = true;
+    dispatcher.pointerUp(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    expect(selection.events).toEqual([]);
+    expect(capture.captured.size).toBe(0);
+    expect(dispatcher.activeCount).toBe(0);
+  });
+
+  it('動かしても、板の裏で地図を動かさない', () => {
+    const { camera, capture, board, dispatcher } = setupBoard();
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left), capture);
+    board.open = true;
+    dispatcher.pointerMove(ptr(1, 180, 140, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 180, 140, POINTER_BUTTON.Left));
+    expect(camera.writes).toEqual([]);
+    expect(capture.captured.size).toBe(0);
+    expect(dispatcher.activeCount).toBe(0);
+  });
+
+  it('中ボタンの移動は板が開いていても今までどおり', () => {
+    const { camera, board, dispatcher } = setupBoard();
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Middle));
+    board.open = true;
+    dispatcher.pointerMove(ptr(1, 180, 140, POINTER_BUTTON.Middle));
+    expect(camera.writes.length).toBe(1);
+  });
+
+  it('板が開いていなければ、今までどおり選択として解決する', () => {
+    const { selection, dispatcher } = setupBoard();
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    expect(selection.events).toEqual([`start:${EMPTY_HIT.kind}`, 'end:click@100,100']);
+  });
+});
+
+describe('地図を動かしている最中のカメラの変更（B114 の検証の指摘）', () => {
+  const MODES = [
+    ['読むだけ', EDIT_MODE.View, POINTER_BUTTON.Left],
+    ['「選択」', EDIT_MODE.Edit, POINTER_BUTTON.Left],
+    ['中ボタン', EDIT_MODE.Edit, POINTER_BUTTON.Middle],
+  ] as const;
+
+  function setupPan(mode: EditMode) {
+    const camera = new FakeCamera();
+    const dispatcher = new PointerDispatcher({
+      getMode: () => mode,
+      getEmptyPressPans: () => true,
+      camera,
+      hitTester: { hitTest: () => EMPTY_HIT },
+      selection: new FakeSelection(),
+      add: new FakeAdd(),
+      contextMenu: new FakeContextMenu(),
+    });
+    return { camera, dispatcher };
+  }
+
+  it.each(MODES)('%s: ホイールの倍率が次の移動で戻らず、掴んだ場所が指に付いてくる', (_n, mode, button) => {
+    const { camera, dispatcher } = setupPan(mode);
+    dispatcher.pointerDown(ptr(1, 100, 100, button));
+    dispatcher.pointerMove(ptr(1, 150, 100, button));
+    dispatcher.wheel({ x: 150, y: 100, deltaY: -100 });
+    const afterWheel = camera.camera;
+    expect(afterWheel.zoom).toBeGreaterThan(4);
+
+    dispatcher.pointerMove(ptr(1, 170, 100, button));
+    expect(camera.camera.zoom).toBe(afterWheel.zoom);
+    // 指が 20px 動いた分だけ、ホイールのあとの倍率で中心が動く。
+    expect(camera.camera.centerLon).toBeCloseTo(afterWheel.centerLon - 20 / afterWheel.zoom, 9);
+
+    dispatcher.pointerUp(ptr(1, 180, 100, button));
+    expect(camera.camera.zoom).toBe(afterWheel.zoom);
+    expect(camera.camera.centerLon).toBeCloseTo(afterWheel.centerLon - 30 / afterWheel.zoom, 9);
+  });
+
+  it('外からのカメラの変更（鍵盤の拡大・全体表示）にも追従する', () => {
+    const { camera, dispatcher } = setupPan(EDIT_MODE.View);
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    dispatcher.pointerMove(ptr(1, 150, 100, POINTER_BUTTON.Left));
+    camera.camera = { centerLon: 40, centerLat: 10, zoom: 8 };
+    dispatcher.pointerMove(ptr(1, 158, 100, POINTER_BUTTON.Left));
+    expect(camera.camera).toEqual({ centerLon: 39, centerLat: 10, zoom: 8 });
+  });
+
+  it('カメラの変更が無ければ、起点は押した瞬間のまま（長いドラッグで誤差を積まない）', () => {
+    const { camera, dispatcher } = setupPan(EDIT_MODE.View);
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    for (let x = 101; x <= 400; x += 3) dispatcher.pointerMove(ptr(1, x, 100, POINTER_BUTTON.Left));
+    dispatcher.pointerMove(ptr(1, 500, 100, POINTER_BUTTON.Left));
+    expect(camera.camera.centerLon).toBe(-(500 - 100) / 4);
+  });
+
+  it('しきい値の手前でホイールを回しても、離せばカメラはホイールの位置のまま', () => {
+    const { camera, dispatcher } = setupPan(EDIT_MODE.View);
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    dispatcher.wheel({ x: 100, y: 100, deltaY: -100 });
+    const afterWheel = camera.camera;
+    dispatcher.pointerUp(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    expect(camera.camera).toEqual(afterWheel);
+  });
+});

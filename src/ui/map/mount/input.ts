@@ -12,7 +12,9 @@ import {
   CursorPositionStore,
 } from '../../shell/cursor-position';
 import { BROWSER_CLOCK, throttleTrailing } from '../../shell/map-resize';
+import { suspendsContextMenu, type FocusOwner } from '../../shell/focus-owner';
 import { toolPansFromEmptyPress } from '../../shell/tools';
+import { EDIT_MODE } from '../../state/session';
 import { POINTER_BUTTON, pointerButtonFromCode } from '../dispatch';
 import { PointerDispatcher } from '../PointerDispatcher';
 import type { ZoomDirection } from '../keyboard-zoom';
@@ -72,6 +74,8 @@ export interface MountInputOptions {
     }) => readonly DescribedVertexCandidate[];
     readonly nameOf: (featureId: FeatureId) => string;
   };
+  /** 鍵盤の持ち主の現在値（押している最中に確認の板が開いたかを読む）。 */
+  readonly focusOwnerRef: MutableRefObject<FocusOwner>;
   /**
    * ホイールの 1 ノッチごとに、倍率を書く前に呼ぶ口の置き場（増分 8E の手直し / G-21）。
    * 宿主が上下限での断りを出すのに使う。渡さなければ何もしない。
@@ -134,6 +138,10 @@ export function createMountInput(options: MountInputOptions): MountInput {
   const dispatcher = new PointerDispatcher({
     getMode: () => store.getState().mode,
     getEmptyPressPans: () => toolPansFromEmptyPress(store.getState().activeTool),
+    // 「選択」の押下の途中で開いた確認の板（Delete）の裏で、選択を動かさない。判定は右クリックを
+    // 止めるのと同じ 1 本。読むだけの動きは変えない（裁定どおり読むだけの左押下は従来の経路）。
+    suspendsPressedPan: () =>
+      store.getState().mode !== EDIT_MODE.View && suspendsContextMenu(options.focusOwnerRef.current),
     camera: cameraPort,
     hitTester,
     selection: selectionPort,

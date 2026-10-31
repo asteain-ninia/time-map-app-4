@@ -42,7 +42,7 @@ import type {
   PointerModifiers,
   SelectionPort,
 } from './ports';
-import { zoomStepAtCursor, type ScreenPoint, type ZoomRange } from '../../render';
+import { zoomStepAtCursor, type Camera, type ScreenPoint, type ZoomRange } from '../../render';
 import type { EditMode } from '../state/session';
 
 /**
@@ -123,6 +123,14 @@ export interface PointerDispatcherOptions {
    * 省略 ＝ 動かさない（頂点を囲む）。
    */
   readonly getEmptyPressPans?: () => boolean;
+  /**
+   * 左の押下で地図を動かしている途中に、確認の板が開いたか（読むたびに読む）。真なら、その押下は
+   * そこで畳む ―― 板の裏で地図を動かさず、離しても選択を解決しない。
+   *
+   * 左のパンは押した要素へ入力を捕まえるので、板の覆いが開いても離す合図がここへ届く
+   * （捕まえない「選択」の押下は覆いが受けるので起きなかった形）。省略 ＝ 畳まない。
+   */
+  readonly suspendsPressedPan?: () => boolean;
   /** Zoom clamp range (U16 settings); falls through to U17's FR-10 default. */
   readonly zoomRange?: ZoomRange;
   /**
@@ -158,8 +166,15 @@ interface ActivePointer {
   /** Press origin in screen px (the click/drag judgement & pan reference base). */
   readonly originX: number;
   readonly originY: number;
-  /** Pan reference (only for kind === Pan). */
-  readonly panRef: PanReference | null;
+  /**
+   * Pan reference (only for kind === Pan). 途中でカメラが外から変わると（ホイール・鍵盤の拡大）
+   * 付け替える（{@link PointerDispatcher.writePan}）。
+   */
+  panRef: PanReference | null;
+  /** このパンが最後に書いた（または押した瞬間の）カメラ。外からの変更を見分ける。 */
+  panCamera: Camera | null;
+  /** このパンが最後にカメラへ反映した指の位置。起点を付け替えるときの新しい起点になる。 */
+  panPoint: ScreenPoint | null;
   /**
    * The DOM element this pointer was captured on at press (only set for a pan that
    * captured). The dispatcher releases this on EVERY teardown path so capture is
@@ -261,6 +276,8 @@ export class PointerDispatcher {
           originX: p.x,
           originY: p.y,
           panRef: { camera, viewport, origin: point },
+          panCamera: camera,
+          panPoint: point,
           captureTarget: captured,
           dragged: false,
           editing: false,
@@ -300,6 +317,8 @@ export class PointerDispatcher {
           originX: p.x,
           originY: p.y,
           panRef: null,
+          panCamera: null,
+          panPoint: null,
           captureTarget: null,
           dragged: false,
           editing,
@@ -318,6 +337,8 @@ export class PointerDispatcher {
           originY: p.y,
           modifiers: p.modifiers,
           panRef: null,
+          panCamera: null,
+          panPoint: null,
           captureTarget: null,
           dragged: false,
           editing: false,
@@ -343,6 +364,7 @@ export class PointerDispatcher {
   pointerMove(p: NormalizedPointer): void {
     const rec = this.active.get(p.pointerId);
     if (rec === undefined) return;
+    if (this.foldPanUnderBoard(rec, p.pointerId)) return;
 
     if (!rec.dragged && exceedsDragThreshold(rec.originX, rec.originY, p.x, p.y)) {
       rec.dragged = true;
@@ -352,9 +374,7 @@ export class PointerDispatcher {
     if (rec.kind === DISPATCH_TARGET.Pan) {
       // Only move the camera once the drag threshold is crossed: a sub-threshold
       // wiggle stays a click and leaves the camera still (受け入れ基準 4).
-      if (rec.dragged && rec.panRef !== null) {
-        this.opts.camera.write(panCameraTo(rec.panRef, point));
-      }
+      if (rec.dragged) this.writePan(rec, point);
     } else if (rec.kind === DISPATCH_TARGET.SelectEdit) {
       this.opts.selection.move(point);
       // Feed the same move to the live U24 edit session (transient preview / slide
@@ -375,6 +395,7 @@ export class PointerDispatcher {
   pointerUp(p: NormalizedPointer): void {
     const rec = this.active.get(p.pointerId);
     if (rec === undefined) return;
+    if (this.foldPanUnderBoard(rec, p.pointerId)) return;
     // Drop the record FIRST so any downstream callback cannot observe stale
     // transient state, and so an early return can never skip teardown.
     this.active.delete(p.pointerId);
@@ -402,9 +423,9 @@ export class PointerDispatcher {
     if (rec.kind === DISPATCH_TARGET.Pan) {
       // Finalize: if it was a real drag, write the final position once more so the
       // last sample is never lost; a pure click moves nothing.
-      if (rec.dragged && rec.panRef !== null) {
-        this.opts.camera.write(panCameraTo(rec.panRef, point));
-      } else if (!rec.dragged && rec.button === POINTER_BUTTON.Left) {
+      if (rec.dragged) {
+        this.writePan(rec, point);
+      } else if (rec.button === POINTER_BUTTON.Left) {
         // 左ボタンのパンは、読むだけのときと「選択」の何もないところからの押下だけ（B114）。
         // どちらも、動かさずに離せばここで選択として解決する（「選択」では選択の解除など）。
         //
@@ -536,6 +557,36 @@ export class PointerDispatcher {
     this.opts.camera.write(next);
   }
 
+  /**
+   * パンの続きをカメラへ書く。**起点は押した瞬間のカメラだが、途中でカメラが外から変わったら
+   * （ホイール・鍵盤の拡大・全体表示）いまのカメラと最後に反映した指の位置へ付け替える。** 押した
+   * 瞬間のカメラを持ち続けると、次の移動で倍率と位置がそこへ戻る。変わっていなければ付け替えない
+   * ので、長いドラッグで誤差を積まない（受け入れ基準 4）。
+   */
+  private writePan(rec: ActivePointer, point: ScreenPoint): void {
+    if (rec.panRef === null || rec.panPoint === null) return;
+    const { camera, viewport } = this.opts.camera.read();
+    if (!sameCamera(camera, rec.panCamera)) {
+      rec.panRef = { camera, viewport, origin: rec.panPoint };
+    }
+    this.opts.camera.write(panCameraTo(rec.panRef, point));
+    // 読み直す: 書く側が丸めた値（緯度の上下限など）を「外からの変更」と読まないため。
+    rec.panCamera = this.opts.camera.read().camera;
+    rec.panPoint = point;
+  }
+
+  /**
+   * 左のパンの途中で板が開いていたら、その押下を畳む（{@link PointerDispatcherOptions.suspendsPressedPan}）。
+   * 畳んだら true。あとに届く同じポインタの合図は、記録が無いので何もしない。
+   */
+  private foldPanUnderBoard(rec: ActivePointer, pointerId: number): boolean {
+    if (rec.kind !== DISPATCH_TARGET.Pan || rec.button !== POINTER_BUTTON.Left) return false;
+    if (this.opts.suspendsPressedPan?.() !== true) return false;
+    this.active.delete(pointerId);
+    releasePointerCapture(rec, pointerId);
+    return true;
+  }
+
   /** Drop EVERY live pointer's transient (the shared全経路破棄 helper, 教訓 5.2). */
   private abortAll(): void {
     let hadSelectEdit = false;
@@ -590,6 +641,12 @@ export class PointerDispatcher {
       },
     };
   }
+}
+
+function sameCamera(a: Camera, b: Camera | null): boolean {
+  return (
+    b !== null && a.centerLon === b.centerLon && a.centerLat === b.centerLat && a.zoom === b.zoom
+  );
 }
 
 /**
