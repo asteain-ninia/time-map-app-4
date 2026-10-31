@@ -20,7 +20,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { commitOneFace, enterEditMode, launchApp } from './helpers';
+import { armVertexTool, commitOneFace, enterEditMode, launchApp } from './helpers';
 
 interface HandlePos {
   lon: number;
@@ -94,6 +94,8 @@ test.describe('FR-80 — 矩形選択した複数頂点を掴むと選択セッ�
       // 空を期待していた。選択を空にしたいなら **そう書く**（Escape）。
       await page.keyboard.press('Escape');
       await expect(activeFeature).toHaveText('');
+      // 頂点を選ぶのは「頂点」の道具（B114）。
+      await armVertexTool(page);
       await page.mouse.click(cx, cy);
       await expect(activeFeature).toHaveText(faceId);
       await expect

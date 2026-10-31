@@ -20,11 +20,11 @@ import { fileURLToPath } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
 
 import {
+  armVertexTool,
   DEFAULT_FACE_HALF,
   changedVertexIds,
   commitOneFace,
   committedVertices,
-  enterEditMode,
   launchApp,
   launchAppWithProject,
   liveCamera,
@@ -225,7 +225,7 @@ test.describe('増分 8A — 頂点の候補一覧・理由と［拡大］・矩
     const { app, page } = await launchApp();
     try {
       await commitOneFace(page);
-      await enterEditMode(page);
+      await armVertexTool(page);
       await expect.poll(async () => (await vertexHandlePositions(page)).length).toBe(4);
       // 上限を 3 にすると、4 隅が全部見えている全体表示では印が出ない。
       await setVertexMarkerCap(page, 3);
@@ -256,7 +256,7 @@ test.describe('増分 8A — 頂点の候補一覧・理由と［拡大］・矩
     const { app, page } = await launchApp();
     try {
       const { corners } = await commitOneFace(page);
-      await enterEditMode(page);
+      await armVertexTool(page);
       const [lx, ty] = corners[0]!; // 左上の隅
       const base = (await primitiveCounts(page)).dashedLine;
       // 隅の外側（左上へ 30px）から、隅を囲むように右下へ引く。
@@ -277,7 +277,7 @@ test.describe('増分 8A — 頂点の候補一覧・理由と［拡大］・矩
     const { app, page } = await launchApp();
     try {
       const { corners } = await commitOneFace(page);
-      await enterEditMode(page);
+      await armVertexTool(page);
       await expect.poll(async () => (await vertexHandlePositions(page)).length).toBe(4);
       const [x0, y0] = corners[0]!;
       const [x1] = corners[1]!;
@@ -451,7 +451,7 @@ test.describe('増分 8A の手直し — Escape・上限のズーム・一覧�
     const { app, page } = await launchApp();
     try {
       const { corners } = await commitOneFace(page);
-      await enterEditMode(page);
+      await armVertexTool(page);
       await expect.poll(async () => (await vertexHandlePositions(page)).length).toBe(4);
       const [vx, vy] = corners[0]!;
       await page.mouse.click(vx, vy); // 頂点を選ぶ
@@ -605,7 +605,7 @@ test.describe('増分 8A — 実データ（デーレ界）の密度で頂点を
   test('B86: 一覧が出たまま一覧の外の点を押すと、素の状態から押したのと同じ結果になる', async () => {
     test.setTimeout(240_000);
     await withRealData(async (page) => {
-      await enterEditMode(page);
+      await armVertexTool(page);
       const map = (await page.getByTestId('map-input-layer').boundingBox())!;
       const cx = map.x + map.width / 2;
       const cy = map.y + map.height / 2;
@@ -619,6 +619,8 @@ test.describe('増分 8A — 実データ（デーレ界）の密度で頂点を
       const fresh = async (): Promise<void> => {
         for (let i = 0; i < 4; i += 1) await page.keyboard.press('Escape');
         await expect(list).toHaveCount(0);
+        // Escape の階段の最後で道具は「選択」へ戻るので、構え直す。
+        await armVertexTool(page);
       };
 
       // 素の状態から押すと一覧が出る点を集める（一覧の矩形・選ばれた頂点・行の並びも覚える）。
@@ -679,7 +681,7 @@ test.describe('増分 8A — 実データ（デーレ界）の密度で頂点を
   test('バアカ（601 頂点）: 全体表示のまま、候補一覧から選んだ頂点を掴める', async () => {
     test.setTimeout(180_000);
     await withRealData(async (page) => {
-      await enterEditMode(page);
+      await armVertexTool(page);
       await selectByName(page, 'バアカ');
       await page.getByTestId('map-fit-all').click();
       await expect.poll(async () => (await vertexHandlePositions(page)).length, {
@@ -695,7 +697,7 @@ test.describe('増分 8A — 実データ（デーレ界）の密度で頂点を
   test('領域01（2,230 頂点）: 全体表示では理由と［拡大］が出て、［拡大］のあと狙った頂点を掴める', async () => {
     test.setTimeout(180_000);
     await withRealData(async (page) => {
-      await enterEditMode(page);
+      await armVertexTool(page);
       await selectByName(page, 'ヴィオニア大陸付近の領域01');
       await page.getByTestId('map-fit-all').click();
       const next = page.getByTestId('option-bar-next-step');
@@ -717,7 +719,7 @@ test.describe('増分 8A — 実データ（デーレ界）の密度で頂点を
   test('領域01 を選んだまま測ると、地図を動かしても寄っても、次の一手は測るの案内のまま', async () => {
     test.setTimeout(180_000);
     await withRealData(async (page) => {
-      await enterEditMode(page);
+      await armVertexTool(page);
       await selectByName(page, 'ヴィオニア大陸付近の領域01');
       await page.getByTestId('map-fit-all').click();
       const next = page.getByTestId('option-bar-next-step');

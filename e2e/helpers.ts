@@ -17,7 +17,7 @@
 // ―― これが P-1（導線を作り直したとき、直す場所を 1 か所にする）の効き目である。
 //   - `leaveViewMode`  … 鍵を開ける（`mode-view` は据え置き。T-1）
 //   - `enterAddMode`   … 鍵を開けて **面の道具を構える**（＝ mode が add になる）
-//   - `enterEditMode`  … 鍵を開けて、追加の道具を構えていれば「選ぶ」へ戻す
+//   - `enterEditMode`  … 鍵を開けて、追加の道具を構えていれば「選択」へ戻す
 //   - `returnToViewMode` … 鍵を閉める
 // どれも冪等（すでにその状態なら何もしない）。
 
@@ -270,7 +270,7 @@ export async function enterAddMode(page: Page): Promise<void> {
 }
 
 /**
- * 編集モードに入る ＝ **鍵を開けて、追加の道具を構えていれば「選ぶ」へ戻す**（増分 5b）。
+ * 編集モードに入る ＝ **鍵を開けて、追加の道具を構えていれば「選択」へ戻す**（増分 5b）。
  *
  * 鍵を開けただけで `mode` は `edit` になる（追加の道具を構えていない限り）ので、
  * ふつうは 1 手で終わる。
@@ -284,6 +284,17 @@ export async function enterEditMode(page: Page): Promise<void> {
     }
   }
   await expect(page.getByTestId('app-mode')).toHaveText('edit');
+}
+
+/**
+ * **「頂点」の道具を構える**（B114。「選択」では頂点に当たらない）。鍵が閉じていれば開ける。
+ * 持ち替えても地物の選択は残るので、地物を選んだ後でも前でも呼べる。
+ */
+export async function armVertexTool(page: Page): Promise<void> {
+  await leaveViewMode(page);
+  const tool = page.getByTestId('tool-edit.vertex');
+  if ((await tool.getAttribute('aria-pressed')) !== 'true') await tool.click();
+  await expect(tool).toHaveAttribute('aria-pressed', 'true');
 }
 
 /**
@@ -1233,7 +1244,7 @@ export async function openVertexCandidatesOnTinySquare(
   page: Page,
 ): Promise<{ x: number; y: number }> {
   await loadSyntheticProject(page, 1);
-  await leaveViewMode(page);
+  await armVertexTool(page);
   await page.getByTestId('sidebar-tab-list').click();
   await page.getByTestId('unified-list-filter').fill('合成地物0000');
   await page.getByTestId('feature-list-item-syn-0000').click();

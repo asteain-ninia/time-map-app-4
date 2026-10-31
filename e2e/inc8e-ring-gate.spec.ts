@@ -9,6 +9,7 @@
 import { test, expect, type Page } from '@playwright/test';
 
 import {
+  armVertexTool,
   addInputLayerBox,
   armAddAreaTool,
   commitFace,
@@ -34,7 +35,7 @@ async function handlePositions(page: Page): Promise<readonly WorldPoint[]> {
 
 const HALF = 120;
 
-/** 面を 1 つ描き、輪郭の道具で穴を足していく。最後に「選ぶ」で面を選び直す。 */
+/** 面を 1 つ描き、輪郭の道具で穴を足していく。最後に「選択」で面を選び直し、「頂点」を構える。 */
 async function faceWithHoles(
   page: Page,
   holes: readonly (readonly ScreenPoint[])[],
@@ -58,6 +59,8 @@ async function faceWithHoles(
   await page.keyboard.press('Escape');
   await page.mouse.click(cx + HALF * 0.85, cy + HALF * 0.85);
   await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+  // 穴の頂点を動かす検査なので「頂点」の道具を構えて返す（B114）。
+  await armVertexTool(page);
   return { cx, cy };
 }
 

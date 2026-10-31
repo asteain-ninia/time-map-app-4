@@ -21,6 +21,7 @@ import { expect, test, type ElectronApplication, type Page } from '@playwright/t
 import { openSettingsAndReplace, stubImagePicker, writePng } from './basemap-image-helpers';
 
 import {
+  armVertexTool,
   DEFAULT_FACE_HALF,
   commitOneFace,
   enterEditMode,
@@ -282,7 +283,7 @@ const BOARD_CASES: readonly BoardCase[] = [
     board: 'vertex-delete-impact',
     open: async (page) => {
       const { corners } = await commitOneFace(page);
-      await enterEditMode(page);
+      await armVertexTool(page);
       const [vx, vy] = corners[0]!;
       await page.mouse.click(vx, vy, { button: 'right' });
       await page.locator('[data-item-kind="deleteVertex"]').click();

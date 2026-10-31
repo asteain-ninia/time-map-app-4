@@ -26,10 +26,10 @@ import { test, expect, type Page } from '@playwright/test';
 import { strFromU8, unzipSync } from 'fflate';
 
 import {
+  armVertexTool,
   addInputLayerBox,
   armAddAreaTool,
   drawFace,
-  enterEditMode,
   jumpToYear,
   requestYear,
   launchApp,
@@ -90,7 +90,7 @@ test.describe('増分 3 の手直し — 実アプリで固定する', () => {
       // --- 0 年へ戻って A の右上角を上へ動かす。-----------------------------
       await returnToViewMode(page);
       await jumpToYear(page, 0);
-      await enterEditMode(page);
+      await armVertexTool(page);
       await page.mouse.click(aCx, cy);
       await expect
         .poll(async () => (await vertexHandlePositions(page)).length, { timeout: 15_000 })
@@ -135,7 +135,7 @@ test.describe('増分 3 の手直し — 実アプリで固定する', () => {
       await drawFace(page, corners, { name: '三角のもと' });
 
       await returnToViewMode(page);
-      await enterEditMode(page);
+      await armVertexTool(page);
       await page.mouse.click(cx, cy);
       await expect
         .poll(async () => (await vertexHandlePositions(page)).length, { timeout: 15_000 })

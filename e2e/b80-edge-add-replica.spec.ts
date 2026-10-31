@@ -7,11 +7,11 @@
 import { expect, test } from '@playwright/test';
 
 import {
+  armVertexTool,
   addInputLayerBox,
   armAddAreaTool,
   committedVertices,
   drawFace,
-  enterEditMode,
   launchApp,
   liveCamera,
   squareCorners,
@@ -31,7 +31,7 @@ test.describe('B80 — 複製の上で足した頂点の経度', () => {
         squareCorners(face.x + face.width / 2, face.y + face.height / 2, 200),
         { name: '面' },
       );
-      await enterEditMode(page);
+      await armVertexTool(page);
       const featureId = await page.getByTestId('app-active-feature').textContent();
       expect(featureId).toBeTruthy();
       await expect.poll(async () => (await vertexHandlePositions(page)).length).toBe(4);

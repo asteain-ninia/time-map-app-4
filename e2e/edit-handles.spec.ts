@@ -17,6 +17,7 @@
 import { test, expect, type Page } from '@playwright/test';
 
 import {
+  armVertexTool,
   addInputLayerBox,
   armAddAreaTool,
   commitOneFace,
@@ -91,6 +92,9 @@ test.describe('HB3-9 — 編集モードで選択地物に編集ハンドルが�
       await expect(activeFeature).toHaveText('');
       await page.mouse.click(cx, cy);
       await expect(activeFeature).toHaveText(faceId);
+      // 「選択」は地物だけを選ぶので印を描かない（B114）。「頂点」を構えると描く。
+      await expect.poll(async () => (await primitiveCounts(page)).handle).toBe(0);
+      await armVertexTool(page);
       await expect.poll(async () => (await primitiveCounts(page)).handle, {
         message: 'edit handles must be drawn for the selected face in 編集モード',
       }).toBeGreaterThanOrEqual(8);
@@ -117,10 +121,13 @@ test.describe('HB3-9 — 編集モードで選択地物に編集ハンドルが�
         message: 'handles must NOT draw in View mode (HB3-9 編集モード gate)',
       }).toBe(0);
 
-      // 4) Re-enter 編集モード → handles return（選択は保たれているので選び直さなくてよい）。
-      //    これも層が **選択ではなくモード**で駆動されている証である。
+      // 4) 鍵を開け直すと道具は「選択」から始まるので、まだ印は描かない（B114）。「頂点」を構えると
+      //    戻る（選択は保たれているので選び直さなくてよい）。層が **選択ではなく鍵と道具**で
+      //    駆動されている証である。
       await enterEditMode(page);
       await expect(activeFeature).toHaveText(faceId);
+      await expect.poll(async () => (await primitiveCounts(page)).handle).toBe(0);
+      await armVertexTool(page);
       await expect.poll(async () => (await primitiveCounts(page)).handle, {
         message: 'handles must reappear when the face is re-selected in 編集モード',
       }).toBeGreaterThanOrEqual(8);
@@ -171,6 +178,7 @@ test.describe('HB3-9 — 編集モードで選択地物に編集ハンドルが�
       await page.keyboard.press('Escape');
       await expect(activeFeature).toHaveText('');
       await expect.poll(async () => (await primitiveCounts(page)).handle).toBe(0);
+      await armVertexTool(page); // 頂点を相手にするのは「頂点」の道具（B114）。
 
       // (1) アクティブ地物ゼロのまま、頂点を直接クリック。activeFeature は空のままで、
       //     頂点選択だけが立つ — その所有地物の頂点ハンドルが描かれなければならない。
@@ -236,6 +244,7 @@ test.describe('HB3-9 — 編集モードで選択地物に編集ハンドルが�
       await page.keyboard.press('Escape');
       await expect(activeFeature).toHaveText('');
       await expect.poll(async () => (await primitiveCounts(page)).dashedLine).toBe(0);
+      await armVertexTool(page); // 頂点を相手にするのは「頂点」の道具（B114）。
 
       // (1) アクティブ地物ゼロのまま頂点を直接クリック → 所有地物が点線で囲まれる。
       const [vx, vy] = corners[0]!;

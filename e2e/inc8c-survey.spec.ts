@@ -18,10 +18,10 @@
 import { test, expect, type Page } from '@playwright/test';
 
 import {
+  armVertexTool,
   besideSquareX,
   commitOneFace,
   commitSquareFace,
-  enterEditMode,
   launchApp,
   listedFeatureCount,
   openSurveyCoords,
@@ -361,7 +361,7 @@ test.describe('増分 8C の手直し — 線の上の右クリックの相手�
       await expect(page.getByTestId('survey-line-count')).toHaveText('1');
       await page.getByTestId('survey-toggle').click();
       await expect(page.getByTestId('survey-input-layer')).toHaveCount(0);
-      await enterEditMode(page);
+      await armVertexTool(page); // 把手が描かれるのは「頂点」の道具（B114）。
 
       await page.mouse.click(vx, vy, { button: 'right' });
       const menu = page.getByTestId('context-menu');

@@ -20,6 +20,7 @@
 import { test, expect } from '@playwright/test';
 
 import {
+  armVertexTool,
   addInputLayerBox,
   armAddAreaTool,
   commitOneFace,
@@ -56,6 +57,7 @@ test.describe('HB-15 — 編集モードで頂点/地物を実クリックして
       await enterEditMode(page);
       await page.mouse.click(a.x + 8, a.y + 8); // top-left empty corner of the map cell
       await expect(page.getByTestId('app-active-vertex')).toHaveText('');
+      await armVertexTool(page); // 頂点を相手にするのは「頂点」の道具（B114）。
 
       // 1) Real-click the FIRST committed vertex's screen position. The live hit-test
       //    (頂点優先, screen-px grab radius) must resolve it → app-active-vertex non-empty.

@@ -25,6 +25,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 
 import { openSettingsAndReplace, stubImagePicker, writePng } from './basemap-image-helpers';
 import {
+  armVertexTool,
   ALL_TOOL_TESTIDS,
   DEFAULT_FACE_HALF,
   MAP_CELL_PARTS,
@@ -312,7 +313,7 @@ test.describe('増分 5b — 鍵と道具の 1 段', () => {
       await page.getByTestId('tool-edit.knife').click();
       await expect(page.getByTestId('app-mode')).toHaveText('edit');
 
-      // 「選ぶ」へ戻すと素の状態（内部の mode は edit）。
+      // 「選択」へ戻すと素の状態（内部の mode は edit）。
       await page.getByTestId('tool-edit.select').click();
       await expect(page.getByTestId('app-active-tool')).toHaveText('edit.select');
       await expect(page.getByTestId('app-mode')).toHaveText('edit');
@@ -405,7 +406,7 @@ test.describe('増分 5c — 選択を捨てない・鍵盤の持ち主・Esc �
       // ころは編集の 7 個しか回しておらず、**面／線／点へ持ち替える経路（＝内部の
       // `mode` が追加へ移る経路）が 1 つも入っていなかった**。裁定は「道具を持ち替えて
       // も選択を捨てない」であって、編集の道具どうしに限った話ではない。
-      // 最後にもう一度「選ぶ」へ戻して、素の状態でも残っていることを見る。
+      // 最後にもう一度「選択」へ戻して、素の状態でも残っていることを見る。
       for (const tool of [...ALL_TOOL_TESTIDS, 'tool-edit.select']) {
         await page.getByTestId(tool).click();
         await expect(active, `${tool} を構えたら選択が消えた`).toHaveText(faceId);
@@ -435,7 +436,7 @@ test.describe('増分 5c — 選択を捨てない・鍵盤の持ち主・Esc �
       // 1 段目: 地物の選択が外れる（頂点を掴んでいなければここが先頭の段）。
       await page.keyboard.press('Escape');
       await expect(active).toHaveText('');
-      // 2 段目: 道具が「選ぶ」へ戻る（＝ 何も構えていない状態）。
+      // 2 段目: 道具が「選択」へ戻る（＝ 何も構えていない状態）。
       await page.keyboard.press('Escape');
       await expect(activeTool).toHaveText('');
       await expect(page.getByTestId('tool-edit.select')).toHaveAttribute(
@@ -698,7 +699,7 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
         }
       }
 
-      // ③「選ぶ」へ戻したら、また 25 点すべてが地図の入力層へ戻る（一時部品が居座らない）。
+      // ③「選択」へ戻したら、また 25 点すべてが地図の入力層へ戻る（一時部品が居座らない）。
       await page.getByTestId('tool-edit.select').click();
       expectMapReachable(await scanMapGrid(page));
     } finally {
@@ -890,7 +891,7 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
       dialog: 'vertex-delete-impact',
       open: async (page) => {
         const { corners } = await commitOneFace(page);
-        await enterEditMode(page);
+        await armVertexTool(page);
         const [vx, vy] = corners[0]!;
         await page.mouse.click(vx, vy, { button: 'right' });
         await page.locator('[data-item-kind="deleteVertex"]').click();
@@ -1376,7 +1377,7 @@ test.describe('増分 5 の手直し B1 — Esc の階段は 1 回で 1 段だ�
       await expect(page.getByTestId('app-active-feature')).toHaveText('');
       await expect(page.getByTestId('app-active-tool')).toHaveText('edit.knife');
 
-      // ---- 4 段目: 何も残っていないので、道具が「選ぶ」へ戻る（階段のいちばん下）。
+      // ---- 4 段目: 何も残っていないので、道具が「選択」へ戻る（階段のいちばん下）。
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('app-active-tool')).toHaveText('');
       await expect(page.getByTestId('knife-tool')).toHaveCount(0);
@@ -1403,7 +1404,7 @@ test.describe('増分 5 の手直し B1 — Esc の階段は 1 回で 1 段だ�
       await armAddAreaTool(page);
       await drawFace(page, squareCorners(rightX, midY, half), { name: 'B' });
 
-      // 「選ぶ」で 1 つ目の面を選んでおく（＝道具の外で選んだもの）。
+      // 「選択」で 1 つ目の面を選んでおく（＝道具の外で選んだもの）。
       await page.getByTestId('tool-edit.select').click();
       await page.mouse.click(leftX, midY);
       await expect(page.getByTestId('app-active-feature')).toHaveText(firstId);
@@ -1426,7 +1427,7 @@ test.describe('増分 5 の手直し B1 — Esc の階段は 1 回で 1 段だ�
       await expect(page.getByTestId('app-active-feature')).toHaveText('');
       await expect(page.getByTestId('app-active-tool')).toHaveText('edit.merge');
 
-      // Escape 3 回目 ＝ 道具が「選ぶ」へ戻る（階段のいちばん下）。
+      // Escape 3 回目 ＝ 道具が「選択」へ戻る（階段のいちばん下）。
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('app-active-tool')).toHaveText('');
     } finally {
@@ -1914,7 +1915,7 @@ test.describe('手直し 2 回目 (2) — 右パネルの素性入力でも Esca
 });
 
 test.describe('手直し 2 回目 (3) — 手順のある道具から降りても帯が踏み消されない', () => {
-  test('5 道具 × 選ぶ・頂点・動かす・測る の 20 通りで、対象欄と帯が残る', async () => {
+  test('5 道具 × 選択・頂点・動かす・測る の 20 通りで、対象欄と帯が残る', async () => {
     // **旧版の壊れ方**: 5 道具は `activeTool` が外れたあと **effect の中で**自分の状態を
     // 畳む（`resetForSwitch()` → `setState`）ので、`setTarget(null, null)` などの後片付けが
     // **1 コミット遅れて**走り、同じ持ち替えで先に押し込んだ `ToolOptionBar` の対象名や
@@ -1938,7 +1939,7 @@ test.describe('手直し 2 回目 (3) — 手順のある道具から降りて�
 
       for (const from of stepTools) {
         for (const to of [...plainTools, 'survey'] as const) {
-          // 素の状態から始める（「選ぶ」に戻して、地物を 1 つ選んでおく）。
+          // 素の状態から始める（「選択」に戻して、地物を 1 つ選んでおく）。
           await page.getByTestId('tool-edit.select').click();
           await page.mouse.click(cx, cy);
           await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
@@ -2070,7 +2071,7 @@ test.describe('手直し 2 回目 (5) — 対象を離しても元の選択は�
       await drawFace(page, squareCorners(rightX, midY, half), { name: 'Y' });
 
       for (const tool of ['edit.knife', 'edit.ring', 'edit.drill'] as const) {
-        // 「選ぶ」で X を選んでおく（＝道具の外で選んだもの）。
+        // 「選択」で X を選んでおく（＝道具の外で選んだもの）。
         await page.getByTestId('tool-edit.select').click();
         await page.mouse.click(leftX, midY);
         await expect(page.getByTestId('app-active-feature')).toHaveText(firstId);

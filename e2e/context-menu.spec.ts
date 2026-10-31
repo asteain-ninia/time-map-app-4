@@ -18,7 +18,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { commitOneFace, enterEditMode, launchApp } from './helpers';
+import { armVertexTool, commitOneFace, enterEditMode, launchApp } from './helpers';
 
 /** The live vertex-handle count of the ACTIVE feature (the __E2E__ render hook). */
 async function vertexHandleCount(page: Page): Promise<number> {
@@ -41,6 +41,8 @@ test.describe('fr96 — 右クリックメニューの本結線（動的項目 +
       // 編集モード（素の選択）。setMode の reset契約で選択は一旦クリアされる。
       await enterEditMode(page);
       await expect(page.getByTestId('app-active-vertex')).toHaveText('');
+      // 頂点を相手にするのは「頂点」の道具（B114）。
+      await armVertexTool(page);
 
       // 実右クリックで頂点をヒット → promoteHit がその頂点を選択し、動的メニューが開く。
       const [vx, vy] = corners[0]!;

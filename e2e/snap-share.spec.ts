@@ -15,10 +15,10 @@
 import { test, expect, type Page } from '@playwright/test';
 
 import {
+  armVertexTool,
   addInputLayerBox,
   armAddAreaTool,
   drawFace,
-  enterEditMode,
   launchApp,
   placeVertices,
   returnToViewMode,
@@ -95,7 +95,7 @@ test.describe('増分 3 — 隣り合う国が境界を共有して描ける（C
 
       // --- A の右上角を動かすと、B の対応する角も同じだけ動く（＝ 共有頂点）。---
       await returnToViewMode(page);
-      await enterEditMode(page);
+      await armVertexTool(page);
       // A を選ぶ（A の内側を押す）。
       await page.mouse.click(aCx, cy);
       await expect
