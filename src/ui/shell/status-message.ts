@@ -19,6 +19,8 @@
 
 import type { TimePoint } from '../../domain/time/time-point';
 
+import { SENTENCE_END } from './strings';
+
 /**
  * 時刻の移動の知らせに続ける文の鍵（{@link StatusMessageStore.stageMoveTrailer}）。粒度の
  * 違う同じ時刻（1500 年と 1500 年 1 月 1 日）を同じ鍵にする。
@@ -146,7 +148,7 @@ export class StatusMessageStore {
   takeMoveTrailers(key: string): string {
     const text = this.trailers
       .filter((t) => t.key === key)
-      .map((t) => t.text)
+      .map((t) => (t.text.endsWith(SENTENCE_END) ? t.text : `${t.text}${SENTENCE_END}`))
       .join('');
     this.trailers = [];
     return text;

@@ -85,6 +85,40 @@ describe('useDraftTimeGate', () => {
     expect(onAsk).not.toHaveBeenCalled();
   });
 
+  it('板のあいだに元の年へ戻す要求が来たら、行き先を差し替える（［捨てる］で途中の年へ行かない。指摘 3）', () => {
+    const store = makeStore();
+    const here = store.getState().currentTime.year;
+    let open = false;
+    const onAsk = vi.fn<(moveTime: () => void) => void>(() => {
+      open = true;
+    });
+    const andThen = vi.fn();
+    render(<Harness store={store} {...options({ onAsk, isBoardOpen: () => open })} />);
+
+    move(store, 3998);
+    expect(onAsk).toHaveBeenCalledTimes(1);
+    store.getState().setCurrentTime(timePointYear(here), TIME_CHANGE_SOURCE.Slider, andThen);
+    expect(andThen).not.toHaveBeenCalled();
+    open = false;
+    act(() => onAsk.mock.calls[0]![0]());
+
+    expect(store.getState().currentTime.year).toBe(here);
+    expect(andThen).toHaveBeenCalledTimes(1);
+  });
+
+  it('板が無ければ同じ年への要求で聞かない（続きは走る）', () => {
+    const store = makeStore();
+    const onAsk = vi.fn();
+    const andThen = vi.fn();
+    render(<Harness store={store} {...options({ onAsk })} />);
+    const here = store.getState().currentTime.year;
+
+    store.getState().setCurrentTime(timePointYear(here), TIME_CHANGE_SOURCE.Slider, andThen);
+
+    expect(onAsk).not.toHaveBeenCalled();
+    expect(andThen).toHaveBeenCalledTimes(1);
+  });
+
   it('聞くまでもない下書き: 捨ててから動き、動いたあとで数を知らせる', () => {
     const store = makeStore();
     const order: string[] = [];

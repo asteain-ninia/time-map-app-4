@@ -154,6 +154,14 @@ describe('時刻の移動の知らせに続ける文（増分 7 の手直し 2 �
     expect(store.takeMoveTrailers(moveTrailerKey(timePointYear(1500)))).toBe('');
   });
 
+  it('続ける文の句点を連結の 1 か所で揃える（指摘 5）', () => {
+    const store = new StatusMessageStore();
+    const key = moveTrailerKey(timePointYear(1500));
+    store.stageMoveTrailer(key, '記録を行いました');
+    store.stageMoveTrailer(key, '頂点を捨てました。');
+    expect(store.takeMoveTrailers(key)).toBe('記録を行いました。頂点を捨てました。');
+  });
+
   it('時刻が動いたら控えを捨てられる', () => {
     const store = new StatusMessageStore();
     store.stageMoveTrailer(moveTrailerKey(timePointYear(1500)), 'x');

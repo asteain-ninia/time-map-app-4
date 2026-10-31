@@ -18,7 +18,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { timePointYear } from '../../domain/time/time-point';
 import { COMMAND_ID, CommandRegistry } from '../shell/commands';
-import type { StatusMessageStore } from '../shell/status-message';
+import { moveTrailerKey, StatusMessageStore } from '../shell/status-message';
 import { createSessionStore, TIME_CHANGE_SOURCE } from '../state/store';
 
 import { Timeline } from './Timeline';
@@ -271,13 +271,9 @@ describe('年の欄の断りと粒度（2026-09-07 の手直し）', () => {
     expect(s.getState().currentTime.year).toBe(3000);
   });
 
-  it('送りが端を越えたら端で止まり、そう言う（決定 (4)）', () => {
+  it('送りが端を越えたら端で止まり、そう言う。同時に捨てた下書きの文も続ける（決定 (4) / 指摘 4）', () => {
     const s = store();
-    const messages: string[] = [];
-    const messageStore = {
-      failure: (text: string) => messages.push(text),
-      notice: (text: string) => messages.push(text),
-    } as unknown as StatusMessageStore;
+    const messageStore = new StatusMessageStore();
     act(() => {
       s.getState().setCurrentTime(timePointYear(9995), TIME_CHANGE_SOURCE.NumericJump);
     });
@@ -287,7 +283,26 @@ describe('年の欄の断りと粒度（2026-09-07 の手直し）', () => {
     fireEvent.pointerDown(forward);
     fireEvent.pointerUp(forward);
     expect(s.getState().currentTime.year).toBe(10000);
-    expect(messages.at(-1)).toBe(RAIL_STRINGS.stepClampedTo('10000年'));
+    expect(messageStore.get()?.text).toBe(RAIL_STRINGS.stepClampedTo('10000年'));
+
+    // 関門に止められた送りは、端へ動いたと言わない。
+    act(() => {
+      s.getState().setCurrentTime(timePointYear(9995), TIME_CHANGE_SOURCE.NumericJump);
+    });
+    messageStore.clear();
+    const remove = s.getState().addTimeChangeGate(() => true);
+    fireEvent.pointerDown(forward);
+    fireEvent.pointerUp(forward);
+    expect(s.getState().currentTime.year).toBe(9995);
+    expect(messageStore.get()).toBeNull();
+    remove();
+
+    // 関門が通して動いたら、控えた文を同じ 1 文の後ろへ続ける。
+    messageStore.stageMoveTrailer(moveTrailerKey(timePointYear(10000)), 'trailer');
+    fireEvent.pointerDown(forward);
+    fireEvent.pointerUp(forward);
+    expect(s.getState().currentTime.year).toBe(10000);
+    expect(messageStore.get()?.text).toBe(`${RAIL_STRINGS.stepClampedTo('10000年')}trailer。`);
   });
 });
 

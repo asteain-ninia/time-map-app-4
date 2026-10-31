@@ -469,7 +469,8 @@ export interface SessionStoreActions<S> {
   /**
    * 時刻の変更を差し止める関門を足す（`shell/useDraftTimeGate`。教訓 5.71 / 5.75）。関門が
    * 真を返すと、その変更は無かったことになる（選択の洗い直しも走らない）。同じ時刻への
-   * 書き込みは動きではないので関門を通らない。戻り値は取り外す関数。
+   * 書き込みも通る（動きではないので、止めるのは預かっている移動の行き先を差し替えるときだけ）。
+   * 戻り値は取り外す関数。
    */
   addTimeChangeGate(gate: TimeChangeGate): () => void;
   setTimelineRange(min: TimePoint, max: TimePoint): void;
@@ -1789,14 +1790,13 @@ export function createSessionStore<S>(
       // All shipped UI callers already clamp (useTimeline / bounded playback), so
       // this is a no-op on every live path; it only closes the asymmetry for a
       // future non-UI caller or a playback edge that overshoots a bound.
-      const { selection, timelineMin, timelineMax, currentTime } = get();
+      const { selection, timelineMin, timelineMax } = get();
       const clamped = clampTimeToRange(time, timelineMin, timelineMax, calendar);
       // **打ちかけの下書きを守る関門**（B112）。洗い直しより前に見る ―― 差し止めた変更で
-      // 選択が外れると、あとから取り返せない。
-      if (timePointKey(clamped) !== timePointKey(currentTime)) {
-        for (const gate of timeChangeGates) {
-          if (gate(clamped, source, andThen)) return;
-        }
+      // 選択が外れると、あとから取り返せない。同じ年への要求も通す: 板のあいだの行き先の差し替えは、
+      // 元の年へ戻す要求も見ないと途中の年を覚えたままになる。動きとして止めるかは関門が決める。
+      for (const gate of timeChangeGates) {
+        if (gate(clamped, source, andThen)) return;
       }
       const next = revalidateForTime(
         selection,

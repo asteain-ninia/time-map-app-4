@@ -7,6 +7,9 @@
 // these constants by key; no component hardcodes a literal string inline
 // (教訓 5.19: 分岐識別子・表示文言は定数を経由する).
 
+/** 文の終わりの句点（状態行で文を続けるときに、連結する 1 か所で揃える）。 */
+export const SENTENCE_END = '。';
+
 /**
  * App-level / window title strings. アプリの正式名称は **gimoza**（`time-map-app-4` は
  * 開発時のコードネームで、利用者には見せない — 現状.md B3）。

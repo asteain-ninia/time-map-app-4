@@ -191,7 +191,11 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
    *
    * 確かめる相手は **ストアの現物**である。頼んだ時刻がストアにあれば動いた、無ければ黙る。
    */
-  const pendingMoveRef = useRef<TimePoint | null>(null);
+  const pendingMoveRef = useRef<{
+    readonly point: TimePoint;
+    /** 移動の知らせの文と出し方。端の送りは「これより先はありません」を断りの色で出す。 */
+    readonly say: (trailers: string) => void;
+  } | null>(null);
   const announceMove = useCallback(
     (point: TimePoint): void => {
       // すでにその時刻に居るなら、これ以上何も動かない ―― その場で言ってよい。
@@ -203,7 +207,12 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
         return;
       }
       // 動くはずのときは **印だけ置く**。実際に動いたかは下の見張りが確かめる。
-      pendingMoveRef.current = point;
+      pendingMoveRef.current = {
+        point,
+        say: (trailers) => {
+          succeeded(RAIL_STRINGS.movedTo(formatTimePoint(point)) + trailers);
+        },
+      };
     },
     [t.currentTime, t.calendar, succeeded, statusMessages],
   );
@@ -215,18 +224,15 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
    * 残っているのでここで言う。
    */
   useEffect(() => {
-    const point = pendingMoveRef.current;
-    if (point === null) return;
+    const pending = pendingMoveRef.current;
+    if (pending === null) return;
     pendingMoveRef.current = null;
     const live = store.getState().currentTime;
-    if (compare(live, point, t.calendar) !== 0) return;
-    // 移動と同時に起きたこと（居なくなった印を外した・その年に錨を作った）は、控えから
-    // 取り出して **同じ 1 つの文**の後ろへ続ける（上書きして読めなくしない）。
-    succeeded(
-      RAIL_STRINGS.movedTo(formatTimePoint(point)) +
-        (statusMessages?.takeMoveTrailers(moveTrailerKey(point)) ?? ''),
-    );
-  }, [t.currentTime, t.calendar, store, succeeded, statusMessages]);
+    if (compare(live, pending.point, t.calendar) !== 0) return;
+    // 移動と同時に起きたこと（居なくなった印を外した・その年に錨を作った・下書きを捨てた）は、
+    // 控えから取り出して **同じ 1 つの文**の後ろへ続ける（上書きして読めなくしない）。
+    pending.say(statusMessages?.takeMoveTrailers(moveTrailerKey(pending.point)) ?? '');
+  }, [t.currentTime, t.calendar, store, statusMessages]);
 
   // --- 時刻を動かす（すべて `useTimeline` の 1 本を通る） ---------------------
   const jumpTo = useCallback(
@@ -268,10 +274,15 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
           refuse(RAIL_STRINGS.alreadyAtEdge(formatYear(edge.year)));
           return;
         }
-        // 下書きの板で止まったら、動いたとは言わない（B112）。
-        t.jumpToTime(edge, undefined, () => {
-          refuse(RAIL_STRINGS.stepClampedTo(formatYear(edge.year)));
-        });
+        // 下書きの板で止まったら、動いたとは言わない（B112）。動いたら、端で止まったことと
+        // 捨てた下書きを 1 つの文で言う（普通の送りと同じ見張りが言う）。
+        pendingMoveRef.current = {
+          point: edge,
+          say: (trailers) => {
+            refuse(RAIL_STRINGS.stepClampedTo(formatYear(edge.year)) + trailers);
+          },
+        };
+        t.jumpToTime(edge);
         return;
       }
       t.jumpToTime(next);

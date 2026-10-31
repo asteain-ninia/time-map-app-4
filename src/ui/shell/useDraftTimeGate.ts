@@ -30,6 +30,7 @@
 import { useEffect, useRef } from 'react';
 import type { StoreApi } from 'zustand/vanilla';
 
+import { timePointKey } from '../../domain/anchor-id';
 import type { TimePoint } from '../../domain/time/time-point';
 import { TIME_CHANGE_SOURCE, type SessionStore, type TimeChangeSource } from '../state/store';
 
@@ -80,7 +81,8 @@ export function useDraftTimeGate<S>(options: DraftTimeGateOptions<S>): void {
   // 「捨てる」と答えられたあとの移動を、自分の関門で止めないための印。
   const passingRef = useRef(false);
   // 止めている移動（行き先と続き）。板が開いているあいだに次の移動を頼まれたら差し替える ――
-  // レールを引いている途中で板が開いても、行き先は離した位置である。年の板でなければ読まれない。
+  // レールを引いている途中で板が開いても、行き先は離した位置である（元の年へ引き戻して離したなら
+  // 動かない）。年の板でなければ読まれない。
   const heldRef = useRef<{
     readonly time: TimePoint;
     readonly source: TimeChangeSource;
@@ -100,6 +102,8 @@ export function useDraftTimeGate<S>(options: DraftTimeGateOptions<S>): void {
           heldRef.current = { time, source, andThen };
           return true;
         }
+        // 同じ年への書き込みは動きではない。板が無ければ聞かない。
+        if (timePointKey(time) === timePointKey(store.getState().currentTime)) return false;
         if (!now.hasDraft) return false;
         heldRef.current = { time, source, andThen };
         const moveTime = (): void => {
