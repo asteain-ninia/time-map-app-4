@@ -30,8 +30,11 @@
   z-index: 2; /* above the backdrop */
   max-width: 640px;
   width: 90%;
+  /* 本文だけがスクロールし、確定の列は窓の中に残る（教訓 5.61 の 3 段の形）。 */
+  display: flex;
+  flex-direction: column;
   max-height: 88vh;
-  overflow: auto;
+  overflow: hidden;
   background: #ffffff;
   color: #1a1a1a;
   border-radius: 8px;
@@ -41,6 +44,18 @@
 
 .help-dialog__title {
   margin: 0 0 12px;
+}
+
+.help-dialog__header,
+.help-dialog__footer {
+  flex: 0 0 auto;
+}
+
+.help-dialog__body {
+  flex: 1 1 auto;
+  /* 確定の列と見出しに押されても、本文が 0px に潰れない下限（教訓 5.61）。 */
+  min-height: 56px;
+  overflow-y: auto;
 }
 
 .help-dialog__hint {
@@ -53,9 +68,6 @@
   margin-top: 16px;
   display: flex;
   justify-content: flex-end;
-}
-
-.help-dialog__close {
 }
 
 /* --- search view ---------------------------------------------------------- */
@@ -170,8 +182,11 @@
   z-index: 2;
   max-width: 720px;
   width: 92%;
+  /* 本文だけがスクロールし、確定の列は窓の中に残る（教訓 5.61 の 3 段の形）。 */
+  display: flex;
+  flex-direction: column;
   max-height: 90vh;
-  overflow: auto;
+  overflow: hidden;
   background: #ffffff;
   color: #1a1a1a;
   border-radius: 8px;
@@ -181,6 +196,20 @@
 
 .settings-dialog__title {
   margin: 0 0 12px;
+}
+
+.settings-dialog__header,
+.settings-tabs,
+.settings-dialog__errors,
+.settings-dialog__footer {
+  flex: 0 0 auto;
+}
+
+.settings-dialog__body {
+  flex: 1 1 auto;
+  /* 確定の列と見出しに押されても、本文が 0px に潰れない下限（教訓 5.61）。 */
+  min-height: 56px;
+  overflow-y: auto;
 }
 
 .settings-tabs {
@@ -244,10 +273,6 @@
   gap: 8px;
 }
 
-.settings-dialog__cancel,
-.settings-dialog__save {
-}
-
 .settings-palette__list {
   list-style: none;
   margin: 0;
@@ -283,7 +308,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   color: #5b6573;
 }
 
@@ -298,7 +323,7 @@
 
 .diagnostics-entry__meta {
   margin-top: 2px;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   color: #5b6573;
   overflow-wrap: anywhere;
 }

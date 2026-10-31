@@ -219,8 +219,11 @@
   align-items: center;
   gap: 2px;
 }
+/* 行の高さいっぱいを押せるようにする（一覧の 👁 と種別と同じ形）。行は 28px で、ボタンを文字の高さのまま
+ * 中央に置くと上下に押せない帯が 6px ずつ残っていた。 */
 .parent-tree__expand {
   flex: 0 0 auto;
+  align-self: stretch;
   width: 18px;
   padding: 0;
   border: 0;
@@ -234,6 +237,7 @@
 .parent-tree__pick {
   display: flex;
   flex: 1 1 auto;
+  align-self: stretch;
   gap: 6px;
   align-items: center;
   min-width: 0;
@@ -248,9 +252,9 @@
 .parent-tree__pick[aria-selected='true'] {
   background: #dceeff;
 }
+/* 候補の行は地を持たないので、選べない行でも灰の箱にしない（文字の色は土台の組のまま）。 */
 .parent-tree__pick:disabled {
-  color: #999;
-  cursor: not-allowed;
+  background: transparent;
 }
 .parent-tree__indent {
   flex: 0 0 auto;
@@ -264,5 +268,5 @@
 .parent-tree__kind {
   flex: 0 0 auto;
   color: #666;
-  font-size: 11px;
+  font-size: var(--font-size-small);
 }

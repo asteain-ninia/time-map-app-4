@@ -14,11 +14,5 @@
 
 /* 押されている色は土台の 1 色（shell.css の `:where(button[aria-pressed='true'])`）。 */
 
-/* K-6「読むだけ」(教訓 5.13): このトグルは実体がプロジェクト設定 gridVisible の書き換え
-   なので、表示専用モードでは無効になる。aria-pressed の強調色だけが残ると「押せるのに
-   効かない」ように見えるので、上部バーの他の無効ボタン（.global-depth button:disabled）
-   と同じ薄さ・カーソルに揃える。 */
-.grid-toggle__button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
+/* グリッドの表示切替は表示専用モードでは無効になる。無効の見え方は土台（shell.css）の 1 か所で決める
+   （押されたまま無効なら薄い青で、押されていることを残す）。 */

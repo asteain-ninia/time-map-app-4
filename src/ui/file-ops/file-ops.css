@@ -47,7 +47,7 @@
  * でも全部見せる（省略記号にすると肝心の差（フル版/間引き版）が消える）。 */
 .unsaved-dialog__path {
   margin: 4px 0 0;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   color: var(--c-text-muted);
   overflow-wrap: anywhere;
 }
@@ -112,7 +112,7 @@
 }
 
 .backup-dialog__note {
-  font-size: 11px;
+  font-size: var(--font-size-small);
   color: var(--c-text-muted);
 }
 
@@ -127,7 +127,7 @@
 }
 
 .backup-dialog__head {
-  font-size: 11px;
+  font-size: var(--font-size-small);
   color: var(--c-text-muted);
   padding: 0 6px 2px;
 }

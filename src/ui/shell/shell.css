@@ -26,6 +26,12 @@
   --c-text-muted: #5b6573;
   --c-accent: #2f6fb5;
   --c-accent-weak: #dceaf7;
+  /* 薄い青の地に置く青い文字（--c-accent のままだと比 4.2）。 */
+  --c-accent-text: #1f4d80;
+  /* 無効の色の組（文字・地・枠）。文字と地のコントラスト比は 5.1。 */
+  --c-disabled-text: var(--c-text-muted);
+  --c-disabled-bg: var(--c-panel);
+  --c-disabled-border: var(--c-border);
   --radius: 4px;
   /* クリック対象の高さは 3 段（増分 8E 後半 / N-26）。
    * sm: 詰まった列（一覧の切替、ヘッダの中）/ 既定: パネルと帯の部品 / lg: 板の確定列・時刻の送り。
@@ -115,9 +121,24 @@ body {
   border-color: var(--c-accent);
 }
 
-:where(button:disabled) {
+/* 無効の見え方はここ 1 か所で、色の組として決める。**`opacity` は重ねない**（部品の無効の色に 0.5 を掛けると、
+ * 道具のレールの文字のコントラスト比が 5.1 から 2.0 まで落ちていた）。
+ *
+ * この規則だけ `:where()` に入れない（`html button:disabled` で詳細度 0,1,2）。`.foo { color }` や
+ * `.toolbar button { color }` に勝たせて、色を書いている部品が無効でも本文の色のままにならないようにする。
+ * 部品の側で無効を書くのは「地を透明にする行」（`.menubar__item:disabled` など）だけ。 */
+html button:disabled {
+  color: var(--c-disabled-text);
+  background: var(--c-disabled-bg);
+  border-color: var(--c-disabled-border);
   cursor: default;
-  opacity: 0.5;
+}
+
+/* 押されたまま無効（読むだけのときのグリッド切替など）。押されていることは薄い青で残す。比は 4.8。 */
+html button[aria-pressed='true']:disabled {
+  color: var(--c-disabled-text);
+  background: var(--c-accent-weak);
+  border-color: var(--c-accent-weak);
 }
 
 :where(input:not([type='checkbox'], [type='radio'], [type='range'], [type='color']), select, textarea) {
@@ -132,9 +153,13 @@ body {
   border-radius: var(--radius);
 }
 
-:where(input:disabled, select:disabled, textarea:disabled) {
-  color: var(--c-text-muted);
-  background: var(--c-panel);
+/* 入力欄の無効も同じ組（升目・ラジオ・色・つまみはブラウザの描き方のまま）。`opacity: 1` は、Chromium が
+ * 無効な select に既定で掛ける 0.7 を消す。 */
+html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='color']), select, textarea):disabled {
+  color: var(--c-disabled-text);
+  background: var(--c-disabled-bg);
+  border-color: var(--c-disabled-border);
+  opacity: 1;
 }
 
 /* 板の確定の列: 文字を折り返さずに、入り切らなければボタンごと次の行へ送る（N-28）。 */
@@ -507,8 +532,9 @@ body {
 
 /* 閉じている（＝読むだけ）ほうを目立たせる。**押されている状態が「止まっている」側**
    なので、色が付くのは鍵が閉じているときである。 */
+/* 白い文字との比を 4.5 以上にする濃さ（#b26a00 だと 4.2）。 */
 .app-shell__lock-button[aria-pressed='true'] {
-  background: #b26a00;
+  background: #aa6500;
   border-color: #d98c1f;
   color: #fff;
 }
@@ -570,7 +596,9 @@ body {
   display: block;
 }
 
-.menubar__item {
+/* アプリバーのメニューと右クリックメニューは同じ行の形（1 行が器の幅いっぱい）。 */
+.menubar__item,
+.context-menu__item {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -585,13 +613,14 @@ body {
   cursor: pointer;
 }
 
-.menubar__item:not(:disabled):hover {
+.menubar__item:not(:disabled):hover,
+.context-menu__item:not(:disabled):hover {
   background: var(--c-accent-weak);
 }
 
 .menubar__item-accel {
   color: var(--c-text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-small);
 }
 
 /* 左のレール（増分 5b ＋ 手直し D2 / 設計書 §C.3）: **道具の 1 段だけ**。
@@ -703,12 +732,6 @@ body {
   background: var(--c-accent);
   color: #fff;
   border-color: var(--c-accent);
-}
-
-.toolbar button:disabled {
-  color: var(--c-text-muted);
-  background: var(--c-panel);
-  cursor: default;
 }
 
 /* --- 右パネル: 上下 2 区画の同時表示（増分 4 / 設計書 §B.1・§E-1）----------
@@ -990,7 +1013,7 @@ body {
 .sidebar-list__count {
   flex: 0 0 auto;
   color: var(--c-text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-small);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -1039,7 +1062,7 @@ body {
 .ledger__count {
   flex: 0 0 auto;
   color: var(--c-text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-small);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -1066,7 +1089,7 @@ body {
   gap: 4px;
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   color: var(--c-text-muted);
 }
 
@@ -1074,13 +1097,13 @@ body {
   flex: 1 1 40%;
   min-width: 0;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--font-size-small);
 }
 
 .ledger__bundle-expression {
   flex: 1 1 40%;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   min-width: 0;
   padding: 2px 4px;
   background: var(--c-surface);
@@ -1093,7 +1116,7 @@ body {
 .ledger__bundle-step {
   flex: 0 0 auto;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   padding: 2px 6px;
   background: var(--c-surface);
   color: var(--c-text);
@@ -1109,7 +1132,7 @@ body {
 .ledger__bundle-label {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   color: var(--c-text);
   white-space: nowrap;
   overflow: hidden;
@@ -1120,7 +1143,7 @@ body {
   flex: 0 0 auto;
   min-width: 0;
   text-align: center;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   font-variant-numeric: tabular-nums;
   color: var(--c-text-muted);
   white-space: nowrap;
@@ -1132,7 +1155,7 @@ body {
   display: flex;
   align-items: center;
   gap: 2px;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   color: var(--c-text-muted);
   white-space: nowrap;
 }
@@ -1151,7 +1174,7 @@ body {
 .ledger__mode {
   flex: 0 0 auto;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   padding: 2px 8px;
   background: var(--c-surface);
   color: var(--c-text);
@@ -1231,7 +1254,7 @@ body {
   height: 20px;
   padding: 0;
   font: inherit;
-  font-size: 10px;
+  font-size: var(--font-size-small);
   line-height: 1;
   background: transparent;
   border: 0;
@@ -1260,6 +1283,10 @@ body {
   overflow: hidden;
   white-space: nowrap;
   min-height: 0;
+}
+
+.ledger__name:disabled {
+  background: transparent;
 }
 
 .ledger__name-text {
@@ -1329,7 +1356,7 @@ body {
   flex: 0 0 20px;
   width: 20px;
   padding: 0;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   line-height: 1;
   background: transparent;
   border: 0;
@@ -1364,7 +1391,7 @@ body {
   padding-top: 2px;
   border-top: 1px solid var(--c-border);
   color: var(--c-text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-small);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1520,14 +1547,14 @@ body {
 .display-filter__label-count {
   flex: 0 0 auto;
   color: var(--c-text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-small);
   font-variant-numeric: tabular-nums;
 }
 
 .display-filter__label-toggle {
   flex: 0 0 auto;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   padding: 1px 5px;
   background: var(--c-surface);
   color: var(--c-text);
@@ -1615,7 +1642,7 @@ body {
 }
 
 .jump-palette__item-note {
-  font-size: 11px;
+  font-size: var(--font-size-small);
   color: var(--c-text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1637,7 +1664,7 @@ body {
 .jump-palette__close {
   align-self: flex-end;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   padding: 2px 8px;
   background: var(--c-surface);
   color: var(--c-text-muted);
@@ -1714,6 +1741,7 @@ body {
 }
 
 .statusbar__value {
+  align-self: stretch;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1772,18 +1800,20 @@ body {
 /* 「明示的に閉じる」だけが消す契機 (教訓 5.12 / K-7)。時間では消えない。 */
 .statusbar__dismiss {
   flex: none;
+  align-self: stretch;
+  min-width: 24px;
   border: none;
   background: transparent;
   color: inherit;
   cursor: pointer;
   font-size: 12px;
   line-height: 1;
-  padding: 2px 4px;
+  padding: 0 4px;
   min-height: 0;
 }
 
 /* 結果の文に添えたボタン（増分 8C の手直し:「測量の線を消しました［戻す］」）。28px の行に
- * 収まる高さ（行の箱を変えない）で、文と同じ色の枠線を付けてボタンだと分かるようにする。 */
+ * 収まる 24px（行の箱を変えない）で、文と同じ色の枠線を付けてボタンだと分かるようにする。 */
 .statusbar__action {
   flex: none;
   border: 1px solid currentColor;
@@ -1795,7 +1825,7 @@ body {
   line-height: 1;
   padding: 1px 6px;
   margin-left: 6px;
-  min-height: 0;
+  min-height: var(--control-h-sm);
 }
 
 /* Cursor 経緯度 readout (FR-111): tabular digits so the text does not jitter in width
@@ -1918,7 +1948,7 @@ body {
 .option-bar__next-action {
   flex: 0 0 auto;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   padding: 2px 8px;
   background: var(--c-accent);
   color: #fff;
@@ -2003,11 +2033,6 @@ body {
   border-radius: var(--radius);
   font-size: 12px;
   cursor: pointer;
-}
-
-.option-bar__commit-button:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 /* 設定欄に差し込まれた部品 1 個の包み。
@@ -2142,7 +2167,7 @@ body {
   margin-left: auto;
   padding-left: 8px;
   color: var(--c-text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-small);
 }
 
 .snap-options__number {
@@ -2215,7 +2240,7 @@ body {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 11px;
+  font-size: var(--font-size-small);
 }
 
 /* (b) 錨レーン。器の幅が軸の画素数になる（React 側が ResizeObserver で測る）。 */
@@ -2246,7 +2271,7 @@ body {
   margin: 0;
   display: flex;
   align-items: center;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   color: var(--c-text-muted);
   pointer-events: none;
   overflow: hidden;
@@ -2282,7 +2307,7 @@ body {
   border-radius: var(--radius);
   box-shadow: 0 2px 6px rgb(0 0 0 / 18%);
   pointer-events: none;
-  font-size: 11px;
+  font-size: var(--font-size-small);
 }
 
 .rail__bundle button {
@@ -2509,7 +2534,7 @@ body {
 }
 
 .rail__year-unit {
-  font-size: 11px;
+  font-size: var(--font-size-small);
   color: var(--c-text-muted);
 }
 
@@ -2881,7 +2906,7 @@ body {
   padding: 0 6px;
   background: rgb(255 255 255 / 78%);
   border-radius: var(--radius);
-  font-size: 11px;
+  font-size: var(--font-size-small);
   color: var(--c-text);
 }
 
@@ -2916,7 +2941,7 @@ body {
 .vertex-candidates__hint {
   margin: 2px 0 4px;
   color: var(--c-text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-small);
 }
 
 .vertex-candidates__list {
@@ -2951,7 +2976,7 @@ body {
 .vertex-candidates__more {
   margin: 4px 0 0;
   color: var(--c-text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-small);
 }
 
 /* 増分 8A の手直し: 21 件目より先を出す「もっと見る」（GPT #1）。 */
@@ -3031,11 +3056,6 @@ body {
   color: var(--c-text);
   border: 1px solid var(--c-border);
   border-radius: 3px;
-}
-
-.longitude-shift__absolute button:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 /* The relative-jog slider: keep it compact (a wide slider would dominate the bar) and
@@ -3187,11 +3207,6 @@ body {
   border-color: var(--c-accent);
 }
 
-.global-depth button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
 /* Tooltip bubble: shown on hover/focus (FR-112). */
 .tooltip {
   position: relative;
@@ -3225,20 +3240,26 @@ body {
   pointer-events: none;
 }
 
+/* 位置は `useMenuInWindow` が窓の中へ収める。窓より高いときは中でスクロールする（8px は上下の余白 4+4）。 */
 .context-menu {
+  box-sizing: border-box;
   list-style: none;
   margin: 0;
   padding: 4px 0;
-  background: #fff;
-  border: 1px solid #888;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  min-width: 180px;
+  max-height: calc(100vh - 8px);
+  overflow-y: auto;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
   z-index: 50;
 }
 
+/* メニューの行は地を持たないので、無効でも灰の箱にしない（文字の色は土台の組のまま。白地で比 5.9）。 */
 .context-menu__item:disabled,
 .menubar__item:disabled {
-  color: #aaa;
-  cursor: default;
+  background: transparent;
 }
 
 /* --- U23 add-tool overlay (FR-76 / FR-78, 教訓 5.14 / 5.29) ------------------
@@ -3435,7 +3456,7 @@ body {
 .display-filter__depth-hint {
   margin: 0;
   color: var(--c-text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-small);
   line-height: 1.5;
 }
 
@@ -3461,7 +3482,7 @@ body {
 .display-filter__relax {
   align-self: flex-start;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   padding: 3px 8px;
   background: var(--c-accent);
   color: #fff;
@@ -3490,14 +3511,14 @@ body {
 .display-filter__emphasize-kinds legend {
   padding: 0 4px;
   color: var(--c-text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-small);
 }
 
 .display-filter__emphasize-hint {
   flex-basis: 100%;
   margin: 0;
   color: var(--c-text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-small);
   line-height: 1.5;
 }
 
@@ -3546,12 +3567,6 @@ body {
   border: 1px solid var(--c-border-strong);
   border-radius: var(--radius);
   cursor: pointer;
-}
-
-.display-filter__show-all:disabled,
-.display-filter__clear-emphasis:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 /* 「月日 ▾」の中身（直接ジャンプの月日）。行には並べず畳んである ―― レールは 112px 固定で、
@@ -3633,15 +3648,10 @@ body {
   background: #b3261e;
   border: 1px solid #8c1d18;
 }
-.impact-confirm-dialog__confirm:disabled {
-  color: #666;
-  background: #ddd;
-  border-color: #ccc;
-}
 .impact-confirm-dialog__note {
   margin: 6px 0 0;
   color: #555;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   text-align: right;
 }
 
@@ -3661,6 +3671,6 @@ body {
   align-items: center;
   padding: 2px 4px;
   color: #664d00;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   background: rgba(255, 214, 0, 0.16);
 }

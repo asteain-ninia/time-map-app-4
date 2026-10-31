@@ -124,7 +124,3 @@
   color: #fff;
   border-color: var(--c-accent);
 }
-.merge-options-dialog__confirm:disabled {
-  background: #b0bec5;
-  cursor: not-allowed;
-}

@@ -94,7 +94,7 @@
 .property-panel__kind {
   margin-left: auto;
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   color: var(--c-text-muted);
 }
 
@@ -105,7 +105,7 @@
   align-items: center;
   gap: 4px;
   height: 22px;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   color: var(--c-text-muted);
   min-width: 0;
   overflow: hidden;
@@ -208,7 +208,7 @@
 /* 押せない理由は **脇に常時** 出す（設計書 §D.3 / §H.5）。 */
 .property-panel__save-reason {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   line-height: 1.5;
   color: var(--c-danger, #c0392b);
   /* **1 行に収める**（2026-09-05、増分 4 の手直し）。この段落は保存列の中に居て、
@@ -259,7 +259,7 @@
   flex-direction: column;
   gap: 4px;
   padding: 6px 8px;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   line-height: 1.5;
   color: var(--c-text-muted);
   background: var(--c-panel);
@@ -310,13 +310,6 @@
   background: var(--c-accent);
   color: #fff;
   border-color: var(--c-accent);
-}
-
-.basic-info__save:disabled {
-  background: var(--c-panel);
-  color: var(--c-text-muted);
-  border-color: var(--c-border);
-  cursor: default;
 }
 
 /* --- 基本情報フォーム ------------------------------------------------------- */
@@ -489,7 +482,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   color: var(--c-text-muted);
 }
 
@@ -513,7 +506,7 @@
   box-sizing: border-box;
   text-align: left;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   padding: 2px 6px;
   background: var(--c-surface);
   color: var(--c-text);
@@ -562,8 +555,8 @@
 
 .anchor-list__badge {
   margin-left: auto;
-  font-size: 11px;
-  color: var(--c-accent);
+  font-size: var(--font-size-small);
+  color: var(--c-accent-text);
 }
 
 .anchor-list__empty,
@@ -593,17 +586,12 @@
 
 .anchor-interval__hint {
   margin: 6px 0 0;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   color: var(--c-text-muted);
 }
 
 .anchor-interval__delete {
   margin-top: 6px;
-}
-
-.anchor-interval__delete:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .anchor-interval__message {
@@ -615,7 +603,7 @@
 .anchor-timebar__edges {
   display: flex;
   justify-content: space-between;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   color: var(--c-text-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -690,19 +678,9 @@
   gap: 4px;
 }
 
+/* 色の組（押された側の白い文字と青い地も）は土台から受ける。ここで文字の色を書くと、押された側が青地に暗い文字になる。 */
 .detail-document__modes button {
-  font: inherit;
   padding: 3px 10px;
-  background: var(--c-surface);
-  color: var(--c-text);
-  border: 1px solid var(--c-border-strong);
-  border-radius: var(--radius);
-  cursor: pointer;
-}
-
-.detail-document__modes button[aria-pressed='true'] {
-  background: var(--c-accent);
-  border-color: var(--c-accent);
 }
 
 .detail-document textarea {
@@ -753,7 +731,7 @@
   flex: 1 1 auto;
   min-width: 0;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--font-size-small);
   padding: 2px 4px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -764,7 +742,7 @@
 .basic-info__parent-reason {
   margin: 0;
   color: var(--c-text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-small);
   line-height: 1.4;
 }
 
@@ -788,5 +766,5 @@
 .basic-info__end-here-reason {
   margin: 2px 0 0;
   color: #666;
-  font-size: 11px;
+  font-size: var(--font-size-small);
 }
