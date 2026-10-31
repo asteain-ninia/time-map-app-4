@@ -140,7 +140,7 @@ function buildAreas(
     const verdict = filtered === null ? undefined : filtered.displayById.get(shape.featureId);
     // FR-113 opacity (default 1 when no filter / feature visible at full opacity). The
     // verdict already dims non-emphasized features when emphasis is active (visibility.ts).
-    const opacity = verdict?.opacity ?? 1;
+    const opacity = drawnOpacity(verdict);
     const style = feature ? styleOf(feature.color, opacity) : FALLBACK_STYLE;
     const selected = shape.featureId === selectedId;
     return {
@@ -175,6 +175,15 @@ function buildAreas(
     out.push(toEvaluatedArea(shape, presentationFor(shape)));
   }
   return out;
+}
+
+/**
+ * 描く地物の不透明度。**隠れた判定（`visible: false`）のまま描くのは「必ず描く」ものだけ**なので、
+ * 判定の不透明度 0 を畳むと透明で描かれて、形の数は 1 のまま地図から消える（設計書 §D.6 の規則 1）。
+ */
+function drawnOpacity(verdict: { readonly visible: boolean; readonly opacity: number } | undefined): number {
+  if (verdict === undefined || !verdict.visible) return 1;
+  return verdict.opacity;
 }
 
 /** Style used only if a resolved area's source feature cannot be found (defensive). */
@@ -372,7 +381,7 @@ export function computeCommittedFeatures(
       if ((verdict === undefined || !verdict.visible) && !alwaysDrawn.has(feature.id)) {
         continue;
       }
-      filterOpacity = verdict?.opacity ?? 1;
+      filterOpacity = drawnOpacity(verdict);
     }
     // FR-82 selection ALONE paints the highlight colour. FR-113 強調 is expressed by dimming
     // the OTHERS (the verdict's opacity, folded into `style` below) — never by repainting the

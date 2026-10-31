@@ -435,8 +435,8 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
 
   // W3-AB fix-forward: when the target stops resolving (FR-113 hidden / no longer effective
   // at the current time), the session must not keep a ghost target — drop back to 対象選択
-  // with the tool still ARMED, mirroring the store's own heal (setFeatureHidden deselects the
-  // active feature in the SAME transition; setCurrentTime revalidates it). Without this the
+  // with the tool still ARMED, mirroring the store's own heal (setCurrentTime revalidates the
+  // active feature in the SAME transition). Without this the
   // knife would sit in DrawingCut over an invisible feature. Skipped when the host bound no
   // `resolveLeafShape` (a host without a live domain resolves nothing by design) and while
   // ConflictPaused (the host's conflict flow owns the session until it commits / cancels).

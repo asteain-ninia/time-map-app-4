@@ -2044,7 +2044,7 @@ export function createSessionStore<S>(
       // state, preserves the reference (avoids a value-equal-but-new filter busting memos).
       const prev = cur.individual.get(featureId);
       if ((prev?.hidden ?? false) === hidden) return;
-      // THE F2 case: hiding the active feature deselects it in the SAME transition (commitFilter).
+      // 選んでいる地物を隠しても選択は外さない（B55。`commitFilter` の注記）。選んでいるあいだは描く。
       commitFilter(setIndividualHidden(cur, featureId, hidden));
     },
 

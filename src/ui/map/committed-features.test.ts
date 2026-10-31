@@ -418,6 +418,20 @@ describe('buildCommittedFeatures — FR-113 display filter', () => {
     expect(ids.has('leaf-1')).toBe(true);
   });
 
+  it('隠しても選んでいるあいだは、透明でなく描く（設計書 §D.6 の規則 1。数だけ見ると通り抜ける）', () => {
+    const root = project();
+    const base = buildCommittedFeatures(root, YEAR, null, DISPLAY, DEFAULT_FILTER_STATE);
+    for (const id of ['leaf-1', 'pt-1']) {
+      const fid = id as unknown as FeatureId;
+      const filter = setIndividualHidden(DEFAULT_FILTER_STATE, fid, true);
+      const drawn = buildCommittedFeatures(root, YEAR, fid, DISPLAY, filter).find((f) => f.id === id);
+      expect(drawn?.style).toEqual(base.find((f) => f.id === id)?.style);
+      // 選択を外せば描かない。
+      const ids = buildCommittedFeatures(root, YEAR, null, DISPLAY, filter).map((f) => f.id);
+      expect(ids).not.toContain(id);
+    }
+  });
+
   it('不透明度: folds the filter opacity into the fill alpha (× persisted fillOpacity)', () => {
     const root = project();
     // Fixture fillOpacity is 0.5 (#102030); filter 0.5 → baked alpha 0.5 × 0.5 = 0.25.

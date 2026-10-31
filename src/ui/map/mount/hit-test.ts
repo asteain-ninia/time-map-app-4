@@ -134,7 +134,7 @@ export interface MountHitTestOptions {
   readonly announceEditRefusalRef?: MutableRefObject<((reason: EditRefusalKind) => void) | null>;
   /**
    * ［動かす］でまとめ役を引いて離したことを画面へ出す口。まとめ役は自分の頂点を持たないので、
-   * 引いても形は変わらない。理由を出さないと「離したのに何も起きない」になる。
+   * 引いても形は変わらない。確定へ進めず（空の取り消しを積まない。教訓 5.24）、理由を言う。
    */
   readonly announceAggregateMoveRef?: MutableRefObject<(() => void) | null>;
   /**
@@ -594,8 +594,12 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
     release: (point, wasDrag) => {
       const aggregate = pressedAggregateMove;
       pressedAggregateMove = false;
+      if (aggregate && wasDrag) {
+        editSessionInner.cancel();
+        options.announceAggregateMoveRef?.current?.();
+        return;
+      }
       editSessionInner.release(point, wasDrag);
-      if (aggregate && wasDrag) options.announceAggregateMoveRef?.current?.();
     },
     cancel: () => {
       pressedAggregateMove = false;

@@ -726,6 +726,35 @@ test.describe('B112 の指摘 — そのほかの入口', () => {
   });
 });
 
+test.describe('B112 の指摘 — 新規作成', () => {
+  test('下書きを持ったまま新規にしても板を出さず、捨てて言う', async () => {
+    const target = join(mkdtempSync(join(tmpdir(), 'gimoza-b112-')), 'a.gimoza');
+    const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });
+    try {
+      await jumpToYear(page, 1500);
+      const { cx, cy } = await commitOneFace(page);
+      await page.getByTestId('tool-edit.select').click();
+      await page.keyboard.press('Control+s');
+      await expect(page.getByTestId('statusbar-result')).toContainText(FILE_STATUS_SAVED);
+      await page.getByTestId('tool-edit.ring').click();
+      await page.mouse.click(cx, cy);
+      for (const [dx, dy] of RING_CASE.full) await page.mouse.click(cx + dx, cy + dy);
+      await expect(page.getByTestId(RING_CASE.count)).toHaveText('3');
+
+      await page.getByTestId('menu-file').click();
+      await page.getByTestId('menu-items-file').locator('[data-command="file.new"]').click();
+      await expect(page.getByTestId('app-mode')).toHaveText('view');
+      await expectNoBoard(page);
+      await expect(page.getByTestId('app-active-tool')).toHaveText('');
+      await expect(page.getByTestId('statusbar-result')).toContainText(
+        DRAFT_DISCARD_STRINGS.projectSwitchedDiscarded(DRAFT_DISCARD_STRINGS.discarded(3)),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 test.describe('B112 の指摘 — ファイルを開く: 点列を持たない道具', () => {
   /** 面を 1 つ作って保存する。戻り値は窓の座標と、保存した記録の統計。 */
   async function savedFace(

@@ -347,10 +347,13 @@ test.describe('［動かす］とまとめ役', () => {
       await expect(page.getByTestId('app-active-feature')).toHaveText(SYNTHETIC_NEST_PARENT_ID);
       const stats = await projectStats(page);
       const cam = await liveCamera(page);
+      const canUndo = await page.getByTestId('app-can-undo').textContent();
 
       await drag(page, at, 30, 20);
       await expect(page.getByTestId('conflict-dialog')).toHaveCount(0);
       expect(await committedVertices(page, childId)).toEqual(vertices);
+      // 動かないので取り消しの履歴に積まない（空の取り消しを作らない。教訓 5.24）。
+      await expect(page.getByTestId('app-can-undo')).toHaveText(canUndo ?? '');
       expect(await projectStats(page)).toEqual(stats);
       expect(await liveCamera(page)).toEqual(cam);
       await expect(page.getByTestId('app-active-feature')).toHaveText(SYNTHETIC_NEST_PARENT_ID);
@@ -358,6 +361,49 @@ test.describe('［動かす］とまとめ役', () => {
       await expect(page.getByTestId('statusbar-result')).toContainText(
         APP_STRINGS.moveAggregateRefused,
       );
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('隠したあと選んだままの地物', () => {
+  test('選んでいるあいだは見えたまま描かれ（決定 B55）、選択を外すと消える', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await jumpToYear(page, 1500);
+      const { faceId, cx, cy } = await commitOneFace(page);
+      await page.getByTestId('tool-edit.select').click();
+      await page.mouse.click(cx, cy);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+      const clip = { x: cx - 30, y: cy - 30, width: 25, height: 25 };
+      const seen = async (): Promise<Buffer> => {
+        await page.mouse.move(cx, cy - 400);
+        await page.waitForTimeout(300);
+        return page.screenshot({ clip });
+      };
+      const selected = await seen();
+
+      await page.mouse.click(cx, cy, { button: 'right' });
+      await page.getByTestId('context-menu').locator('[data-item-kind="hideFeature"]').click();
+      await expect(page.getByTestId('context-menu')).toHaveCount(0);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+      expect((await seen()).equals(selected), '隠しても選んでいるあいだは同じ姿で描く').toBe(true);
+
+      // 描かれているものを動かす。動いた先に形が見える。
+      const before = await committedVertices(page, faceId);
+      await armMoveTool(page);
+      await drag(page, { x: cx, y: cy }, 30, 0);
+      expect(await committedVertices(page, faceId)).not.toEqual(before);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+      expect((await seen()).equals(selected), '動かしたあとも描かれている').toBe(true);
+
+      // 選択を外すと、隠したとおり消える。
+      await page.getByTestId('tool-edit.select').click();
+      await page.keyboard.press('Escape');
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('app-active-feature')).toHaveText('');
+      expect((await seen()).equals(selected), '選択を外すと描かない').toBe(false);
     } finally {
       await app.close();
     }
