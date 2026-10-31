@@ -61,7 +61,7 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const userDataDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-userdata-'));
 process.on('exit', () => {
   try {
-    rmSync(userDataDir, { recursive: true, force: true });
+    rmSync(userDataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   } catch {
     // 後始末の失敗はテスト結果に影響させない (一時ディレクトリは OS が回収する)。
   }

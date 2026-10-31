@@ -370,6 +370,17 @@ interface Slot {
 /** このワーカーが抱えている、次へ渡せるアプリ。 */
 let held: Slot | null = null;
 
+// ワーカーの終わりに、抱えているアプリを止める。Playwright も止めるが、その前に helpers.ts の
+// 後始末が userData を消しに行くと、掴まれていて消せずに一時フォルダが残る。この登録は
+// helpers.ts より先に走る（このファイルを先に読み込むので）。
+process.on('exit', () => {
+  try {
+    held?.app.process().kill();
+  } catch {
+    // すでに終わっている。後始末の失敗はテスト結果に影響させない。
+  }
+});
+
 /** 再読み込みを生き延びる API を呼んだら印を付ける。 */
 function watchStickyCalls(target: object, label: string, names: readonly string[], driver: DriverState): void {
   const record = target as Record<string, unknown>;
