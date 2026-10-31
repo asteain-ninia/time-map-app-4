@@ -24,6 +24,7 @@ import { dirname, resolve } from 'node:path';
 import { test, expect, type Locator, type Page } from '@playwright/test';
 
 import {
+  armVertexTool,
   armAddAreaTool,
   commitFace,
   confirmRingDeleteIfAsked,
@@ -1247,7 +1248,7 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
 
       // --- 年3000 に新しい錨を作る: 頂点を実ドラッグして形を変える ---------------
       await jumpToYear(page, 3000);
-      await enterEditMode(page);
+      await armVertexTool(page); // 頂点を掴むのは「頂点」の道具（B114）。
       await page.mouse.click(cx, cy);
       await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
       await expect.poll(async () => (await vertexHandleWorldPositions(page)).length).toBeGreaterThanOrEqual(4);

@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { test, expect, type Page } from '@playwright/test';
 
 import {
+  armVertexTool,
   addInputLayerBox,
   armAddAreaTool,
   enterEditMode,
@@ -175,7 +176,7 @@ test.describe('増分 3 の探索 — 東西の地図端で分断された大陸
       // ③ 実データの密度で吸着が使えるか
       // ---------------------------------------------------------------------
       await returnToViewMode(page);
-      await enterEditMode(page);
+      await armVertexTool(page); // 頂点の印が出るのは「頂点」の道具（B114）。
       // 実データの地物を 1 つ選び、その頂点の画面座標を読む。
       await page.getByTestId('sidebar-tab-list').click();
       await page.getByTestId('list-mode-current').click();
