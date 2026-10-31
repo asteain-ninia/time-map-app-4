@@ -32,8 +32,7 @@ import {
   createPointFeature,
   type Feature,
 } from '../feature';
-import { createCoordinate, type WorldCoordinate } from '../coordinate';
-import { LONGITUDE_PERIOD } from '../geo/seam';
+import { storedCoordinate } from '../geo/seam';
 import type { FeatureId, RingId, VertexId } from '../ids';
 import { createShape, createTerritoryRing, type Shape } from '../ring';
 import type { TimePoint } from '../time/time-point';
@@ -152,8 +151,6 @@ function buildGeometry(draft: ShapeDraft, ids: AddIdPorts): BuiltGeometry {
   const vertices: Vertex[] = [];
   const vertexIds: VertexId[] = [];
   const sharedCandidateIds = new Map<VertexId, FeatureId>();
-  // 吸着した頂点の体に合わせるための、丸ごとの周回のずれ（0 か ±360 の倍数）。
-  const turnShift = sharedBodyTurnShift(draft, coords);
   draft.vertices.forEach((placed, index) => {
     const coordinate = coords[index];
     // coords is derived 1:1 from draft.vertices, so `coordinate` is always present;
@@ -163,44 +160,16 @@ function buildGeometry(draft: ShapeDraft, ids: AddIdPorts): BuiltGeometry {
     const sharedVertexId = placed.sharedVertexId;
     // 吸着した頂点は既存の id を使い回す（＝共有になる）。していなければ採番する。
     const id = sharedVertexId != null ? sharedVertexId : ids.nextVertexId();
-    // **吸着した頂点の体は元の値のまま**（同じ id を指す 2 つの地物の体が食い違うと、
-    // 読み込みの整合チェックが咎める）。**吸着していない頂点は、その体と同じ周回へ寄せる**
-    // ので、保存されるリングの中に 360 度の飛びが生まれない（増分 3 の手直し A2）。
-    const body =
-      placed.sharedVertexCoordinate ??
-      (turnShift === 0
-        ? coordinate
-        : createCoordinate(coordinate.lon + turnShift, coordinate.lat));
-    vertices.push(createVertex(id, body));
+    // **吸着した頂点の体は元の値のまま**（同じ id を指す 2 つの地物の体が食い違うと、読み込みの
+    // 整合チェックが咎める）。**吸着していない頂点は保存の形に畳む**（B113）。リングは隣り合う頂点を
+    // 最短の向きでつなぐので形は変わらず、周回が違う体が混ざっても 360 度の飛びとは読まれない。
+    vertices.push(createVertex(id, placed.sharedVertexCoordinate ?? storedCoordinate(coordinate)));
     vertexIds.push(id);
     if (shared != null) {
       sharedCandidateIds.set(id, shared);
     }
   });
   return { vertices, vertexIds, sharedCandidateIds };
-}
-
-/**
- * 吸着した頂点の体に合わせるための、リング全体の周回のずれ（増分 3 の手直し A2）。
- *
- * 下書きの座標は「押した場所と同じ周回」、吸着した頂点の体は「保存されている周回」である。
- * 最初に見つかった吸着頂点でこの 2 つの差を丸ごとの回転数に丸め、**吸着していない頂点の体を
- * その分だけずらす**。吸着が 1 つも無ければ 0（従来どおり下書きの値をそのまま保存する）。
- *
- * 2 つ以上の吸着頂点が別々の周回を指す形（1 つのリングが世界を 1 周以上する）は、そもそも
- * N-51 の関門が通さないので、最初の 1 つで決めてよい。
- */
-function sharedBodyTurnShift(
-  draft: ShapeDraft,
-  coords: readonly WorldCoordinate[],
-): number {
-  for (let i = 0; i < draft.vertices.length; i += 1) {
-    const body = draft.vertices[i]?.sharedVertexCoordinate;
-    const drawn = coords[i];
-    if (body == null || drawn === undefined) continue;
-    return LONGITUDE_PERIOD * Math.round((body.lon - drawn.lon) / LONGITUDE_PERIOD);
-  }
-  return 0;
 }
 
 function shapeFromRing(ringVertexIds: readonly VertexId[], ringId: RingId): Shape {

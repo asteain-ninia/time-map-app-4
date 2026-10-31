@@ -46,6 +46,16 @@ export function normalizeCoordinate(coord: WorldCoordinate): WorldCoordinate {
   return createCoordinate(wrapLonDeg(coord.lon), coord.lat);
 }
 
+/**
+ * 保存する頂点の体の座標（B80・B113）。経度を [-180, 180) へ畳む。新しい頂点の体を作る経路は全部ここを通す。
+ *
+ * 範囲の中の座標は畳む計算を通さず、そのまま返す。足して引くと小数の端数が変わり、吸着先の座標と
+ * ビットで揃わなくなる。畳むのは保存する体だけで、幾何の判定には連続の座標を使う（教訓 5.107）。
+ */
+export function storedCoordinate(coord: WorldCoordinate): WorldCoordinate {
+  return coord.lon >= -180 && coord.lon < 180 ? coord : normalizeCoordinate(coord);
+}
+
 /** True iff every coordinate's longitude is already in [-180, +180). */
 export function isRepresentativeRing(ring: readonly WorldCoordinate[]): boolean {
   for (const c of ring) {

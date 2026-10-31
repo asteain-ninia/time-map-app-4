@@ -36,6 +36,7 @@ export {
   LONGITUDE_PERIOD,
   type WrapReplica,
   normalizeCoordinate,
+  storedCoordinate,
   isRepresentativeRing,
   unwrapRing,
   unwrapRingClosed,

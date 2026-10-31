@@ -84,6 +84,7 @@ import type { SplitSharedEdgeCut, SplitSnapshot } from '../knife/proposal';
 import type { DrillSnapshot } from '../drill/proposal';
 import type { VertexRemap } from '../shared-vertex';
 import type { WorldCoordinate } from '../coordinate';
+import { wrapLonDeg } from '../geo/longitude';
 import { quantizedEqual } from '../geometry/index';
 import type { FeatureSnapshot } from './edit-flow';
 import type { DomainProject, FeatureHistory } from '../persistence/serialize';
@@ -1048,9 +1049,14 @@ function spliceSeamsAfter(
   return next;
 }
 
-/** Squared planar distance between two coordinates (monotone ⇒ fine for ordering). */
-function squaredDistance(a: WorldCoordinate, b: WorldCoordinate): number {
-  const dLon = a.lon - b.lon;
+/**
+ * Squared planar distance between two coordinates (monotone ⇒ fine for ordering).
+ *
+ * 経度の差は最短の向きで測る（B113）。頂点の体は [-180, 180) に畳んであるので、継ぎ目をまたぐ辺の
+ * 向こう側の切り口を素の差で測ると、遠いほうが近いと読まれ、隣の輪へ逆の順に差し込まれる。
+ */
+export function squaredDistance(a: WorldCoordinate, b: WorldCoordinate): number {
+  const dLon = wrapLonDeg(a.lon - b.lon);
   const dLat = a.lat - b.lat;
   return dLon * dLon + dLat * dLat;
 }

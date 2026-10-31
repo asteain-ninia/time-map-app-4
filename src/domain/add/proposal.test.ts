@@ -1,3 +1,4 @@
+import { unwrapRing } from '../geo/seam';
 import { describe, expect, it } from 'vitest';
 
 import { createBasicAttributes, createColorInfo } from '../attributes';
@@ -238,21 +239,21 @@ describe('assembleAddProposal — 吸着した頂点の共有（増分 3）', ()
     const lonById = new Map(proposal.snapshot.vertices.map((v) => [v.id, v.coordinate.lon]));
     // 吸着した頂点の体は 1 ビットも動かない（共有の相手と食い違わせない）。
     expect(lonById.get(existing)).toBe(-179.8);
-    // 残り 2 点は同じ周回（−180 側）へ寄っている。
+    // 残り 2 点は保存の形に畳まれている（B113）。
     const others = [...lonById.entries()].filter(([id]) => id !== existing).map(([, lon]) => lon);
     expect(others).toHaveLength(2);
-    for (const lon of others) expect(lon).toBeLessThan(-179);
-
-    // 保存されるリングの中に 360 度の飛びが 1 つも無い（＝読み込み側が形を作り直さない）。
-    const ring = proposal.snapshot.vertices.map((v) => v.coordinate);
-    for (let i = 0; i < ring.length; i += 1) {
-      const a = ring[i]!;
-      const b = ring[(i + 1) % ring.length]!;
-      expect(Math.abs(b.lon - a.lon)).toBeLessThan(180);
+    for (const lon of others) {
+      expect(lon).toBeGreaterThanOrEqual(-180);
+      expect(lon).toBeLessThan(180);
     }
+
+    // 隣り合う頂点を最短の向きでつなぐと、形は下書きのまま（1 度に満たない 3 角形）。
+    const ring = proposal.snapshot.vertices.map((v) => v.coordinate);
+    const unwrapped = unwrapRing(ring).map((v) => v.lon);
+    expect(Math.max(...unwrapped) - Math.min(...unwrapped)).toBeCloseTo(0.8, 6);
   });
 
-  it('A2: 吸着が 1 つも無ければ体は下書きの値のまま（従来どおり）', () => {
+  it('吸着が無くても、継ぎ目を越えた体は保存の形に畳む（B113）', () => {
     let session = startSession(ADD_TOOL_KIND.Face);
     session = placeVertex(session, C(179.6, 0));
     session = placeVertex(session, C(180.4, 0));
@@ -267,6 +268,9 @@ describe('assembleAddProposal — 吸着した頂点の共有（増分 3）', ()
       ids: makeIds().ids,
       nextRingId: () => asRingId('r-1') as RingId,
     });
-    expect(proposal.snapshot.vertices.map((v) => v.coordinate.lon)).toEqual([179.6, 180.4, 180.2]);
+    const lons = proposal.snapshot.vertices.map((v) => v.coordinate.lon);
+    expect(lons[0]).toBe(179.6); // 範囲の中は 1 ビットも変えない。
+    expect(lons[1]).toBeCloseTo(-179.6, 9);
+    expect(lons[2]).toBeCloseTo(-179.8, 9);
   });
 });

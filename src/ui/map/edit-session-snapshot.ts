@@ -32,7 +32,7 @@ import {
   type MovingRing,
 } from '../../domain/editing/edit-flow';
 import { movingVertexIds } from '../../domain/editing/drag-session';
-import { normalizeCoordinate, unwrapRing, unwrapRingClosed } from '../../domain/geo/seam';
+import { storedCoordinate, unwrapRing, unwrapRingClosed } from '../../domain/geo/seam';
 import { getVertex } from '../../domain/vertex';
 import type { WorldCoordinate } from '../../domain/coordinate';
 import type { Feature } from '../../domain/feature';
@@ -51,12 +51,11 @@ import { featureByIdAt, verticesAt } from '../live-lookup';
  * 畳まない（畳むと「半周以上」の誤判定が戻る）。畳むのは保存する体だけである。輪は隣り合う頂点を最短の
  * 向きでつなぐので、畳んでも形は変わらない。
  *
- * 範囲の中の座標は畳む計算を通さない。足して引くと小数の端数が変わり、吸着先の座標とビットで揃わなくなる。
+ * 畳み方は {@link storedCoordinate} の 1 本。
  */
 function storedBody(vertex: Vertex): Vertex {
-  const { lon } = vertex.coordinate;
-  if (lon >= -180 && lon < 180) return vertex;
-  return withVertexCoordinate(vertex, normalizeCoordinate(vertex.coordinate));
+  const stored = storedCoordinate(vertex.coordinate);
+  return stored === vertex.coordinate ? vertex : withVertexCoordinate(vertex, stored);
 }
 
 /** 確定する提案の材料を組み立てる。頂点の体はここで保存の形に畳む（{@link storedBody}）。 */

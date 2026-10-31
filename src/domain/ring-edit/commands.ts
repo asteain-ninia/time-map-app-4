@@ -27,6 +27,7 @@
 
 import type { WorldCoordinate } from '../coordinate';
 import { hasLongEdge } from '../geo/long-edge';
+import { storedCoordinate } from '../geo/seam';
 import {
   withLeafShape,
   type LeafFeature,
@@ -431,7 +432,7 @@ export function addRingVertex(
   if (edit === undefined || edit.kind !== 'feature' || edit.feature.kind !== feature.kind) {
     return reject(RING_REJECT.TargetNotFound);
   }
-  const newVertex = createVertex(newVertexId, coordinate);
+  const newVertex = createVertex(newVertexId, storedCoordinate(coordinate));
   const nextStore = setVertex(store, newVertex);
   return commitIfValid(edit.feature as LeafFeature, edit.feature.shape, nextStore, [newVertex]);
 }
@@ -605,7 +606,8 @@ function mintRingVertices(coords: readonly WorldCoordinate[], ids: RingIdPorts):
   const vertexIds: VertexId[] = [];
   for (const c of coords) {
     const id = ids.nextVertexId();
-    vertices.push(createVertex(id, c));
+    // 保存の形に畳む（B113）。輪は隣り合う頂点の最短の向きでつなぐので形は変わらない。
+    vertices.push(createVertex(id, storedCoordinate(c)));
     vertexIds.push(id);
   }
   return { vertices, vertexIds };

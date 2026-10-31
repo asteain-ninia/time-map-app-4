@@ -22,7 +22,7 @@
 import type { BasicAttributes, ColorInfo } from '../attributes';
 import { type WorldCoordinate } from '../coordinate';
 import { quantizeCoordinate } from '../geometry/index';
-import { normalizeCoordinate } from '../geo/index';
+import { normalizeCoordinate, storedCoordinate } from '../geo/index';
 import { vertexCoordKey } from '../vertex-weld';
 import type { GeoMultiPolygon } from '../geometry/types';
 import {
@@ -478,7 +478,9 @@ function toSplitSharedEdgeCut(featureId: FeatureId, cut: EdgeCutPoint): SplitSha
     edgeStartIndex: cut.edgeStartIndex,
     edgeStartVertexId: cut.edgeStartVertexId,
     edgeEndVertexId: cut.edgeEndVertexId,
-    cutCoordinate: cut.coordinate,
+    // 切り口は片の頂点と同じ保存の形で持つ（B113）。分割の幾何は連続の経度なので、継ぎ目の向こうの
+    // 切り口が片の頂点と突き合わず、確定が内部エラーで断られていた。
+    cutCoordinate: storedCoordinate(cut.coordinate),
   };
 }
 
