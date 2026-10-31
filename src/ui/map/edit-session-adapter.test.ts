@@ -495,6 +495,58 @@ describe('edit-mode drag runs the slide/snap light path through update() (受け
     expect((captured.snap as { vertexId: unknown }).vertexId).toBe(target);
   });
 
+  it('B102: 吸着している間の下書きは吸着先に乗り、離れれば手元へ戻る（単一の頂点）', () => {
+    const target = asVertexId('shared');
+    const previews: (DragSession | null)[] = [];
+    const { dispatcher } = setup(vertexHit(asFeatureId('L'), asVertexId('v0')), {
+      worldToScreen: (w) => ({ x: w.lon, y: w.lat }),
+      snapDistancePx: () => 5,
+      neighboursAt: () => ({
+        edges: [],
+        candidates: [],
+        snapCandidates: [{ vertexId: target, position: { lon: 43, lat: 43 } }],
+      }),
+      onPreview: (s) => previews.push(s),
+    });
+    dispatcher.pointerDown(ptr(1, 10, 10));
+    dispatcher.pointerMove(ptr(1, 41, 41)); // 吸着先まで 2.8px
+    expect(previews.at(-1)?.preview).toEqual({ lon: 43, lat: 43 });
+    expect(previews.at(-1)?.snap?.vertexId).toBe(target);
+    dispatcher.pointerMove(ptr(1, 30, 30)); // 半径の外へ出た
+    expect(previews.at(-1)?.preview).toEqual({ lon: 30, lat: 30 });
+    expect(previews.at(-1)?.snap).toBeNull();
+    dispatcher.pointerUp(ptr(1, 30, 30));
+  });
+
+  it('B102: 確定する下書きは離す前に見えていた位置と同じ（辺から足す頂点も）', () => {
+    const target = asVertexId('shared');
+    const previews: (DragSession | null)[] = [];
+    const confirmed: DragSession[] = [];
+    let minted = 0;
+    const { dispatcher } = setup(edgeHit(asFeatureId('L'), asVertexId('v0'), asVertexId('v1')), {
+      worldToScreen: (w) => ({ x: w.lon, y: w.lat }),
+      snapDistancePx: () => 5,
+      nextVertexId: () => asVertexId(`new-${(minted += 1)}`),
+      neighboursAt: () => ({
+        edges: [],
+        candidates: [],
+        snapCandidates: [{ vertexId: target, position: { lon: 43, lat: 43 } }],
+      }),
+      onPreview: (s) => previews.push(s),
+      buildSnapshot: (session) => {
+        confirmed.push(session);
+        return buildSnapshot({ feature: FEATURE, vertices: [] });
+      },
+    });
+    dispatcher.pointerDown(ptr(1, 10, 10));
+    dispatcher.pointerMove(ptr(1, 41, 41));
+    const shownBeforeRelease = previews.at(-1)?.preview;
+    dispatcher.pointerUp(ptr(1, 41, 41));
+    expect(shownBeforeRelease).toEqual({ lon: 43, lat: 43 });
+    expect(confirmed[0]?.preview).toEqual(shownBeforeRelease);
+    expect(confirmed[0]?.snap?.vertexId).toBe(target);
+  });
+
   it('no near candidate leaves the session snap null (no spurious share)', () => {
     const { dispatcher, captured, outcomes } = neighboursSetup({
       edges: [],

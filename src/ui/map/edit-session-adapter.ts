@@ -203,7 +203,7 @@ export type EditSessionAdapterDeps<S> = ReleaseProcess<S> & {
 
   /** Project a world coordinate to screen px (U17 forward transform, for decideSnap). */
   readonly worldToScreen?: WorldToScreen;
-  /** The snap distance in screen px (U16 settings, FR-110). Non-positive ⇒ no snap. */
+  /** いまの倍率で効く吸着の半径（画面の px。`snapRadiusPx` を通した値）。0 以下なら吸着しない。 */
   readonly snapDistancePx?: () => number;
   /**
    * Query U10's spatial index for the near-candidate edge / terminal / vertex sets
@@ -407,13 +407,19 @@ export function createEditSessionPort<S>(deps: EditSessionAdapterDeps<S>): EditS
     //     the companions by the same d_snap and the set stays rigid (同一ベクトル維持);
     //   - some companion would be pushed into an obstacle ⇒ DROP the snap (拘束 > スナップ),
     //     keeping the retracted preview and letting the set stop short instead.
-    // A single-vertex drag (no companions) keeps today's behaviour verbatim.
+    //
+    // 単一の頂点も同じく、吸着している間の下書きは吸着先に乗せる（B102）。離すと確定は吸着先の
+    // 座標になるので、手元に残すと離した瞬間に飛んで見え、下書きと確定が一致しない。
     let previewOut = slid.position;
-    if (snap !== null && movingSet !== undefined && movingSet.companions.length > 0) {
+    if (snap !== null) {
       const snapVertexId = snap.vertexId;
       const snapTarget = neighbours.snapCandidates.find((c) => c.vertexId === snapVertexId);
       if (snapTarget !== undefined) {
-        if (setDeltaAdmitsSnap(movingSet.primaryFrom, snapTarget.position, movingSet.companions)) {
+        const admitted =
+          movingSet === undefined ||
+          movingSet.companions.length === 0 ||
+          setDeltaAdmitsSnap(movingSet.primaryFrom, snapTarget.position, movingSet.companions);
+        if (admitted) {
           previewOut = snapTarget.position; // rigid: companions ride d_snap, primary welds to it.
         } else {
           snap = null; // constraint wins: the snap cannot carry the set legally, so drop it.
