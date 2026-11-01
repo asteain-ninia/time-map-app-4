@@ -655,6 +655,8 @@ export function App(): JSX.Element {
   // 引いている最中の年（`map/drag-year.ts`）。地図の押下の層が呼び、ここが再生と状態行へつなぐ。
   const dragYearHostRef = useRef<DragYearHost | null>(null);
   const stopPlaybackRef = useRef<(() => boolean) | null>(null);
+  // 読み込みを始めた瞬間に呼ぶ、地図の入力の口（地図が載っているあいだだけ入っている）。
+  const loadStartedRef = useRef<(() => void) | null>(null);
   /**
    * **道具が下書きを持っているか**（増分 5 の手直し A1）。右クリックの昇格を止める
    * 判定に使う。持ち主の値（`focusOwner`）は文字入力が前に立つと `text` になるので、
@@ -776,6 +778,20 @@ export function App(): JSX.Element {
   const statusMessageStore = statusMessageStoreRef.current;
   // 引いている最中にファイルを開いた・新規にした（描画のあとで言う）。
   const dragCancelledByLoadRef = useRef(false);
+  const loadStartNonceRef = useRef(0);
+  const onLoadActivity = useCallback(
+    (active: boolean): void => {
+      const nonce = store.getState().projectLoadNonce;
+      if (active) {
+        loadStartNonceRef.current = nonce;
+        loadStartedRef.current?.();
+        return;
+      }
+      // やめた・失敗した: 反映が無いので、反映のあとで言う文はもう要らない（始めたときに言ってある）。
+      if (nonce === loadStartNonceRef.current) dragCancelledByLoadRef.current = false;
+    },
+    [store],
+  );
   const dragLoadNonce = useStore(store, (s) => s.projectLoadNonce);
   useEffect(() => {
     if (!dragCancelledByLoadRef.current) return;
@@ -1113,6 +1129,7 @@ export function App(): JSX.Element {
       cameraInputRef,
       wheelZoomNoticeRef,
       boardOpenedRef,
+      loadStartedRef,
       dragYearHostRef,
       hitTester: hitTest.hitTester,
       selectionPort: hitTest.selectionPort,
@@ -1645,6 +1662,11 @@ export function App(): JSX.Element {
           return;
         case DRAG_CANCEL_CAUSE.Project:
           // 読み込みは反映の直後に状態行を消すので、描画のあとで言う（`dragCancelledByLoadRef`）。
+          dragCancelledByLoadRef.current = true;
+          return;
+        case DRAG_CANCEL_CAUSE.LoadStarted:
+          // いま言い、反映まで進んだら状態行が消えるので、もう一度言う。
+          statusMessageStore.notice(APP_STRINGS.dragCancelledByLoadStart);
           dragCancelledByLoadRef.current = true;
           return;
         case DRAG_CANCEL_CAUSE.Document:
@@ -4757,6 +4779,7 @@ export function App(): JSX.Element {
             )}
             <FileOpsController
               store={store}
+              onLoadActivity={onLoadActivity}
               registry={registry}
               calendar={calendar}
               supplyZoomRange={supplyZoomRange}

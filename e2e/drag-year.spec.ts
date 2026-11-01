@@ -11,7 +11,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 
 import { PROJECT_FIELD_STRINGS } from '../src/ui/settings/strings';
 import { APP_STRINGS } from '../src/ui/shell/strings';
@@ -298,6 +298,60 @@ for (const tool of TOOLS) {
       }
     });
 
+    test('押したまま読み込みを始める: 反映の前に離しても記録しない。始めた時点で言い、反映のあとも言う', async () => {
+      const target = join(mkdtempSync(join(tmpdir(), 'gimoza-drag-year-')), 'a.gimoza');
+      const { app, page } = await launchApp({
+        extraEnv: { E2E_SAVE_AS_PATH: target, E2E_OPEN_PATH: target },
+      });
+      try {
+        const { faceId, grip } = await faceReady(page, tool);
+        await page.keyboard.press('Control+s');
+        await expect(page.getByTestId(STATUS)).toContainText('保存しました');
+        const before = await committedVertices(page, faceId);
+        // 読み込みの遅いファイルの代わり（主プロセスの返事を遅らせる）。E2E は OS のダイアログを飛ばす
+        // ので焦点も動かず、読み込みの開始の取り消しだけが効く。
+        await delayFileLoads(app, 1500);
+        const undo = await page.getByTestId('app-can-undo').textContent();
+        await pressAndPull(page, grip);
+        await page.keyboard.press('Control+o');
+        await expect(page.getByTestId(STATUS)).toContainText(APP_STRINGS.dragCancelledByLoadStart);
+        await page.mouse.up();
+        await page.waitForTimeout(200);
+        // 反映の前: 旧書類へ何も記録していない。
+        expect(await committedVertices(page, faceId)).toEqual(before);
+        await expect(page.getByTestId('app-can-undo')).toHaveText(undo ?? '');
+        await expect(page.getByTestId(STATUS)).toContainText(APP_STRINGS.dragCancelledByProject);
+        expect(await committedVertices(page, faceId)).toEqual(before);
+      } finally {
+        await app.close();
+      }
+    });
+
+    test('読み込みに失敗したら、始めた時点の文が残り、あとの読み込みで「閉じた」と言わない', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'gimoza-drag-year-'));
+      const target = join(dir, 'a.gimoza');
+      const { app, page } = await launchApp({
+        extraEnv: { E2E_SAVE_AS_PATH: target, E2E_OPEN_PATH: join(dir, 'missing.gimoza') },
+      });
+      try {
+        const { faceId, grip } = await faceReady(page, tool);
+        await page.keyboard.press('Control+s');
+        await expect(page.getByTestId(STATUS)).toContainText('保存しました');
+        const before = await committedVertices(page, faceId);
+        await pressAndPull(page, grip);
+        await page.keyboard.press('Control+o');
+        await expect(page.getByTestId(STATUS)).not.toContainText('保存しました');
+        await page.mouse.up();
+        await page.waitForTimeout(200);
+        expect(await committedVertices(page, faceId)).toEqual(before);
+        expect(await loadProject(page, target)).toBe('loaded');
+        await page.waitForTimeout(200);
+        await expect(page.getByTestId(STATUS)).not.toContainText(APP_STRINGS.dragCancelledByProject);
+      } finally {
+        await app.close();
+      }
+    });
+
     test('押したまま Ctrl+Z: 取り消しが走ったら、引いていたものも記録せずに取り消して言う', async () => {
       const { app, page } = await launchApp();
       try {
@@ -321,6 +375,20 @@ for (const tool of TOOLS) {
       }
     });
   });
+}
+
+/** 主プロセスの読み込みの返事を遅らせる（読み込みの遅いファイルの代わり）。 */
+async function delayFileLoads(app: ElectronApplication, ms: number): Promise<void> {
+  await app.evaluate(({ ipcMain }, delay) => {
+    const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, (...a: unknown[]) => unknown> })
+      ._invokeHandlers;
+    const original = handlers.get('tmap:load');
+    if (original === undefined) throw new Error('読み込みの口が見つからない');
+    handlers.set('tmap:load', async (...args: unknown[]) => {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return original(...args);
+    });
+  }, ms);
 }
 
 /** 確定のあとの掴む位置（頂点の道具は動いた隅、面の道具は面の真ん中のまま）。 */

@@ -84,6 +84,11 @@ export interface MountInputOptions {
    * 板が開いたら、その押下を畳む。
    */
   readonly boardOpenedRef: MutableRefObject<(() => void) | null>;
+  /**
+   * 読み込みを始めたことを受ける口の置き場（ここへ入れる。宿主が始めた瞬間に呼ぶ）。掴んでいる押下を
+   * 記録せずに取り消す。
+   */
+  readonly loadStartedRef?: MutableRefObject<(() => void) | null>;
   /** 引いている最中の年の扱いを宿主へ知らせる口（{@link DragYearHost}）。 */
   readonly dragYearHostRef?: MutableRefObject<DragYearHost | null>;
   /**
@@ -530,8 +535,21 @@ export function createMountInput(options: MountInputOptions): MountInput {
     if (dispatcher.foldPressedLeftPans()) candidateGesture?.cancel();
   };
 
+  // 読み込みを始めたら、反映を待たずに取り消す。待つと、反映の前に離した分を旧書類へ記録し、反映が
+  // 履歴ごと消す。実機では OS のダイアログが先に焦点を奪う（`dropPressesOnWindowLeft`）が、焦点の移動に
+  // 頼らない。
+  if (options.loadStartedRef !== undefined) {
+    options.loadStartedRef.current = (): void => {
+      if (!dispatcher.holdsEditPress) return;
+      dispatcher.cancelSelectEdit();
+      candidateGesture?.cancel();
+      cancelledFor(true, DRAG_CANCEL_CAUSE.LoadStarted);
+    };
+  }
+
   const dispose = (): void => {
     options.boardOpenedRef.current = null;
+    if (options.loadStartedRef !== undefined) options.loadStartedRef.current = null;
     removeTimeGate();
     unsubscribeMode();
     unwatchCandidates();

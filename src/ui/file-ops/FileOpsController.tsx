@@ -206,6 +206,12 @@ export interface FileOpsControllerProps {
    */
   readonly onBaseMapImageChange?: (image: Uint8Array) => void;
   /**
+   * 読み込みを始めた（`active` 真。主プロセスへ頼む直前で、未保存の確認のあと）・その 1 回が終わった
+   * （偽。反映した・やめた・失敗した、のどれでも）。引いている最中の押下を、反映まで待たずに取り消すのに
+   * 使う（`docs/ui-redesign/README.md` の B-3）。
+   */
+  readonly onLoadActivity?: (active: boolean) => void;
+  /**
    * FR-04 — register the base-map REPLACE runner with the host (the settings dialog's
    * 差し替えボタン triggers it). The controller owns the runner because it holds BOTH
    * the retained SAVE bytes (loadedAssetsRef → 保存往復) and the DISPLAY push
@@ -575,6 +581,13 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // ラッチは ref(React state 非経由)ゆえ再レンダーなしで async ランナーを門番でき、finally で
   // 必ず解放するので thrown/中断でも全 file 操作を wedge しない (教訓 5.2)。
   const opInFlightRef = useRef(false);
+  const onLoadActivityRef = useRef(props.onLoadActivity);
+  onLoadActivityRef.current = props.onLoadActivity;
+  const loadActiveRef = useRef(false);
+  const noteLoadStarted = useCallback((): void => {
+    loadActiveRef.current = true;
+    onLoadActivityRef.current?.(true);
+  }, []);
   const runExclusive = useCallback(
     async <T,>(op: () => Promise<T>): Promise<T | undefined> => {
       if (opInFlightRef.current) return undefined;
@@ -583,6 +596,10 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         return await op();
       } finally {
         opInFlightRef.current = false;
+        if (loadActiveRef.current) {
+          loadActiveRef.current = false;
+          onLoadActivityRef.current?.(false);
+        }
         // UC1: the TOTAL discard point for a staged asset capture. Every load entry
         // (開く / D&D) runs through here, so whatever path the flow took — reflected
         // (already promoted), 修復中止, 二度目も Unresolved, reject, cancel, or a throw —
@@ -659,10 +676,19 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     };
     const capturingApi: TimeMapApi = {
       ...api,
-      load: async () => captureAssets(await api.load()),
-      loadDropped: async (droppedPath: string) => captureAssets(await api.loadDropped(droppedPath)),
+      load: async () => {
+        noteLoadStarted();
+        return captureAssets(await api.load());
+      },
+      loadDropped: async (droppedPath: string) => {
+        noteLoadStarted();
+        return captureAssets(await api.loadDropped(droppedPath));
+      },
       // 増分 8D: 世代から開くのも同じ捕捉点を通す（資産・トークン・「世代から」の印を預ける）。
-      openBackup: async (id: string) => captureAssets(await api.openBackup(id)),
+      openBackup: async (id: string) => {
+        noteLoadStarted();
+        return captureAssets(await api.openBackup(id));
+      },
     };
     const buildSaveRequest = (): SaveRequest => {
       // Capture the EXACT snapshot the lost-edit guard compares against: the LIVE

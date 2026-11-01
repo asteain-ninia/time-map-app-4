@@ -13,6 +13,8 @@ export const DRAG_CANCEL_CAUSE = {
   Time: 'time',
   /** ファイルを開いた・新規にした。 */
   Project: 'project',
+  /** ファイルの読み込みを始めた（反映を待たない。離すと、反映で消える記録を旧書類へ書く）。 */
+  LoadStarted: 'load-started',
   /** 取り消しなどで書類の中身が変わった。 */
   Document: 'document',
   /** 確認の板や作業の板、メニューが開いた（覆いの裏で離されても記録しない）。 */

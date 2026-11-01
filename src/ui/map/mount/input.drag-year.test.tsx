@@ -27,6 +27,7 @@ describe('引いている最中の年 — 地図の入力の層', () => {
   let session: { begin: ReturnType<typeof vi.fn>; cancel: ReturnType<typeof vi.fn>; release: ReturnType<typeof vi.fn> };
   let host: { pressBegan: ReturnType<typeof vi.fn>; timeMoveRefused: ReturnType<typeof vi.fn>; cancelled: ReturnType<typeof vi.fn> };
   let boardOpened: { current: (() => void) | null };
+  let loadStarted: { current: (() => void) | null };
   let writeCamera: ReturnType<typeof vi.fn>;
   let selectionEnd: ReturnType<typeof vi.fn>;
   let cameraInput: { current: MapCameraInput | null };
@@ -63,6 +64,7 @@ describe('引いている最中の年 — 地図の入力の層', () => {
     session = { begin: vi.fn(() => true), cancel: vi.fn(), release: vi.fn() };
     host = { pressBegan: vi.fn(), timeMoveRefused: vi.fn(), cancelled: vi.fn() };
     boardOpened = { current: null };
+    loadStarted = { current: null };
     input = createMountInput({
       store,
       ports: {
@@ -86,6 +88,7 @@ describe('引いている最中の年 — 地図の入力の層', () => {
       } as unknown as EditSessionPort,
       contextMenu: { request: () => {} },
       boardOpenedRef: boardOpened,
+      loadStartedRef: loadStarted,
       dragYearHostRef: { current: host as unknown as DragYearHost },
     });
   });
@@ -164,6 +167,17 @@ describe('引いている最中の年 — 地図の入力の層', () => {
     boardOpened.current?.();
     expect(session.cancel).toHaveBeenCalledTimes(1);
     expect(host.cancelled.mock.calls[0]?.[0]).toBe(DRAG_CANCEL_CAUSE.Board);
+    release();
+    expect(session.release).not.toHaveBeenCalled();
+  });
+
+  it('読み込みを始めたら、反映を待たずに記録せず取り消して言う。掴んでいなければ何もしない', () => {
+    loadStarted.current?.();
+    expect(host.cancelled).not.toHaveBeenCalled();
+    press();
+    loadStarted.current?.();
+    expect(session.cancel).toHaveBeenCalledTimes(1);
+    expect(host.cancelled.mock.calls[0]?.[0]).toBe(DRAG_CANCEL_CAUSE.LoadStarted);
     release();
     expect(session.release).not.toHaveBeenCalled();
   });
