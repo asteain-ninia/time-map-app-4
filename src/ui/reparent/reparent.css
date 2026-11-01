@@ -136,7 +136,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin: 4px 0 8px 20px;
+  margin: 4px 0 8px var(--choice-indent);
 }
 .reparent-options-dialog__terminal {
   margin: 0;
@@ -151,7 +151,7 @@
 }
 .reparent-options-dialog__note,
 .reparent-options-dialog__warning {
-  margin: 4px 0 0 20px;
+  margin: 4px 0 0 var(--choice-indent);
   color: var(--c-text-muted);
   font-size: 12px;
 }
@@ -160,7 +160,7 @@
 }
 .reparent-options-dialog__preview {
   margin: 0 0 12px;
-  padding-left: 20px;
+  padding-left: var(--choice-indent);
   color: var(--c-text);
   font-size: 12px;
 }
@@ -197,7 +197,7 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin: 4px 0 8px 20px;
+  margin: 4px 0 8px var(--choice-indent);
 }
 .parent-tree__filter {
   width: 100%;

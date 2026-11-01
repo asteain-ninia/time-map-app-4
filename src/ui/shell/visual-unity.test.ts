@@ -271,6 +271,23 @@ describe('板の器（N-19 / N-20）', () => {
   });
 });
 
+describe('余白の体系（N-26）', () => {
+  // 4 / 6 / 8 / 10 / 12 / 16 と、詰まった行の 1 / 2 と、0。
+  const SCALE = new Set(['0', '1', '2', '4', '6', '8', '10', '12', '16']);
+
+  it('余白の宣言は体系の値か変数だけを使う', () => {
+    const offenders: string[] = [];
+    for (const { path, selector, body } of allRules()) {
+      for (const m of body.matchAll(/(?:^|[;\s])((?:padding|margin|gap|row-gap|column-gap)(?:-[a-z]+)?)\s*:\s*([^;]+);/g)) {
+        for (const px of (m[2] ?? '').matchAll(/(-?)(\d+(?:\.\d+)?)px/g)) {
+          if (!SCALE.has(px[2] ?? '')) offenders.push(`${path}: ${selector} ${m[1] ?? ''} ${m[2] ?? ''}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe('文字の大きさの直値', () => {
   it('補助の文字は変数から引く（11px を直に書かない）', () => {
     const offenders = allCss.filter(({ css }) => /font-size:\s*11px/.test(css)).map(({ path }) => path);

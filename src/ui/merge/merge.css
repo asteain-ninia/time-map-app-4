@@ -107,7 +107,7 @@
 .merge-options-dialog__text {
   display: block;
   width: 100%;
-  margin: 4px 0 8px 24px;
+  margin: 4px 0 8px var(--choice-indent);
   max-width: calc(100% - 24px);
   padding: 6px 8px;
   border: 1px solid var(--c-border);

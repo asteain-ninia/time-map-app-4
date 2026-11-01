@@ -99,7 +99,7 @@
    している ―― 設定欄の予算に余りが無く、横に並べると読み取りごと「≫」へ畳まれた。
    下の余白は行の箱の高さを変えない（インラインの padding）ので、40px の帯も動かない。 */
 .survey-controls__legend {
-  padding-bottom: 3px;
+  padding-bottom: 4px;
   background-image: linear-gradient(var(--survey-legend-color), var(--survey-legend-color));
   background-position: left bottom;
   background-size: 100% var(--survey-legend-width);

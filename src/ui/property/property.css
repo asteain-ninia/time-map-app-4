@@ -271,7 +271,7 @@
   align-self: flex-start;
   font: inherit;
   font-size: var(--font-size-body);
-  padding: 3px 8px;
+  padding: 2px 8px;
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -639,7 +639,7 @@
 
 /* 色の組（押された側の白い文字と青い地も）は土台から受ける。ここで文字の色を書くと、押された側が青地に暗い文字になる。 */
 .detail-document__modes button {
-  padding: 3px 10px;
+  padding: 2px 10px;
 }
 
 .detail-document textarea {

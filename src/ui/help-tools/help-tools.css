@@ -219,7 +219,7 @@
 }
 
 .settings-tabs [role='tab'] {
-  padding: 2px 14px;
+  padding: 2px 12px;
   cursor: pointer;
   min-height: var(--control-h-lg);
 }
