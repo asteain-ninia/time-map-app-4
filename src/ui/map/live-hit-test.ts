@@ -98,7 +98,11 @@ import {
   type DisplayResolution,
 } from './display-resolution-cache';
 import { alwaysDrawnIds } from './always-drawn';
-import { isFeatureVisibleUnderFilter, resolveFilteredDisplay } from './filtered-display';
+import {
+  isFeatureVisibleUnderFilter,
+  resolveFilteredDisplay,
+  visibleVertexOwners,
+} from './filtered-display';
 import { wrapTurnsForLonSpan, type Camera, type Viewport } from '../../render';
 import { LONGITUDE_PERIOD } from '../../domain/geo/seam';
 import { SpatialIndex, type IndexEntry } from '../../domain/spatial/rtree';
@@ -1000,7 +1004,7 @@ export function verticesInRectangle(
   // FR-113: a filter-hidden owner exposes no grabbable vertex (same母集合 the click path
   // and the renderer use), so its vertices are excluded from the rubber-band (教訓 5.29).
   const filtered = resolveFilteredDisplay(resolution, input.filter ?? DEFAULT_FILTER_STATE);
-  const visibleIds = filtered === null ? null : filtered.visibleIds;
+  const visibleOwners = filtered === null ? null : visibleVertexOwners(resolution, filtered);
   const lonMin = a.lon < b.lon ? a.lon : b.lon;
   const lonMax = a.lon < b.lon ? b.lon : a.lon;
   const latMin = a.lat < b.lat ? a.lat : b.lat;
@@ -1028,8 +1032,10 @@ export function verticesInRectangle(
   // SAME turns the renderer drew / the click hit-test grabs) lands in the box's lon range.
   let owner: FeatureId | null = null;
   const inside = new Set<VertexId>();
-  for (const [vertexId, featureId] of owners) {
-    if (visibleIds !== null && !visibleIds.has(featureId)) continue;
+  for (const [vertexId, recordedOwner] of owners) {
+    // 隠れている持ち主の頂点でも、見えている別の地物が引いていればその地物の頂点（B42）。
+    const featureId = visibleOwners === null ? recordedOwner : visibleOwners.get(vertexId);
+    if (featureId === undefined) continue;
     const v = getVertex(vertices, vertexId);
     if (v === undefined) continue;
     const c = v.coordinate;
@@ -1122,6 +1128,11 @@ export function liveHitTestAt(
   // filter → every drawn candidate is grabbable, exactly as before (zero overhead).
   const filtered = resolveFilteredDisplay(resolution, input.filter ?? DEFAULT_FILTER_STATE);
   const visibleIds = filtered === null ? null : filtered.visibleIds;
+  // 頂点の段の持ち主。共有頂点の最初の持ち主が隠れていても、見えている別の地物が引いていれば
+  // その地物の頂点として当たる（B42）。隠れている地物しか引いていない頂点は `undefined`。
+  const visibleOwners = filtered === null ? null : visibleVertexOwners(resolution, filtered);
+  const drawnOwnerOf = (vertexId: VertexId, recorded: FeatureId): FeatureId | undefined =>
+    visibleOwners === null ? recorded : visibleOwners.get(vertexId);
   // The broad-phase spatial index for this (root, time, control) generation — built lazily
   // on the first hit-test and shared across the generation's pointer stream (S3c). It
   // narrows the two full scans below (vertex proximity + area containment) to the handful
@@ -1183,10 +1194,11 @@ export function liveHitTestAt(
   // `bestVertex` は null のまま本体の判定へ落ちる。
   const vertexCands = probeHandles ? vertexCandidates(hitIndex, worldPoint, wrap) : [];
   if (vertexCands === null) {
-    for (const [vertexId, featureId] of owners) {
-      // FR-113: an owner hidden by the filter exposes no grabbable vertex (its shape is
-      // not drawn), so its vertices are skipped — same母集合 the renderer drew (教訓 5.29).
-      if (visibleIds !== null && !visibleIds.has(featureId)) continue;
+    for (const [vertexId, recorded] of owners) {
+      // FR-113: a vertex cited only by filter-hidden features is not drawn, so it is skipped
+      // — same母集合 the renderer drew (教訓 5.29).
+      const featureId = drawnOwnerOf(vertexId, recorded);
+      if (featureId === undefined) continue;
       const v = getVertex(vertices, vertexId);
       if (v === undefined) continue;
       const d = nearestDrawnDistSq(v.coordinate, point, toScreen, wrap);
@@ -1197,13 +1209,14 @@ export function liveHitTestAt(
     }
   } else {
     for (const ref of vertexCands) {
-      if (visibleIds !== null && !visibleIds.has(ref.featureId)) continue;
+      const featureId = drawnOwnerOf(ref.vertexId, ref.featureId);
+      if (featureId === undefined) continue;
       const v = getVertex(vertices, ref.vertexId);
       if (v === undefined) continue;
       const d = nearestDrawnDistSq(v.coordinate, point, toScreen, wrap);
       if (d <= bestDistSq) {
         bestDistSq = d;
-        bestVertex = { featureId: ref.featureId, vertexId: ref.vertexId };
+        bestVertex = { featureId, vertexId: ref.vertexId };
       }
     }
   }
@@ -1417,12 +1430,13 @@ export function verticesNearPoint(
   const resolution = resolveDisplayFor(root, time, control);
   const { vertices, owners } = resolution;
   const filtered = resolveFilteredDisplay(resolution, input.filter ?? DEFAULT_FILTER_STATE);
-  const visibleIds = filtered === null ? null : filtered.visibleIds;
+  const visibleOwners = filtered === null ? null : visibleVertexOwners(resolution, filtered);
   const hitIndex = getHitIndex(resolution);
   const cands = vertexCandidates(hitIndex, worldPoint, wrap);
   const out: NearVertexCandidate[] = [];
-  const push = (featureId: FeatureId, vertexId: VertexId): void => {
-    if (visibleIds !== null && !visibleIds.has(featureId)) return;
+  const push = (recorded: FeatureId, vertexId: VertexId): void => {
+    const featureId = visibleOwners === null ? recorded : visibleOwners.get(vertexId);
+    if (featureId === undefined) return;
     const v = getVertex(vertices, vertexId);
     if (v === undefined) return;
     const d = nearestDrawnDistSq(v.coordinate, point, toScreen, wrap);

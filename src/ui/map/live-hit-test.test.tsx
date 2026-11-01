@@ -10,7 +10,9 @@ import {
   liveHitTestAt,
   drawnAreaAt,
   multiPolygonLonSpan,
+  setHitIndexEnabledForTest,
   verticesInRectangle,
+  verticesNearPoint,
 } from './live-hit-test';
 import {
   DEFAULT_FILTER_STATE,
@@ -1434,6 +1436,89 @@ describe('liveHitTestAt — FR-113 display filter (hidden features are click-thr
     const hit = liveHitTestAt({ root, time, toScreen, filter, point: toScreen(at) }, at);
     expect(hit.kind).toBe(HIT_KIND.FeatureBody);
     if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(area.feature.id);
+  });
+
+  // 現状.md B42: 共有頂点の索引は最初の持ち主しか覚えない。その持ち主が隠れていても、見えている
+  // 別の地物が同じ頂点を引いていれば、その頂点は見えていて掴める（描かれている == 掴める）。
+  describe('共有頂点の最初の持ち主が隠れている（B42）', () => {
+    const shared = (): { root: DomainRoot; hiddenId: Feature['id']; visibleId: Feature['id']; at: { lon: number; lat: number } } => {
+      const a = squareLeaf('f-a', 'va', 0, 0); // [0,4]×[0,4]。隣と (4,0)・(4,4) を共有する
+      const bVertices = [
+        a.vertices[1]!,
+        createVertex(asVertexId('vb-1'), { lon: 8, lat: 0 }),
+        createVertex(asVertexId('vb-2'), { lon: 8, lat: 4 }),
+        a.vertices[2]!,
+      ];
+      const b = {
+        feature: createLeafFeature(
+          asFeatureId('f-b'),
+          createBasicAttributes('f-b', 0, 0),
+          color,
+          createShape([createTerritoryRing(asRingId('r-f-b'), bVertices.map((v) => v.id))]),
+        ),
+        vertices: bVertices,
+      };
+      const root = commit(commit(emptyProject(), a, 1000), b, 1000);
+      return { root, hiddenId: a.feature.id, visibleId: b.feature.id, at: { lon: 4, lat: 0 } };
+    };
+
+    it('クリック: 見えている地物の頂点として当たる（索引あり）', () => {
+      const { root, hiddenId, visibleId, at } = shared();
+      const filter = setIndividualHidden(DEFAULT_FILTER_STATE, hiddenId, true);
+      const hit = liveHitTestAt({ root, time, toScreen, filter, point: toScreen(at) }, at);
+      expect(hit.kind).toBe(HIT_KIND.Vertex);
+      if (hit.kind === HIT_KIND.Vertex) {
+        expect(hit.featureId).toBe(visibleId);
+        expect(hit.vertexId).toBe(asVertexId('va-1'));
+      }
+    });
+
+    it('クリック: 索引を使わない全走査でも同じ', () => {
+      const { root, hiddenId, visibleId, at } = shared();
+      const filter = setIndividualHidden(DEFAULT_FILTER_STATE, hiddenId, true);
+      setHitIndexEnabledForTest(false);
+      try {
+        const hit = liveHitTestAt({ root, time, toScreen, filter, point: toScreen(at) }, at);
+        expect(hit.kind).toBe(HIT_KIND.Vertex);
+        if (hit.kind === HIT_KIND.Vertex) expect(hit.featureId).toBe(visibleId);
+      } finally {
+        setHitIndexEnabledForTest(true);
+      }
+    });
+
+    it('候補の一覧にも、見えている地物の頂点として出る', () => {
+      const { root, hiddenId, visibleId, at } = shared();
+      const filter = setIndividualHidden(DEFAULT_FILTER_STATE, hiddenId, true);
+      const near = verticesNearPoint({ root, time, toScreen, filter, point: toScreen(at) }, at);
+      expect(near.map((c) => [c.featureId, c.vertexId])).toEqual([[visibleId, asVertexId('va-1')]]);
+    });
+
+    it('範囲選択にも、見えている地物の頂点として入る', () => {
+      const { root, hiddenId, visibleId } = shared();
+      const filter = setIndividualHidden(DEFAULT_FILTER_STATE, hiddenId, true);
+      const rect = verticesInRectangle({ root, time, filter }, { lon: 3.5, lat: -0.5 }, { lon: 4.5, lat: 0.5 });
+      expect(rect?.ownerFeatureId).toBe(visibleId);
+      expect([...(rect?.vertexIds ?? [])]).toEqual([asVertexId('va-1')]);
+    });
+
+    it('隠れている地物しか引いていない頂点は、これまでどおり当たらない', () => {
+      const { root, hiddenId } = shared();
+      const filter = setIndividualHidden(DEFAULT_FILTER_STATE, hiddenId, true);
+      const at = { lon: 0, lat: 0 };
+      const hit = liveHitTestAt({ root, time, toScreen, filter, point: toScreen(at) }, at);
+      expect(hit.kind).not.toBe(HIT_KIND.Vertex);
+    });
+
+    it('両方隠すと当たらない', () => {
+      const { root, hiddenId, visibleId, at } = shared();
+      const filter = setIndividualHidden(
+        setIndividualHidden(DEFAULT_FILTER_STATE, hiddenId, true),
+        visibleId,
+        true,
+      );
+      const hit = liveHitTestAt({ root, time, toScreen, filter, point: toScreen(at) }, at);
+      expect(hit.kind).toBe(HIT_KIND.Empty);
+    });
   });
 
   it('再表示: un-hiding a feature makes it selectable again (復活)', () => {

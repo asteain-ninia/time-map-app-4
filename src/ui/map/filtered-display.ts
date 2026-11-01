@@ -35,7 +35,7 @@
 import { FEATURE_KIND, type Feature } from '../../domain/feature';
 import { derivedDepths, isDepthUndefined } from '../../domain/hierarchy';
 import type { Forest } from '../../domain/hierarchy/forest';
-import type { FeatureId } from '../../domain/ids';
+import type { FeatureId, VertexId } from '../../domain/ids';
 import {
   hiddenReasonOf,
   isEmphasizedByOtherAxis,
@@ -47,7 +47,7 @@ import {
   type ResolvedFeatureDisplay,
 } from '../discovery/index';
 
-import type { DisplayResolution } from './display-resolution-cache';
+import { vertexOwners, type DisplayResolution } from './display-resolution-cache';
 
 // Derived-depth (U08) memo, keyed by the immutable `Forest` reference. `derivedDepths`
 // is O(n); a `Forest` is a pure function of the (root, time) generation and is shared by
@@ -192,6 +192,31 @@ export function computeFilteredDisplay(
   }
 
   return { displayById, visibleIds };
+}
+
+const visibleOwnersCache = new WeakMap<FilteredDisplay, ReadonlyMap<VertexId, FeatureId>>();
+
+/**
+ * 掴める頂点の持ち主を **見えている地物の中で** 選び直した表（現状.md B42）。
+ *
+ * `resolution.owners` は絞り込みを知らず、共有頂点の最初の持ち主しか覚えない。その持ち主が隠れて
+ * いても、見えている別の地物が同じ頂点を引いていれば、その頂点は描かれていて掴める。持ち主の選び方は
+ * `owners` と同じ `vertexOwners` で、母集合だけを「掴める ∩ 見えている」にする。隠れている地物しか
+ * 引いていない頂点はこの表に居ない。絞り込みの判定ごとに 1 回だけ作る。
+ */
+export function visibleVertexOwners(
+  resolution: DisplayResolution,
+  filtered: FilteredDisplay,
+): ReadonlyMap<VertexId, FeatureId> {
+  const cached = visibleOwnersCache.get(filtered);
+  if (cached !== undefined) return cached;
+  const visibleGrabbable = new Set<FeatureId>();
+  for (const id of resolution.grabbable) {
+    if (filtered.visibleIds.has(id)) visibleGrabbable.add(id);
+  }
+  const owners = vertexOwners(resolution.features, visibleGrabbable, resolution.vertices);
+  visibleOwnersCache.set(filtered, owners);
+  return owners;
 }
 
 /**
