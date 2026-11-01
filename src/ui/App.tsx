@@ -24,6 +24,7 @@ import { TOOL_ID, isSelectTool } from './shell/tools';
 import { APP_STRINGS, DRAFT_DISCARD_STRINGS, MENU_ITEM_LABELS, SENTENCE_END } from './shell/strings';
 import { DRAFT_LOSS_CAUSE, type DraftLossCause } from './shell/useDraftTimeGate';
 import { DRAG_CANCEL_CAUSE, type DragYearHost } from './map/drag-year';
+import { AGGREGATE_MOVE_BLOCK, aggregateMoveAt, type AggregateMoveBlock } from './map/aggregate-move';
 import { AppShell, SIDEBAR_SECTION, isEditingCommand } from './shell';
 import { buildSidebarContent } from './shell/SidebarContent';
 import { keepPanelsPresent } from './property/detail-panels';
@@ -191,6 +192,7 @@ import { CursorPositionStore } from './shell/cursor-position';
 import { registerE2eHarnessAction } from './e2e/harness';
 import {
   buildSyntheticAnchorProject,
+  buildSyntheticAggregateMoveProject,
   buildSyntheticNestedProject,
   buildSyntheticProject,
 } from './e2e/synthetic-project';
@@ -305,7 +307,7 @@ import {
   type NextTargetPreference,
 } from '../domain/selection';
 import type { FeatureSnapshot } from '../domain/editing/index';
-import { EDIT_REFUSAL, type EditRefusalKind } from '../domain/editing/index';
+import { EDIT_REFUSAL, type AggregateMovePlan, type EditRefusalKind } from '../domain/editing/index';
 // 地図マウントの結線は 4 つに割ってある（描画 / 当たり判定 / 入力 / 観測）。onMapMount は
 // それらを順に呼んで繋ぐだけの骨組みで、規則そのものは各モジュールが 1 か所ずつ持つ。
 import { createMountHitTest } from './map/mount/hit-test';
@@ -535,6 +537,16 @@ export function App(): JSX.Element {
           buildSyntheticNestedProject(s.domain, childCount, years ?? [1000, 1200]),
           {},
         );
+      }),
+    [store],
+  );
+
+  // 集約地物を［動かす］で引く検査の合成データ（隣どうしが頂点を共有する）。
+  useEffect(
+    () =>
+      registerE2eHarnessAction(globalThis, 'loadSyntheticAggregateMove', () => {
+        const s = store.getState();
+        s.reflectLoadedProject(buildSyntheticAggregateMoveProject(s.domain), {});
       }),
     [store],
   );
@@ -1013,7 +1025,14 @@ export function App(): JSX.Element {
   // 組み立てられるので、毎レンダーの関数を直接渡すと地図を組み直すことになる（技術方針 2.3）。
   const announceEditRefusalRef = useRef<((reason: EditRefusalKind) => void) | null>(null);
   // ［動かす］で集約地物を引いたとき、動かない理由を状態行へ出す口。上と同じく ref に置く。
-  const announceAggregateMoveRef = useRef<(() => void) | null>(null);
+  const announceAggregateMoveBlockedRef = useRef<((block: AggregateMoveBlock) => void) | null>(null);
+  const announceAggregateMovedRef = useRef<
+    | ((
+        plan: AggregateMovePlan,
+        carried: { readonly fromYear: number; readonly toYear: number; readonly anchorCount: number } | null,
+      ) => void)
+    | null
+  >(null);
   // 増分 8E（G-14）: 確定の手続きが編集を断ったとき（穴・飛び地の形を壊す編集など）の理由を
   // 状態行へ出す口。上と同じく ref に置く（地図マウント時に 1 度だけ組み立てるため）。
   const announceEditRejectionRef = useRef<((rejected: RejectedResult) => void) | null>(null);
@@ -1138,7 +1157,8 @@ export function App(): JSX.Element {
       nextRingIdRef,
       recordCommitRef,
       announceEditRefusalRef,
-      announceAggregateMoveRef,
+      announceAggregateMoveBlockedRef,
+      announceAggregateMovedRef,
       announceCarryForwardRef,
       announceEditRejectionRef,
       openEditConflictRef,
@@ -1714,8 +1734,20 @@ export function App(): JSX.Element {
       }
     },
   };
-  announceAggregateMoveRef.current = (): void => {
-    statusMessageStore.failure(APP_STRINGS.moveAggregateRefused);
+  announceAggregateMoveBlockedRef.current = (block: AggregateMoveBlock): void => {
+    statusMessageStore.failure(
+      block === AGGREGATE_MOVE_BLOCK.NoLeaves
+        ? APP_STRINGS.moveAggregateNoLeaves
+        : APP_STRINGS.moveAggregateAllFixed,
+    );
+  };
+  announceAggregateMovedRef.current = (plan, carried): void => {
+    const done = APP_STRINGS.moveAggregateDone(plan.movedLeafCount, plan.fixedVertexIds.length);
+    announceResult(
+      carried === null
+        ? done
+        : `${done}${APP_STRINGS.vertexCarriedForward(carried.fromYear, carried.toYear, carried.anchorCount)}`,
+    );
   };
   announceEditRefusalRef.current = (reason: EditRefusalKind): void => {
     statusMessageStore.failure(
@@ -1731,11 +1763,23 @@ export function App(): JSX.Element {
   // 無い（離した瞬間に一時状態は捨ててある）ので、止まっている局面の印は要らない。
   openEditConflictRef.current = (pending, applyResolutions, proposal): void => {
     const fid = proposal.snapshot.feature?.id;
+    // 集約地物を動かす確定が止まったなら、解決のあとにも動かした数を言う（直接の確定と同じ）。
+    const s = store.getState();
+    const aggregateMove =
+      fid === undefined ? undefined : aggregateMoveAt(s.domain, proposal.anchorTime, fid);
     setConflictState({
       pending,
       applyResolutions,
       anchorTime: proposal.anchorTime,
       ...(fid !== undefined ? { preference: { featureId: fid } } : {}),
+      ...(aggregateMove !== undefined
+        ? {
+            resolvedNote: APP_STRINGS.moveAggregateDone(
+              aggregateMove.plan.movedLeafCount,
+              aggregateMove.plan.fixedVertexIds.length,
+            ),
+          }
+        : {}),
     });
   };
 
@@ -3592,7 +3636,11 @@ export function App(): JSX.Element {
           conflictState.pending.conflicts,
           conflictState.anchorTime ?? store.getState().currentTime,
         );
-        if (resolvedText !== null) statusMessageStoreRef.current?.success(resolvedText);
+        if (resolvedText !== null) {
+          statusMessageStoreRef.current?.success(
+            `${conflictState.resolvedNote ?? ''}${resolvedText}`,
+          );
+        }
       }
       setConflictState(null);
       reArmActiveTool();
@@ -5262,6 +5310,8 @@ type OpenEditConflict = (
 interface ConflictPending {
   readonly pending: ConflictsPendingResult<DomainRoot>;
   readonly applyResolutions: ApplyResolutions<DomainRoot>;
+  /** 解決して確定したときに、解決の文の前に添える文（集約地物を動かした数）。 */
+  readonly resolvedNote?: string;
   /**
    * fr100: the PAUSED proposal's anchor time, stashed so the eventual modal commit
    * recolors at the SAME time the edit anchors at (コマンドの anchorTime — the view

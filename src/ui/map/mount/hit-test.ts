@@ -8,7 +8,7 @@ import type { MutableRefObject } from 'react';
 
 import type { AddHostPorts } from '../../add/host-ports';
 import { createLiveShapeEditBinding } from '../../consistency-binding';
-import { featuresAt } from '../../live-lookup';
+import { featuresAt, leafAtPoint } from '../../live-lookup';
 import {
   promotesOnContextMenu,
   suspendsContextMenu,
@@ -16,6 +16,9 @@ import {
 } from '../../shell/focus-owner';
 import { TOOL_ID, toolShowsVertexHandles } from '../../shell/tools';
 import { EDIT_MODE, type EditMode, type ToolId } from '../../state/session';
+import type { AggregateMovePlan } from '../../../domain/editing/move';
+import { aggregateMoveAt, aggregateMoveBlock, type AggregateMoveBlock } from '../aggregate-move';
+import type { HitResult } from '../../../domain/selection';
 import { createEditSessionPort } from '../edit-session-adapter';
 import {
   buildEditSnapshot,
@@ -133,10 +136,23 @@ export interface MountHitTestOptions {
    */
   readonly announceEditRefusalRef?: MutableRefObject<((reason: EditRefusalKind) => void) | null>;
   /**
-   * ［動かす］で集約地物を引いて離したことを画面へ出す口。集約地物は自分の頂点を持たないので、
-   * 引いても形は変わらない。確定へ進めず（空の取り消しを積まない。教訓 5.24）、理由を言う。
+   * ［動かす］で集約地物を引いて離したのに動かせるものが無いとき、理由を画面へ出す口。確定へ進めない
+   * （空の取り消しを積まない。教訓 5.24）。
    */
-  readonly announceAggregateMoveRef?: MutableRefObject<(() => void) | null>;
+  readonly announceAggregateMoveBlockedRef?: MutableRefObject<
+    ((block: AggregateMoveBlock) => void) | null
+  >;
+  /**
+   * ［動かす］で集約地物を動かして確定したことを画面へ出す口。動かした下位領域の数と、動かさなかった
+   * 共有頂点の数を言う。後ろの年へも反映したなら `carried` が立つ。
+   */
+  readonly announceAggregateMovedRef?: MutableRefObject<
+    | ((
+        plan: AggregateMovePlan,
+        carried: { readonly fromYear: number; readonly toYear: number; readonly anchorCount: number } | null,
+      ) => void)
+    | null
+  >;
   /**
    * 共有頂点の移動を **その年より後ろの記録へも反映した**ことを画面へ出す口
    * （増分 3 の手直し 2 回目 / A1）。1 回目の手直しで引き継ぎ自体は入れたが、
@@ -535,9 +551,27 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
         outcome.proposal.snapshot.feature?.id ??
         outcome.proposal.snapshot.deletedFeatureId;
       const preference = featureId !== undefined ? { featureId } : undefined;
+      // 集約地物を動かしたなら、記録する前の計画から言う数を取る（記録すると根が替わる）。
+      const aggregateMove =
+        featureId === undefined
+          ? undefined
+          : aggregateMoveAt(store.getState().domain, outcome.proposal.anchorTime, featureId);
       // fr100: the recolor anchor time is the PROPOSAL's own anchorTime (the time
       // the drag confirm resolved at press/release) — the exact commit time.
       recordCommitRef.current?.(outcome.result, preference, outcome.proposal.anchorTime);
+      if (aggregateMove !== undefined) {
+        options.announceAggregateMovedRef?.current?.(
+          aggregateMove.plan,
+          carried.anchorCount > 0 && carried.firstYear !== null
+            ? {
+                fromYear: outcome.proposal.anchorTime.year,
+                toYear: carried.firstYear,
+                anchorCount: carried.anchorCount,
+              }
+            : null,
+        );
+        return;
+      }
       // 記録のあとに上書きする（既定の「素性の変更を行いました」より、こちらのほうが
       // 何が起きたかを言っている）。0 本なら何も足さない ―― 起きなかったことは言わない。
       if (carried.anchorCount > 0 && carried.firstYear !== null) {
@@ -571,17 +605,42 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
   // 増分 8A の手直し（反証 重 3）: 一覧から選んだ直後の左ドラッグ 1 回だけ、選んだ頂点を
   // 最寄りより優先して掴む（`preferListPick`。条件はそちらの注記）。印はこの押下の
   // `hitTest` で既に消えているので、2 回目の押下には効かない。
-  // この押下が［動かす］で集約地物を掴んだか（離したときに理由を言う）。
-  let pressedAggregateMove = false;
+  // ［動かす］で選んでいる集約地物の下位領域の上を押したら、選んでいる集約地物を掴む。選んでいる地物と
+  // 親までの道筋は深さに関わらず描く（設計書 §D.6）ので、途中の集約地物を選ぶと押した所の当たりは親に
+  // なり、深さを下げると下位領域になる。そのままでは選んでいる地物と違うので引けない。
+  // 末端地物を選んでいるときは今までどおり（当たった地物が選んでいる地物のときだけ動く）。
+  const aggregateUnderPress = (hit: HitResult, point: ScreenPoint): HitResult => {
+    const s = store.getState();
+    const active = s.selection.activeFeature;
+    if (
+      hit.kind !== HIT_KIND.FeatureBody ||
+      hit.featureId === active ||
+      active === null ||
+      s.activeTool !== TOOL_ID.EditMove
+    ) {
+      return hit;
+    }
+    const live = aggregateMoveAt(s.domain, s.currentTime, active);
+    if (live === undefined) return hit;
+    const leaf = leafAtPoint(s.domain, s.currentTime, surfaceToWorld(point));
+    return leaf !== null && live.plan.leaves.some((f) => f.id === leaf)
+      ? { kind: HIT_KIND.FeatureBody, featureId: active }
+      : hit;
+  };
+  // この押下が［動かす］で集約地物を掴んだか（離したときに、動かせるものがあるかを見る）。
+  let pressedAggregateMove: FeatureId | null = null;
   const editSession: EditSessionPort = {
-    begin: (hit, point, modifiers) => {
+    begin: (pressed, point, modifiers) => {
       const s = store.getState();
+      const hit = aggregateUnderPress(pressed, point);
       pressedAggregateMove =
         hit.kind === HIT_KIND.FeatureBody &&
         s.activeTool === TOOL_ID.EditMove &&
         s.selection.activeFeature === hit.featureId &&
         featuresAt(s.domain, s.currentTime).find((f) => f.id === hit.featureId)?.kind ===
-          FEATURE_KIND.Aggregate;
+          FEATURE_KIND.Aggregate
+          ? hit.featureId
+          : null;
       const pick = pressPick;
       pressPick = null;
       const preferred = preferListPick(
@@ -596,16 +655,21 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
     update: (point) => editSessionInner.update(point),
     release: (point, wasDrag) => {
       const aggregate = pressedAggregateMove;
-      pressedAggregateMove = false;
-      if (aggregate && wasDrag) {
-        editSessionInner.cancel();
-        options.announceAggregateMoveRef?.current?.();
-        return;
+      pressedAggregateMove = null;
+      if (aggregate !== null && wasDrag) {
+        const s = store.getState();
+        const live = aggregateMoveAt(s.domain, s.currentTime, aggregate);
+        const block = live === undefined ? null : aggregateMoveBlock(live.plan);
+        if (block !== null) {
+          editSessionInner.cancel();
+          options.announceAggregateMoveBlockedRef?.current?.(block);
+          return;
+        }
       }
       editSessionInner.release(point, wasDrag);
     },
     cancel: () => {
-      pressedAggregateMove = false;
+      pressedAggregateMove = null;
       editSessionInner.cancel();
     },
   };

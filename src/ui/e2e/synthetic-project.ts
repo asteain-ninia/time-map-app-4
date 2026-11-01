@@ -15,10 +15,15 @@
 import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
 import { createAnchor } from '../../domain/anchor';
 import { createAnchorEntry } from '../../domain/anchor-series';
-import { createAggregateFeature, createLeafFeature } from '../../domain/feature';
-import { asAnchorId, asFeatureId, asRingId, asVertexId } from '../../domain/ids';
+import {
+  createAggregateFeature,
+  createLeafFeature,
+  createLineFeature,
+  type Feature,
+} from '../../domain/feature';
+import { asAnchorId, asFeatureId, asRingId, asVertexId, type VertexId } from '../../domain/ids';
 import type { DomainProject, FeatureHistory } from '../../domain/persistence/index';
-import { createShape, createTerritoryRing } from '../../domain/ring';
+import { createHoleRing, createShape, createTerritoryRing } from '../../domain/ring';
 import { timePointYear } from '../../domain/time/time-point';
 import { createVertex, createVertexStore } from '../../domain/vertex';
 
@@ -280,6 +285,191 @@ export function buildSyntheticNestedProject(
             ),
           ],
         },
+      },
+    ],
+  };
+}
+
+/** 集約地物を動かす検査の合成データの id（E2E がそのまま読めるように公開）。 */
+export const SYNTHETIC_MOVE_IDS = {
+  federation: 'syn-move-federation',
+  region: 'syn-move-region',
+  stateA: 'syn-move-a',
+  stateB: 'syn-move-b',
+  stateC: 'syn-move-c',
+  stateD: 'syn-move-d',
+  neighbour: 'syn-move-neighbour',
+  road: 'syn-move-road',
+  sealed: 'syn-move-sealed',
+  sealedState: 'syn-move-sealed-state',
+  sealedRoad: 'syn-move-sealed-road',
+} as const;
+
+/** 下位の末端地物の 1 辺（度）。 */
+const MOVE_TILE_DEG = 20;
+
+/**
+ * **集約地物を［動かす］で引く検査のための合成データ**（所有者の裁定 2026-11-01）。
+ * `buildSyntheticNestedProject` の子は頂点を共有しないので、共有の扱いを確かめられない。こちらは
+ * 東西に並べた帯で、隣どうしが同じ頂点 id を引く。
+ *
+ *     連邦（集約。系列あり。錨 1000・1500）
+ *       ├ 地方（集約。連邦の錨に居る）
+ *       │   ├ 州 A（連邦の錨に居る。穴あり。西南の角を線情報と共有）
+ *       │   └ 州 B（連邦の錨に居る。飛び地あり）
+ *       ├ 州 C（自分の系列を持つ。錨 1000・1500。東の辺を隣の国と共有）
+ *       └ 州 D（1500 年の連邦の錨にだけ居る）
+ *     隣の国（最上位の末端。自分の系列）
+ *     街道（線情報。州 A の西南の角を引く）
+ *     封じられた連合（集約）— 州の頂点を全部、外の線情報が引いているので何も動かせない
+ */
+export function buildSyntheticAggregateMoveProject(base: DomainProject): DomainProject {
+  const ids = SYNTHETIC_MOVE_IDS;
+  const color = createColorInfo(true, '#a5d6a7', '#ff7043', '#1b5e20');
+  const attrs = (name: string): ReturnType<typeof createBasicAttributes> =>
+    createBasicAttributes(name, 0, 9999);
+  const v = (id: string, lon: number, lat: number): ReturnType<typeof createVertex> =>
+    createVertex(asVertexId(`mv-${id}`), { lon, lat });
+  const S = MOVE_TILE_DEG;
+  const LAT = 0;
+  const column = (x: number): readonly [ReturnType<typeof createVertex>, ReturnType<typeof createVertex>] => [
+    v(`b${String(x)}`, -40 + x * S, LAT),
+    v(`t${String(x)}`, -40 + x * S, LAT + S),
+  ];
+  const [b0, t0] = column(0);
+  const [b1, t1] = column(1);
+  const [b2, t2] = column(2);
+  const [b3, t3] = column(3);
+  const [b4, t4] = column(4);
+  const box = (name: string, lon: number, lat: number, size: number): ReturnType<typeof createVertex>[] => [
+    v(`${name}0`, lon, lat),
+    v(`${name}1`, lon + size, lat),
+    v(`${name}2`, lon + size, lat + size),
+    v(`${name}3`, lon, lat + size),
+  ];
+  const idsOf = (vs: readonly ReturnType<typeof createVertex>[]): VertexId[] => vs.map((x) => x.id);
+  const holeA = box('hole-a', -34, LAT + 6, 8);
+  const islandB = box('island-b', -14, LAT + 30, 8);
+  const boxD = box('d', -40, LAT - 30, 15);
+  const roadEnd = v('road-end', -60, LAT - 10);
+  const sealedBox = box('sealed', 40, LAT + 30, 15);
+
+  const federationId = asFeatureId(ids.federation);
+  const regionId = asFeatureId(ids.region);
+  const stateA = createLeafFeature(
+    asFeatureId(ids.stateA),
+    attrs('州A'),
+    color,
+    createShape([
+      createTerritoryRing(asRingId('mv-ra'), idsOf([b0, b1, t1, t0])),
+      createHoleRing(asRingId('mv-ra-hole'), idsOf(holeA), asRingId('mv-ra')),
+    ]),
+    { parentId: regionId },
+  );
+  const stateB = createLeafFeature(
+    asFeatureId(ids.stateB),
+    attrs('州B'),
+    color,
+    createShape([
+      createTerritoryRing(asRingId('mv-rb'), idsOf([b1, b2, t2, t1])),
+      createTerritoryRing(asRingId('mv-rb-island'), idsOf(islandB)),
+    ]),
+    { parentId: regionId },
+  );
+  const stateC = createLeafFeature(
+    asFeatureId(ids.stateC),
+    attrs('州C'),
+    color,
+    createShape([createTerritoryRing(asRingId('mv-rc'), idsOf([b2, b3, t3, t2]))]),
+    { parentId: federationId },
+  );
+  const stateD = createLeafFeature(
+    asFeatureId(ids.stateD),
+    attrs('州D'),
+    color,
+    createShape([createTerritoryRing(asRingId('mv-rd'), idsOf(boxD))]),
+    { parentId: federationId },
+  );
+  const neighbour = createLeafFeature(
+    asFeatureId(ids.neighbour),
+    attrs('隣の国'),
+    color,
+    createShape([createTerritoryRing(asRingId('mv-rn'), idsOf([b3, b4, t4, t3]))]),
+  );
+  const road = createLineFeature(asFeatureId(ids.road), attrs('街道'), color, idsOf([b0, roadEnd]));
+  const region = createAggregateFeature(regionId, attrs('地方'), color, [stateA.id, stateB.id], {
+    parentId: federationId,
+  });
+  const federation = (withD: boolean) =>
+    createAggregateFeature(federationId, attrs('連邦'), color, [
+      regionId,
+      stateC.id,
+      ...(withD ? [stateD.id] : []),
+    ]);
+  const ownVertices = [b0, t0, b1, t1, ...holeA, b2, t2, ...islandB];
+  const entry = (
+    idPart: string,
+    year: number,
+    features: readonly Feature[],
+    vertices: readonly ReturnType<typeof createVertex>[],
+  ) =>
+    createAnchorEntry(
+      createAnchor(asAnchorId(`mv-a-${idPart}-${String(year)}`), {
+        features,
+        vertices: createVertexStore(vertices),
+      }),
+      timePointYear(year),
+    );
+
+  const sealedId = asFeatureId(ids.sealed);
+  const sealedState = createLeafFeature(
+    asFeatureId(ids.sealedState),
+    attrs('封じられた州'),
+    color,
+    createShape([createTerritoryRing(asRingId('mv-rs'), idsOf(sealedBox))]),
+    { parentId: sealedId },
+  );
+  const sealed = createAggregateFeature(sealedId, attrs('封じられた連合'), color, [sealedState.id]);
+  const sealedRoad = createLineFeature(
+    asFeatureId(ids.sealedRoad),
+    attrs('環状道'),
+    color,
+    idsOf(sealedBox),
+  );
+
+  return {
+    ...base,
+    histories: [
+      {
+        featureId: federationId,
+        series: {
+          entries: [
+            entry('fed', 1000, [federation(false), region, stateA, stateB], ownVertices),
+            entry('fed', 1500, [federation(true), region, stateA, stateB, stateD], [...ownVertices, ...boxD]),
+          ],
+        },
+      },
+      {
+        featureId: stateC.id,
+        series: {
+          entries: [
+            entry('c', 1000, [stateC], [b2, b3, t3, t2]),
+            entry('c', 1500, [stateC], [b2, b3, t3, t2]),
+          ],
+        },
+      },
+      {
+        featureId: neighbour.id,
+        series: { entries: [entry('n', 1000, [neighbour], [b3, b4, t4, t3])] },
+      },
+      { featureId: road.id, series: { entries: [entry('r', 1000, [road], [b0, roadEnd])] } },
+      {
+        featureId: sealedId,
+        series: { entries: [entry('s', 1000, [sealed, sealedState], sealedBox)] },
+      },
+      {
+        featureId: sealedRoad.id,
+        series: { entries: [entry('sr', 1000, [sealedRoad], sealedBox)] },
       },
     ],
   };

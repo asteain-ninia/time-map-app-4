@@ -78,6 +78,11 @@ export interface E2eHarnessActions {
    */
   readonly loadSyntheticNested: (childCount: number, years?: readonly number[]) => void;
   /**
+   * **集約地物を［動かす］で引く検査の合成データ**を載せる（隣どうしが頂点を共有する。
+   * `buildSyntheticAggregateMoveProject`）。所有者: ui/App。
+   */
+  readonly loadSyntheticAggregateMove: () => void;
+  /**
    * **いま見ている年**の末端地物を、id か名前で選んで中身を返す **読むだけ** の観測
    * （増分 8B の手直し / GPT 審査の重 2）。id・名前・種別・色・錨列の開始年・面積、片どうしの
    * 重なりの面積、指定した点の持ち主を返す。分割の E2E が「片が欠けていない」「元の地物の

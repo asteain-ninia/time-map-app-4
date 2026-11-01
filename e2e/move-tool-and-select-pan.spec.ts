@@ -328,7 +328,7 @@ test.describe('裁定 2026-11-01: ［動かす］は地物だけを動かす', (
 });
 
 test.describe('［動かす］と集約地物', () => {
-  test('自分の頂点を持たない集約地物は、引いても形が変わらず、板も出ず、地図も動かない', async () => {
+  test('集約地物を引くと下位領域が動き、板は出ず、地図は動かず、選択は集約地物のまま', async () => {
     const { app, page } = await launchApp();
     try {
       await loadSyntheticNested(page, 6, [1000, 1200]);
@@ -351,15 +351,14 @@ test.describe('［動かす］と集約地物', () => {
 
       await drag(page, at, 30, 20);
       await expect(page.getByTestId('conflict-dialog')).toHaveCount(0);
-      expect(await committedVertices(page, childId)).toEqual(vertices);
-      // 動かないので取り消しの履歴に積まない（空の取り消しを作らない。教訓 5.24）。
-      await expect(page.getByTestId('app-can-undo')).toHaveText(canUndo ?? '');
+      expectRigidMove(vertices, await committedVertices(page, childId));
+      await expect(page.getByTestId('app-can-undo')).not.toHaveText(canUndo ?? '');
+      // 押した年に錨があるので、地物も錨も増えない。
       expect(await projectStats(page)).toEqual(stats);
       expect(await liveCamera(page)).toEqual(cam);
       await expect(page.getByTestId('app-active-feature')).toHaveText(SYNTHETIC_NEST_PARENT_ID);
-      // 黙らず、動かない理由を状態行で言う。
       await expect(page.getByTestId('statusbar-result')).toContainText(
-        APP_STRINGS.moveAggregateRefused,
+        APP_STRINGS.moveAggregateDone(6, 0),
       );
     } finally {
       await app.close();

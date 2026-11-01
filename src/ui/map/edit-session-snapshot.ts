@@ -22,6 +22,7 @@ import { dragDelta } from '../../domain/editing/drag-session';
 import {
   moveDraggedVertexSet,
   moveFeatureVertices,
+  moveVertexSet,
 } from '../../domain/editing/move';
 import { addVertexToLeafRing, addVertexToLine } from '../../domain/editing/edit-ops';
 import { createVertex, withVertexCoordinate, type Vertex } from '../../domain/vertex';
@@ -41,6 +42,7 @@ import type { RingId, VertexId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
 import type { TimePoint } from '../../domain/time/time-point';
 import { featureByIdAt, verticesAt } from '../live-lookup';
+import { aggregateMoveAt } from './aggregate-move';
 
 /**
  * 保存する頂点の体の経度を [-180, 180) へ畳む（B80・B113）。頂点のドラッグ・面の移動・辺への追加は
@@ -119,6 +121,15 @@ export function buildEditSnapshot(
 
   if (session.target.tool === EDIT_TOOL.FeatureMove) {
     const delta = dragDelta(session);
+    // 集約地物は自分の頂点を持たないので、下位の末端地物の頂点のうち、外と共有していないものを動かす。
+    // 動くものが無ければ空の写しを返す（確定へ進まない。教訓 5.24）。
+    const aggregate = aggregateMoveAt(root, time, featureId);
+    if (aggregate !== undefined) {
+      const moved = moveVertexSet(aggregate.plan.movingVertexIds, store, delta);
+      return moved.length === 0
+        ? buildSnapshot({ vertices: [] })
+        : storedSnapshot({ feature, vertices: moved });
+    }
     const moved = moveFeatureVertices(feature, store, { dLon: delta.dLon, dLat: delta.dLat });
     return storedSnapshot({ feature, vertices: moved });
   }
@@ -201,18 +212,26 @@ export function ringIdForLeafVertex(
  *
  * **地物ごと動かすときは空を返す**。全部の頂点が同じだけ動くので、辺の長さは 1 本も
  * 変わらない（測る意味が無い）。辺を持たない点情報も空である。
+ *
+ * 集約地物を動かすときは、外と共有する頂点が残るので辺が伸びる。動く頂点と動かない頂点が同じ輪に
+ * ある輪だけを返す（全部動く輪は長さが変わらないので測らない）。
  */
 export function buildMovingRings(
   ctx: EditSnapshotContext,
   session: DragSession,
 ): readonly MovingRing[] {
-  if (session.target.tool === EDIT_TOOL.FeatureMove) return [];
   const root = ctx.getRoot();
   const time = ctx.getTime();
+  const aggregate =
+    session.target.tool === EDIT_TOOL.FeatureMove
+      ? aggregateMoveAt(root, time, session.target.featureId)
+      : undefined;
+  if (session.target.tool === EDIT_TOOL.FeatureMove && aggregate === undefined) return [];
   const feature = featureByIdAt(root, time, session.target.featureId);
   if (feature === undefined) return [];
   const store = verticesAt(root, time);
-  const moving = movingVertexIds(session);
+  const moving: ReadonlySet<VertexId> =
+    aggregate === undefined ? movingVertexIds(session) : new Set(aggregate.plan.movingVertexIds);
 
   const out: MovingRing[] = [];
   const push = (ids: readonly VertexId[], closed: boolean): void => {
@@ -227,6 +246,8 @@ export function buildMovingRings(
     }
     // 動く頂点が 1 つも無いリングは、このドラッグでは形が変わらない（教訓 5.18: 長さで決める）。
     if (coordinates.length < 2 || movingIndexes.length === 0) return;
+    // 集約地物では全部動く輪も長さが変わらない。
+    if (aggregate !== undefined && movingIndexes.length === coordinates.length) return;
     out.push({
       coordinates: closed ? unwrapRingClosed(coordinates) : unwrapRing(coordinates),
       closed,
@@ -234,7 +255,11 @@ export function buildMovingRings(
     });
   };
 
-  if (feature.kind === FEATURE_KIND.Leaf) {
+  if (aggregate !== undefined) {
+    for (const leaf of aggregate.plan.leaves) {
+      for (const ring of leaf.shape.rings) push(ring.vertexIds, true);
+    }
+  } else if (feature.kind === FEATURE_KIND.Leaf) {
     for (const ring of feature.shape.rings) push(ring.vertexIds, true);
   } else if (feature.kind === FEATURE_KIND.Line) {
     push(feature.vertexIds, false);

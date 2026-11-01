@@ -1183,6 +1183,22 @@ export async function loadSyntheticNested(
   );
 }
 
+/** 集約地物を［動かす］で引く検査の合成データを載せる（`buildSyntheticAggregateMoveProject`）。 */
+export async function loadSyntheticAggregateMove(page: Page): Promise<void> {
+  await page.waitForFunction(
+    () =>
+      typeof (globalThis as { __E2E_HARNESS__?: { loadSyntheticAggregateMove?: unknown } })
+        .__E2E_HARNESS__?.loadSyntheticAggregateMove === 'function',
+    undefined,
+    { timeout: 15_000 },
+  );
+  await page.evaluate(() => {
+    (
+      globalThis as unknown as { __E2E_HARNESS__: { loadSyntheticAggregateMove: () => void } }
+    ).__E2E_HARNESS__.loadSyntheticAggregateMove();
+  });
+}
+
 // ---------------------------------------------------------------------------
 // 増分 8A — 頂点の候補一覧（設計書 §B.5 の台帳 #12）と、頂点の印の観測
 // ---------------------------------------------------------------------------

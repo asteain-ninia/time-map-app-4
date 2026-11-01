@@ -221,6 +221,8 @@ export function createMountRender(options: MountRenderOptions): MountRender {
           s.displayControl,
           transients.liveEditSession,
           s.filter,
+          undefined,
+          s.appSettings.vertexMarkerCap,
         );
       }
       // HB3-4: pass the LIVE drag session so the active feature's handles + a preview

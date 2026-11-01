@@ -42,7 +42,7 @@ import {
   type DragSession,
 } from '../../domain/editing/drag-session';
 import { addVertexToLeafRing, addVertexToLine } from '../../domain/editing/edit-ops';
-import { moveDraggedVertexSet, moveFeatureVertices } from '../../domain/editing/move';
+import { moveDraggedVertexSet, moveFeatureVertices, moveVertexSet } from '../../domain/editing/move';
 import {
   FEATURE_KIND,
   type Feature,
@@ -82,6 +82,7 @@ import type {
 
 import { DEFAULT_FILTER_STATE, type FilterState } from '../discovery/index';
 
+import { aggregateMoveAt, type LiveAggregateMove } from './aggregate-move';
 import { resolveDisplayFor, type DisplayResolution } from './display-resolution-cache';
 import { isFeatureVisibleUnderFilter } from './filtered-display';
 import { sharedVertexIdsFor } from './shared-vertex-derivation';
@@ -605,6 +606,9 @@ export function buildActiveFeatureHandlePrimitives(
  * 描かないので {@link buildActiveFeatureHandlePrimitives} を通らない。線で輪郭をなぞるだけなので、
  * 頂点の印の数を抑える上限（FR-110）は掛けない（理屈は {@link featureHandleParts} の注記と同じ）。
  * 引いていない・別の地物・隠れているときは空を返す。
+ *
+ * 集約地物を引いている間は、下位の末端地物の全部の輪郭と、動かない頂点の印を描く
+ * （{@link aggregateMovePreviewPrimitives}）。
  */
 export function buildFeatureMovePreviewPrimitives(
   root: DomainProject,
@@ -614,12 +618,17 @@ export function buildFeatureMovePreviewPrimitives(
   session: DragSession | null,
   filter: FilterState = DEFAULT_FILTER_STATE,
   previewStyle?: EditPreviewStyle,
+  fixedMarkerCap: number = Number.POSITIVE_INFINITY,
 ): DrawPrimitive[] {
   if (activeFeature === null || session === null) return [];
   if (session.target.tool !== EDIT_TOOL.FeatureMove) return [];
   if (session.target.featureId !== activeFeature) return [];
   const resolution = resolveDisplayFor(root, time, displayControl);
   if (!isFeatureVisibleUnderFilter(resolution, filter, activeFeature)) return [];
+  const aggregate = aggregateMoveAt(root, time, activeFeature);
+  if (aggregate !== undefined) {
+    return aggregateMovePreviewPrimitives(aggregate, session, previewStyle, fixedMarkerCap);
+  }
   const committed =
     resolution.areaFeaturesById.get(activeFeature) ??
     resolution.features.find((f) => f.id === activeFeature);
@@ -629,6 +638,38 @@ export function buildFeatureMovePreviewPrimitives(
     previewVertexStore(committed, resolution.vertices, session),
     previewStyle,
   );
+}
+
+/** 集約地物を引いている間に、動かない頂点へ打つ印（下書きの輪郭と見分ける色）。 */
+export const AGGREGATE_MOVE_FIXED_MARK = { radiusPx: 4, fill: '#d32f2f' } as const;
+
+/**
+ * 集約地物を引いている間の下書き。動く頂点は動いた先に、動かない頂点は元の場所に置いた輪郭を描くので、
+ * 形の変わり方がそのまま見える。動かない頂点には印を打つ。印が上限を超えるときは印を省く（FR-110 と同じ
+ * 理由で、輪郭は省かない）。頂点の表は計画が持つ小さな表で、全部の頂点を毎コマ写さない。
+ */
+function aggregateMovePreviewPrimitives(
+  { plan, vertices }: LiveAggregateMove,
+  session: DragSession,
+  previewStyle: EditPreviewStyle | undefined,
+  fixedMarkerCap: number,
+): DrawPrimitive[] {
+  const delta = dragDelta(session);
+  const store = setVertices(vertices, moveVertexSet(plan.movingVertexIds, vertices, delta));
+  const out: DrawPrimitive[] = [];
+  for (const leaf of plan.leaves) out.push(...buildEditPreviewPrimitives(leaf, store, previewStyle));
+  if (plan.fixedVertexIds.length <= fixedMarkerCap) {
+    for (const id of plan.fixedVertexIds) {
+      const body = getVertex(vertices, id);
+      if (body === undefined) continue;
+      out.push({
+        kind: 'point',
+        at: { lon: body.coordinate.lon, lat: body.coordinate.lat },
+        ...AGGREGATE_MOVE_FIXED_MARK,
+      } satisfies PointPrimitive);
+    }
+  }
+  return out;
 }
 
 /**

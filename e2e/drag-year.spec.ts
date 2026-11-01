@@ -541,7 +541,7 @@ test.describe('引いている最中の年 — 同じ確定の経路に乗る引
     }
   });
 
-  test('集約地物の分岐: 引いている間 `.` は効かず、離すと動かない理由を言う', async () => {
+  test('集約地物の分岐: 引いている間 `.` は効かず、離すと押した年に下位領域が動く', async () => {
     const { app, page } = await launchApp();
     try {
       await loadSyntheticNested(page, 6, [1000, 1200]);
@@ -556,13 +556,16 @@ test.describe('引いている最中の年 — 同じ確定の経路に乗る引
       await page.mouse.click(at.x, at.y);
       await expect(page.getByTestId('app-active-feature')).toHaveText(SYNTHETIC_NEST_PARENT_ID);
       const year = await page.getByTestId(YEAR).textContent();
+      const stats = await projectStats(page);
       await pressAndPull(page, at);
       await page.keyboard.press('.');
       await expect(page.getByTestId(STATUS)).toContainText(APP_STRINGS.dragHoldsTime);
       await expect(page.getByTestId(YEAR)).toHaveText(year ?? '');
       await page.mouse.up();
-      await expect(page.getByTestId(STATUS)).toContainText(APP_STRINGS.moveAggregateRefused);
+      await expect(page.getByTestId(STATUS)).toContainText(APP_STRINGS.moveAggregateDone(6, 0));
       await expect(page.getByTestId(YEAR)).toHaveText(year ?? '');
+      // 押した 1000 年の錨へ入り、錨は増えない。
+      expect((await projectStats(page)).anchorCount).toBe(stats.anchorCount);
     } finally {
       await app.close();
     }
