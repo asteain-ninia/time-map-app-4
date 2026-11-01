@@ -1225,10 +1225,10 @@ export const createLiveAddBinding: CreateLiveAddBinding = (access) => {
       runGuarded(
         access.getRoot(),
         proposal,
-        bindPortsToProposal(access, ports, proposal, spatialCache),
+        bindPortsToProposal(access, ports, proposal, spatialCache, detector),
       ),
     applyResolutionsFor: (proposal) =>
-      createAccumulatingApply(access, ports, proposal, spatialCache),
+      createAccumulatingApply(access, ports, proposal, spatialCache, detector),
   };
 };
 
@@ -1246,6 +1246,8 @@ export const createLiveAddBinding: CreateLiveAddBinding = (access) => {
  * detection / U06 difference write-back / U12 single-undo ports are the SAME shared
  * adapters the add / split bindings use, bound per-proposal so a confirm and any
  * later apply-resolutions over the same proposal see identical detection (no 二重
+  // 足した面の重なりを、その面が効く後の年まで見る（B129）。形を変える編集と同じ検出。
+  const detector = introducedOverlapsDetector(createTerminalShapeCache());
  * 真実源). The binding reads the current root via getRoot at process-start (never a
  * stale capture, 教訓 5.6) and never writes the store — the host's onCommitted owns
  * the single store-write path.
@@ -1345,10 +1347,10 @@ export const createLiveKnifeBinding: CreateLiveKnifeBinding = (access) => {
       runGuarded(
         access.getRoot(),
         proposal,
-        bindPortsToProposal(access, ports, proposal, spatialCache),
+        bindPortsToProposal(access, ports, proposal, spatialCache, detector),
       ),
     applyResolutionsFor: (proposal) =>
-      createAccumulatingApply(access, ports, proposal, spatialCache),
+      createAccumulatingApply(access, ports, proposal, spatialCache, detector),
   };
 };
 
@@ -1366,6 +1368,7 @@ export const createLiveKnifeBinding: CreateLiveKnifeBinding = (access) => {
  * merge binding avoids does not arise here. The new feature is nonetheless promoted to
  * `created` by {@link makeCommand}'s baseline↔final history-id delta (finding5), so its
  * selection re-resolution is correct even though it is not in touchedFeatureIds.
+  const detector = introducedOverlapsDetector(createTerminalShapeCache());
  */
 export const createLiveDrillBinding: CreateLiveDrillBinding = (access) => {
   const ports: ConsistencyPorts<DomainRoot, DrillSnapshot> = {
@@ -1383,10 +1386,10 @@ export const createLiveDrillBinding: CreateLiveDrillBinding = (access) => {
       runGuarded(
         access.getRoot(),
         proposal,
-        bindPortsToProposal(access, ports, proposal, spatialCache),
+        bindPortsToProposal(access, ports, proposal, spatialCache, detector),
       ),
     applyResolutionsFor: (proposal) =>
-      createAccumulatingApply(access, ports, proposal, spatialCache),
+      createAccumulatingApply(access, ports, proposal, spatialCache, detector),
   };
 };
 
@@ -1404,6 +1407,7 @@ export const createLiveDrillBinding: CreateLiveDrillBinding = (access) => {
  */
 export const createLiveMergeBinding: CreateLiveMergeBinding = (access) => {
   const ports: ConsistencyPorts<DomainRoot, MergeSnapshot> = {
+  const detector = introducedOverlapsDetector(createTerminalShapeCache());
     applyProposal: (current, proposal) => applyMergeProposal(current, proposal, calendar),
     // The proposal anchors on the NEW result feature (createdIds), which is not yet
     // effective at the anchor time — so the time gate is calendar-validity only (like
@@ -1423,10 +1427,10 @@ export const createLiveMergeBinding: CreateLiveMergeBinding = (access) => {
       runGuarded(
         access.getRoot(),
         proposal,
-        bindPortsToProposal(access, ports, proposal, spatialCache),
+        bindPortsToProposal(access, ports, proposal, spatialCache, detector),
       ),
     applyResolutionsFor: (proposal) =>
-      createAccumulatingApply(access, ports, proposal, spatialCache),
+      createAccumulatingApply(access, ports, proposal, spatialCache, detector),
   };
 };
 
@@ -1444,6 +1448,7 @@ export const createLiveMergeBinding: CreateLiveMergeBinding = (access) => {
  * WHY checkTime (not checkTimeOverExisting): the proposal anchors on a continuing leaf
  * target that IS effective at the time, but a `create`-decision may also introduce a
  * not-yet-born aggregate; the targets' presence at the time is already enforced by
+  const detector = introducedOverlapsDetector(createTerminalShapeCache());
  * buildAffiliationProposal, so the live gate is calendar-validity only (like merge),
  * avoiding a spurious featureNotEffectiveAtTime on the new aggregate. The binding reads
  * the current root via getRoot at process-start (never a stale capture, 教訓 5.6) and
@@ -1465,10 +1470,10 @@ export const createLiveAffiliationBinding: CreateLiveAffiliationBinding = (acces
       runGuarded(
         access.getRoot(),
         proposal,
-        bindPortsToProposal(access, ports, proposal, spatialCache),
+        bindPortsToProposal(access, ports, proposal, spatialCache, detector),
       ),
     applyResolutionsFor: (proposal) =>
-      createAccumulatingApply(access, ports, proposal, spatialCache),
+      createAccumulatingApply(access, ports, proposal, spatialCache, detector),
   };
 };
 
@@ -1486,6 +1491,7 @@ export function createChildIdsSyncAfterAddCommandForRoot(
   at: TimePoint,
 ): Command<DomainRoot> | null {
   const features = featuresAt(root, at);
+  const detector = introducedOverlapsDetector(createTerminalShapeCache());
   const parentId = features.find((f) => f.id === newFeatureId)?.parentId;
   if (parentId === undefined) return null;
   const parent = features.find((f) => f.id === parentId);

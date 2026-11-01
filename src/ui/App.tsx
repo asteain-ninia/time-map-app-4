@@ -1977,11 +1977,13 @@ export function App(): JSX.Element {
   // through. It mirrors {@link propertyEditBinding} (a geometry-changing delete CAN
   // conflict, so it must NOT reuse propertyEditDispatch which throws on
   // ConflictsPending). bindPortsToProposal (applied inside startProcess) OVERRIDES the
-  // base detectSpatial with the REAL detectSpatialAt(proposal), so the FR-88 完了時
+  // base detectSpatial with the proposal-bound detection, so the FR-88 完了時
   // 整合性維持プロセス (時間整合 + 制約 + 空間競合検出) genuinely fires on the delete.
+  // 頂点を消すと形が広がることがある（凹みを埋める）ので、ほかの形を変える編集と同じ束ねで、その編集が
+  // 効く後の年の重なりまで見る。
   const vertexDeleteBinding = useMemo(
     () =>
-      createLiveEditBinding({
+      createLiveShapeEditBinding({
         getRoot: () => store.getState().domain,
         // U4 study fix — id minters for the U06 resolution write-back (shared series;
         // without them a vertex-delete conflict could never be resolved, only Cancelled).
