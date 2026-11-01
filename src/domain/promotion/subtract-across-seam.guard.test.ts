@@ -6,6 +6,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { parentExisting } from '../affiliation/decision';
+import { MSG_AFFILIATION_REMAINDER_MISMATCH } from '../affiliation/messages';
 import { buildAffiliationProposal } from '../affiliation/proposal';
 import { createBasicAttributes, createColorInfo } from '../attributes';
 import { createCoordinate } from '../coordinate';
@@ -84,6 +85,9 @@ describe('複製が効かないとき', () => {
         vertexStore: createVertexStore([...parent.vertices, ...child.vertices]),
       },
     );
-    expect(r.status).not.toBe('proposal');
+    if (r.status === 'proposal') throw new Error('確定してしまった');
+    // 内部の断りの文にしない。合わないのは残りの面積で、利用者に取れる手がある（B110）。
+    expect(r.kind).toBe('remainder-mismatch');
+    expect(r.message).toBe(MSG_AFFILIATION_REMAINDER_MISMATCH);
   });
 });

@@ -53,6 +53,7 @@ import {
   MSG_AFFILIATION_HIERARCHY,
   MSG_AFFILIATION_INTERNAL,
   MSG_AFFILIATION_LONG_EDGE,
+  MSG_AFFILIATION_REMAINDER_MISMATCH,
   MSG_AFFILIATION_TARGET_KIND,
   MSG_AFFILIATION_TARGET_MISSING,
   affiliationRejectMessage,
@@ -100,7 +101,7 @@ export interface AffiliationProposal {
 
 export interface AffiliationRejected {
   readonly status: typeof AFFILIATION_STATUS.Rejected;
-  readonly kind: AffiliationRejectKind | 'hierarchy' | 'internal' | 'long-edge';
+  readonly kind: AffiliationRejectKind | 'hierarchy' | 'internal' | 'long-edge' | 'remainder-mismatch';
   readonly message: string;
   /** 機械可読詳細 (関与地物 ID 等)。 */
   readonly detail?: unknown;
@@ -607,6 +608,16 @@ function generateDirectDomains(
       return {
         status: 'rejected',
         rejection: reject('long-edge', MSG_AFFILIATION_LONG_EDGE, { featureId: f.id }),
+      };
+    }
+    if (result.kind === 'unresolved' && (result.stage === 'area-mismatch' || result.stage === 'diff')) {
+      // 残りの面積が合わない（B110）。半周の形とは限らないので、長い辺の文を使わない。
+      return {
+        status: 'rejected',
+        rejection: reject('remainder-mismatch', MSG_AFFILIATION_REMAINDER_MISMATCH, {
+          featureId: f.id,
+          stage: result.stage,
+        }),
       };
     }
     if (result.kind === 'unresolved') {

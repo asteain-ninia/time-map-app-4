@@ -193,11 +193,12 @@ export type DirectDomainForLeafResult =
   | {
       readonly kind: 'unresolved';
       /**
-       * `long-edge`: 長い辺を打ち直しても、保存して読み直した形が差分の結果と合わない。確定すると
-       * 面積が黙って変わるので、呼び出し側は確定を断る（B105）。`diff` には、集合演算が断った場合と
-       * 面 = 差分 + 共通部分 が合わない場合（B108）がある。
+       * `long-edge`: 打ち直しても経度 180 度以上の辺が残った。
+       * `area-mismatch`: 長い辺は無いが、保存して読み直した形の面積が差分の結果と合わない。
+       * どちらも確定すると形が黙って変わるので、呼び出し側は確定を断る（B105）。`diff` には、
+       * 集合演算が断った場合と 面 = 差分 + 共通部分 が合わない場合（B108）がある。
        */
-      readonly stage: 'original' | 'children' | 'diff' | 'build' | 'long-edge';
+      readonly stage: 'original' | 'children' | 'diff' | 'build' | 'long-edge' | 'area-mismatch';
     };
 
 /**
@@ -263,7 +264,7 @@ export function buildDirectDomainForLeaf(
   if (built === undefined) return { kind: 'unresolved', stage: 'build' };
   // **保存して読み直した形の面積を検算する**（所属変更には面積の守りがここしか無い）。
   if (!shapeKeepsArea(built.shape, built.vertices, subtracted.area)) {
-    return { kind: 'unresolved', stage: 'long-edge' };
+    return { kind: 'unresolved', stage: 'area-mismatch' };
   }
 
   const ddName = directDomainName(leaf.attributes.name, nameOverride);
