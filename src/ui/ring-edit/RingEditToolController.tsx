@@ -148,6 +148,11 @@ export interface RingEditToolControllerProps<S> {
   readonly onDraftDiscarded?: ((count: number) => void) | undefined;
   /** 年の移動・設定の補正・読み込みで捨てたものを報せる口（B112）。 */
   readonly onDraftLost?: DraftLostHandler | undefined;
+  /**
+   * いま Ctrl+Z で戻す相手（打った点）を道具が持っているか（B64）。対象を掴んだだけで点が無い
+   * あいだは偽を報せ、ホストが取り消し・やり直しを大域へ通す。
+   */
+  readonly onUndoPointChange?: ((hasPoint: boolean) => void) | undefined;
   /** 掴んでいた面がいまの年に居なくなり、手放したことを伝える口（B112）。 */
   readonly onTargetGone?: (() => void) | undefined;
   /** Provisional draw style override. */
@@ -315,6 +320,15 @@ export function RingEditToolController<S>(
     drawSink.drawRingEdit(buildRingEditPrimitives(ring.draft, style));
   }, [ring.draft, drawSink, style]);
 
+  // B64: 打った頂点があるあいだだけ、Ctrl+Z の相手を道具が持っている。
+  const ringHasUndoPoint = ring.draft !== null && ring.draft.vertices.length > 0;
+  const onUndoPointChange = props.onUndoPointChange;
+  useEffect(() => {
+    if (onUndoPointChange === undefined) return;
+    onUndoPointChange(ringHasUndoPoint);
+    return () => onUndoPointChange(true);
+  }, [ringHasUndoPoint, onUndoPointChange]);
+
   // --- Keyboard: Escape→cancel, Ctrl+Z→undo vertex (FR-78). Active while a session runs.
   const onDrawingChange = props.onDrawingChange;
   // **重なりで止まっている間は打鍵を受けない**（鍵盤は板のもの。教訓 5.95。穴あけ・分けると
@@ -375,8 +389,10 @@ export function RingEditToolController<S>(
         }
         return;
       }
+      // 点が無いときは受けない（B64）。旧版はここで面を黙って離していた。点が無ければ打鍵は
+      // 大域の取り消しへ届く（分ける・穴あけと同じ形）。
       if (
-        ring.draft !== null &&
+        ringHasUndoPoint &&
         (e.ctrlKey || e.metaKey) &&
         (e.key === 'z' || e.key === 'Z')
       ) {
@@ -394,6 +410,7 @@ export function RingEditToolController<S>(
     ring.releaseTarget,
     ring.undoLastVertex,
     ring.canConfirm,
+    ringHasUndoPoint,
     unpromoteOwnTarget,
     ringGuard,
   ]);

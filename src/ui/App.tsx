@@ -3231,6 +3231,11 @@ export function App(): JSX.Element {
   // U27: a drill session past Idle owns the keyboard (its OWN Ctrl+Z undoes a region
   // vertex; a stray global Delete during a drill must not fire) — 教訓 c1e5534.
   const [drillDrawing, setDrillDrawing] = useState(false);
+  // B64: 道具が Ctrl+Z で戻す点を持っているか。知らないあいだは「持っている」側に倒す（大域を
+  // 止めるのが今までの形で、二重の取り消しを起こさない）。
+  const [knifeHasUndoPoint, setKnifeHasUndoPoint] = useState(true);
+  const [ringHasUndoPoint, setRingHasUndoPoint] = useState(true);
+  const [drillHasUndoPoint, setDrillHasUndoPoint] = useState(true);
   // U37: an in-progress survey DRAFT owns the keyboard (its OWN Escape cancels the
   // draft; a stray global Delete during a measurement must not hit the selection).
   const [surveyDrafting, setSurveyDrafting] = useState(false);
@@ -3410,28 +3415,26 @@ export function App(): JSX.Element {
    * 「何に対して答えたのか」が分からなくなる。
    */
   //
-  // **B64 / Fable #8: 戻す点を持たない道具では、取り消しは大域へ譲る**（実装係 2 の判断。
-  // 依頼書の候補 ①。進捗 増分7.md §12.6）。所属変更の道具は「対象を掴んでいる」ことが
-  // 下書きにあたるので鍵盤の持ち主は `tool-drawing` になるが、この道具には **1 つ戻す点が
-  // 無い**（`ReparentToolController` の keydown は Ctrl+Z を受けない）。だから大域を
-  // 止めると Ctrl+Z / Ctrl+Y は **誰にも受けられず、画面にも何も出なかった**。止める理由
-  // （道具の Ctrl+Z と二重に走らせない＝bughunt3 H2）がこの道具には無いので、通す。
-  // 板が出れば持ち主は `modal` になってここは閉じる。取り消しで対象の地物が消えても、
-  // 道具は確定の直前に対象を洗い直して居ないものを外す（`planAffiliationTargets`）ので
-  // 対象は壊れない ―― 年を動かしたときと同じ扱いである。
-  const reparentOnlyDrawing =
-    reparentDrawing &&
-    !addDrawing &&
-    !knifeDrawing &&
-    !mergeDrawing &&
-    !ringEditDrawing &&
-    !drillDrawing &&
-    !surveyDrafting;
+  // **B64 / Fable #8: 戻す点を持たない局面では、取り消しは大域へ譲る**。手順のある道具は
+  // 「対象を掴んでいる」ことが下書きにあたるので鍵盤の持ち主は `tool-drawing` になるが、点を
+  // 打つ前は **1 つ戻す相手が無い**。大域を止めると Ctrl+Z / Ctrl+Y は **誰にも受けられず、
+  // 画面にも何も出なかった**。止める理由（道具の Ctrl+Z と二重に走らせない＝bughunt3 H2）が
+  // この局面には無いので、通す。所属変更と結ぶには戻す点がそもそも無い。分ける・輪郭・穴あけは
+  // 点があるかを自分で報せる（`onUndoPointChange`）。追加と測量は今までどおり止める。
+  // 板が出れば持ち主は `modal` になってここは閉じる。取り消しで掴んだ面が消えると、分ける・
+  // 輪郭・穴あけは年を動かしたときと同じ見張りで手放す。所属変更と結ぶは確定の直前に対象を
+  // 洗い直す（`planAffiliationTargets` / `validateMergePreconditions`）。
+  const toolHoldsUndoPoint =
+    addDrawing ||
+    surveyDrafting ||
+    (knifeDrawing && knifeHasUndoPoint) ||
+    (ringEditDrawing && ringHasUndoPoint) ||
+    (drillDrawing && drillHasUndoPoint);
   const alwaysAllowedShortcuts =
     focusOwner === FOCUS_OWNER.ToolDrawing
-      ? reparentOnlyDrawing
-        ? HISTORY_AND_SAVE_WHILE_REPARENT_HOLDS_TARGET
-        : SAVE_WHILE_TOOL_OWNS_KEYBOARD
+      ? toolHoldsUndoPoint
+        ? SAVE_WHILE_TOOL_OWNS_KEYBOARD
+        : HISTORY_AND_SAVE_WHILE_NO_UNDO_POINT
       : undefined;
   /**
    * **止めている間に押された打鍵の理由を出す**（増分 3。現状.md B28 の第 2 の理由 /
@@ -4495,6 +4498,7 @@ export function App(): JSX.Element {
               onCommitted={onKnifeCommitted}
               onConflicts={onKnifeConflicts}
               onDrawingChange={setKnifeDrawing}
+              onUndoPointChange={setKnifeHasUndoPoint}
               onModalChange={toolModalChange('knife')}
               onTargetGone={onToolTargetGone}
               onDraftDiscarded={onToolDraftDiscarded}
@@ -4575,6 +4579,7 @@ export function App(): JSX.Element {
               onCommitted={onRingEditCommitted}
               onConflicts={onRingEditConflicts}
               onDrawingChange={setRingEditDrawing}
+              onUndoPointChange={setRingHasUndoPoint}
               onModalChange={toolModalChange('ring-edit')}
               onTargetGone={onToolTargetGone}
               onImpactModalChange={toolModalChange('ring-delete-impact')}
@@ -4605,6 +4610,7 @@ export function App(): JSX.Element {
               onCommitted={onDrillCommitted}
               onConflicts={onDrillConflicts}
               onDrawingChange={setDrillDrawing}
+              onUndoPointChange={setDrillHasUndoPoint}
               onModalChange={toolModalChange('drill')}
               onTargetGone={onToolTargetGone}
               onDraftDiscarded={onToolDraftDiscarded}
@@ -4985,11 +4991,11 @@ const SAVE_WHILE_TOOL_OWNS_KEYBOARD: ReadonlySet<CommandId> = new Set<CommandId>
 ]);
 
 /**
- * 所属変更の道具が対象を掴んでいるあいだに通すコマンド（B64）。保存の一式に **取り消し・
- * やり直し**を足したもの。所属変更には「1 つ戻す点」が無いので、ここで止めると打鍵が
- * 誰にも受けられず黙る（`App` の `reparentOnlyDrawing` の注記）。
+ * 道具が対象だけを掴んでいて戻す点が無いあいだに通すコマンド（B64）。保存の一式に **取り消し・
+ * やり直し**を足したもの。ここで止めると打鍵が誰にも受けられず黙る（`App` の
+ * `toolHoldsUndoPoint` の注記）。Delete は通さない（掴んだ対象を消してしまう）。
  */
-const HISTORY_AND_SAVE_WHILE_REPARENT_HOLDS_TARGET: ReadonlySet<CommandId> = new Set<CommandId>([
+const HISTORY_AND_SAVE_WHILE_NO_UNDO_POINT: ReadonlySet<CommandId> = new Set<CommandId>([
   ...SAVE_WHILE_TOOL_OWNS_KEYBOARD,
   COMMAND_ID.EditUndo,
   COMMAND_ID.EditRedo,
