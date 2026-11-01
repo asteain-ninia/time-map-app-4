@@ -91,8 +91,9 @@ import {
   type TerminalShapeCache,
 } from '../domain/spatial/index';
 import { detectTerminalOverlaps, type OverlapPair } from '../domain/spatial/index';
+import { alignMultiPolygon } from '../domain/geo/seam';
 import { resolveLeafShape } from '../domain/hierarchy/resolve-shape';
-import { difference, isOk } from '../domain/geometry/index';
+import { difference, isOk, quantizedEqual } from '../domain/geometry/index';
 import { nestRingsByContainment, type RawRing } from '../domain/promotion/direct-domain';
 import { shapeKeepsArea, subtractAcrossSeam } from '../domain/promotion/subtract-across-seam';
 import { isMultiPolygonEmpty, type GeoMultiPolygon } from '../domain/geometry/types';
@@ -548,7 +549,7 @@ function overlapsAtSlice(
   let involvedBox: BBox | undefined;
   for (const id of involved) {
     const shape = shapes.get(id);
-    const box = shape === undefined ? undefined : multiPolygonBBox(shape);
+    const box = shape === undefined ? undefined : continuousBox(shape);
     if (box === undefined) continue;
     involvedBox =
       involvedBox === undefined
@@ -576,29 +577,26 @@ function overlapsAtSlice(
   return { shapes, involved, involvedBox, pairs: [...kept, ...checked], fresh };
 }
 
-/** 経度は周回するので、±1 周の写しでも見る。 */
+/** 経度は周回するので、周の写しのどれかで届くかを見る（どちらも連続の経度の囲み）。 */
 function boxesMayTouch(a: BBox, b: BBox): boolean {
   if (a.maxY < b.minY || b.maxY < a.minY) return false;
-  return [-360, 0, 360].some((turn) => a.maxX + turn >= b.minX && b.maxX >= a.minX + turn);
+  // a を k 周ずらして b に届く整数 k があるか。
+  return Math.ceil((b.minX - a.maxX) / 360) <= Math.floor((b.maxX - a.minX) / 360);
 }
 
-/** 面の参照する頂点の座標を囲む矩形（無ければ undefined）。 */
+/**
+ * 形を囲む矩形。重なりの検出（`spatial/overlap.ts`）と同じ {@link alignMultiPolygon} で連続の経度に開いて
+ * から囲む（§5.107）。保存の座標をそのまま囲むと、継ぎ目をまたぐ面は反対側の半周を囲んでしまい、
+ * その面の本当の場所を「遠い」と読む。
+ */
+function continuousBox(shape: GeoMultiPolygon): BBox | undefined {
+  return multiPolygonBBox(alignMultiPolygon(shape));
+}
+
+/** 面の形を囲む矩形（解決できなければ undefined。解決できない面は末端の形にならない）。 */
 function leafBox(leaf: LeafFeature, store: VertexStore): BBox | undefined {
-  let box: BBox | undefined;
-  for (const id of referencedVertexIds(leaf)) {
-    const c = getVertex(store, id)?.coordinate;
-    if (c === undefined) continue;
-    box =
-      box === undefined
-        ? { minX: c.lon, minY: c.lat, maxX: c.lon, maxY: c.lat }
-        : {
-            minX: Math.min(box.minX, c.lon),
-            minY: Math.min(box.minY, c.lat),
-            maxX: Math.max(box.maxX, c.lon),
-            maxY: Math.max(box.maxY, c.lat),
-          };
-  }
-  return box;
+  const shape = resolveLeafShape(leaf.shape, store);
+  return shape === undefined ? undefined : continuousBox(shape);
 }
 
 /** 2 つの錨の同じ面が、同じ形で親も同じか。 */
@@ -975,7 +973,7 @@ function applyResolutionAt(
     // Deliberately NOT a third feature: welding against an unrelated neighbour that
     // merely touches the result would manufacture linkage the user never asked for.
     const weld = buildWeldIndex([
-      vertexBodiesOf(priority, vertices),
+      withoutVerticesMovingAfter(state, time, vertexBodiesOf(priority, vertices)),
       vertexBodiesOf(adjust, vertices),
     ]);
     const built = shapeFromMultiPolygon(subtracted.shape, nextVertexId, nextRingId, weld);
@@ -1001,6 +999,11 @@ function applyResolutionAt(
 
 /**
  * Write the trimmed `feature` (carrying its new vertices) into `featureId`'s
+    //
+    // 相手の頂点が後の年に本当に動くなら、その id を持ち込まない。削った面の写しはこの年の座標のまま後の年へ
+    // 続くので、同じ id の体がその年で食い違う（読み込みの `vertex-coordinate-divergence`）。相手の動きに
+    // 合わせて削った面を書き換えると、利用者が触っていない後の年の形が変わる。だからこの面だけ別の id で
+    // 同じ場所に置く。吸着の付け替え（`carryShareIntoLaterAnchors` の `until`）と同じ考え方。
  * history AT the resolution `anchorTime`, returning a new project.
  *
  * WHY applyPastEdit, NOT an in-place effective-entry swap (temporal-correctness
@@ -1026,6 +1029,22 @@ function rewriteFeatureAtTime(
   // history.featureId — otherwise a resolvable spatial conflict on such a leaf
   // would fall through to an internal rejection instead of being trimmed (shares
   // the U44 containment lookup so apply-proposal and the U06 write-back agree).
+/** `bodies` のうち、`time` より後ろのどの錨でも同じ座標でいる頂点（その錨に無いのは動いたことにしない）。 */
+function withoutVerticesMovingAfter(state: DomainRoot, time: TimePoint, bodies: readonly Vertex[]): readonly Vertex[] {
+  const byId = new Map<VertexId, Vertex>(bodies.map((v) => [v.id, v]));
+  const moving = new Set<VertexId>();
+  for (const history of state.histories) {
+    for (const entry of history.series.entries) {
+      if (compareTime(entry.start, time, calendar) <= 0) continue;
+      for (const later of entry.anchor.snapshot.vertices.byId.values()) {
+        const body = byId.get(later.id);
+        if (body !== undefined && !quantizedEqual(later.coordinate, body.coordinate)) moving.add(later.id);
+      }
+    }
+  }
+  return moving.size === 0 ? bodies : bodies.filter((v) => !moving.has(v.id));
+}
+
   const found = findHistoryContaining(state, featureId, anchorTime, calendar);
   if (found === undefined) return undefined;
   const { index, history } = found;
