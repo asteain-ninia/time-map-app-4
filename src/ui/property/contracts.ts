@@ -20,6 +20,8 @@ import type { Feature } from '../../domain/feature';
 import type { AnchorId, FeatureId } from '../../domain/ids';
 import type { TimePoint } from '../../domain/time/time-point';
 
+import type { CascadedImpact } from './end-here-impact';
+
 /**
  * Looks a feature up by id from the domain truth (錨ユニット / domain). Returns
  * `null` when the id no longer resolves (a stale reference). The property panel
@@ -110,6 +112,11 @@ export interface EditDispatch {
  */
 export interface AnchorIntervalEditDispatch {
   dispatchAnchorInterval(intent: AnchorIntervalEditIntent): void;
+  /**
+   * この編集を確定すると一緒に終わる集約地物（確定と同じ数え方の空打ち。B78）。錨を消す前の
+   * 板が使う。押した瞬間に 1 度だけ呼ぶ。
+   */
+  describeAnchorIntervalCascade?(intent: AnchorIntervalEditIntent): readonly CascadedImpact[];
 }
 
 /** The three存続期間 operations (FR-54〜FR-59, §5.6). A typed constant (教訓 5.19). */

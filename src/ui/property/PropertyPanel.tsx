@@ -1176,6 +1176,12 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
                 {...(intervalEditable
                   ? { featureId: feature.id, onEditInterval: handleEditInterval }
                   : {})}
+                {...(anchorIntervalDispatch?.describeAnchorIntervalCascade
+                  ? {
+                      describeIntervalCascade: (intent: AnchorIntervalEditIntent) =>
+                        anchorIntervalDispatch.describeAnchorIntervalCascade?.(intent) ?? [],
+                    }
+                  : {})}
                 onModalChange={propertyModals.channel('anchor-delete-impact')}
                 resolveParentName={resolveParentName}
                 openStartEditor={

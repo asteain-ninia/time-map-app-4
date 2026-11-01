@@ -250,7 +250,7 @@ import { buildForest } from '../domain/hierarchy/forest';
 // 増分 7: 所属変更の対象展開（FR-48 後半）と、削除の影響の説明（設計書 §A.3）。
 import { planAffiliationTargets } from '../domain/affiliation/index';
 import { hasOwnSeries } from '../domain/affiliation/materialize';
-import { planEnding } from '../domain/affiliation/interval-edit';
+import { planEnding, type CascadedEnd } from '../domain/affiliation/interval-edit';
 import { deletionStateFromHistories, describeDeletionImpact } from '../domain/deletion/index';
 import { maxDerivedDepth } from '../domain/hierarchy/depth';
 import { FEATURE_KIND, featureDisplayName } from '../domain/feature';
@@ -266,6 +266,8 @@ import {
   buildDeleteAnchorIntent,
   buildEndHereImpactView,
   buildEndHereIntent,
+  intervalCascadeStatus,
+  type CascadedImpact,
   ANCHOR_INTERVAL_OP,
   isYearAligned,
   type DeleteImpactView,
@@ -2566,12 +2568,21 @@ export function App(): JSX.Element {
   const [pendingRailAnchorDelete, setPendingRailAnchorDelete] = useState<{
     readonly featureId: FeatureId;
     readonly entry: AnchorEntry;
+    /** 押した瞬間に数えた、一緒に終わる集約地物（B78。素性欄の錨表と同じ口）。 */
+    readonly cascaded: readonly CascadedImpact[];
   } | null>(null);
   const requestRailAnchorDelete = useCallback(
     (entry: AnchorEntry): void => {
       const featureId = store.getState().selection.activeFeature;
       if (featureId === null) return;
-      setPendingRailAnchorDelete({ featureId, entry });
+      setPendingRailAnchorDelete({
+        featureId,
+        entry,
+        cascaded:
+          anchorIntervalDispatchRef.current?.describeAnchorIntervalCascade?.(
+            buildDeleteAnchorIntent(featureId, entry.anchor.id),
+          ) ?? [],
+      });
     },
     [store],
   );
@@ -2612,13 +2623,7 @@ export function App(): JSX.Element {
       const promoted = (plan?.promoted ?? []).filter(
         (id) => featureByIdAt(s.domain, at, id) !== undefined,
       );
-      const cascaded = (plan?.cascaded ?? []).map((c) => ({
-        name: featureByIdAt(s.domain, c.at, c.featureId)?.attributes.name ??
-          featureNameOf(c.featureId) ??
-          '',
-        yearLabel: formatYear(c.at.year),
-        whole: c.whole,
-      }));
+      const cascaded = cascadedImpactsOf(s.domain, plan?.cascaded ?? [], featureNameOf);
       // 切り詰める後ろの記録の中の、別の上位領域への所属（4 回目 #2）。その上位領域の下位領域が
       // 変わるので、押す前の板を出す（締め D）。
       const laterAffiliations = (plan?.laterAffiliations ?? []).map((a) => ({
@@ -4051,20 +4056,18 @@ export function App(): JSX.Element {
             '';
           const names = result.cascaded.filter((c) => !c.whole).map(nameOf).filter((n) => n !== '');
           const wholeNames = result.cascaded.filter((c) => c.whole).map(nameOf).filter((n) => n !== '');
-          if (names.length > 0 || wholeNames.length > 0) {
-            statusMessageStore.success(
-              (names.length > 0
-                ? PROPERTY_STRINGS.intervalCascaded(names.join(PROPERTY_TEXT.nameSeparator))
-                : PROPERTY_STRINGS.intervalChanged) +
-                (wholeNames.length > 0
-                  ? PROPERTY_STRINGS.endHereDoneCascadedWhole(wholeNames.join(PROPERTY_TEXT.nameSeparator))
-                  : ''),
-            );
-          }
+          const status = intervalCascadeStatus(names, wholeNames);
+          if (status !== null) statusMessageStore.success(status);
         }
       },
+      // 押す前の板のための空打ち（B78）。確定と同じ組み立てを通して、記録はしない。
+      describeAnchorIntervalCascade: (intent) => {
+        const root = store.getState().domain;
+        const result = createAnchorIntervalCommandForRoot(root, intent);
+        return result.ok ? cascadedImpactsOf(root, result.cascaded, featureNameOf) : [];
+      },
     }),
-    [store, recordCommand, statusMessageStore],
+    [store, recordCommand, statusMessageStore, featureNameOf],
   );
   // 「この年に終わったことにする」が使う口を late-bind する（写しを作らない＝教訓 5.44）。
   anchorIntervalDispatchRef.current = anchorIntervalDispatch;
@@ -4822,7 +4825,10 @@ export function App(): JSX.Element {
             {pendingRailAnchorDelete !== null && (
               <ImpactConfirmDialog
                 testIdPrefix="anchor-delete-impact"
-                {...anchorDeleteImpactView(pendingRailAnchorDelete.entry.start)}
+                {...anchorDeleteImpactView(
+                  pendingRailAnchorDelete.entry.start,
+                  pendingRailAnchorDelete.cascaded,
+                )}
                 onConfirm={() => {
                   const target = pendingRailAnchorDelete;
                   setPendingRailAnchorDelete(null);
@@ -4988,6 +4994,22 @@ const HISTORY_AND_SAVE_WHILE_REPARENT_HOLDS_TARGET: ReadonlySet<CommandId> = new
   COMMAND_ID.EditUndo,
   COMMAND_ID.EditRedo,
 ]);
+
+/**
+ * 一緒に終わる集約地物に名前と年を付ける（B78）。「この年に終わったことにする」の板と錨を消す
+ * 板の両方がここを通る（教訓 5.44）。その年に名前が引けなければ、どの年でもよいから引く。
+ */
+function cascadedImpactsOf(
+  root: DomainRoot,
+  cascaded: readonly CascadedEnd[],
+  anyYearName: (featureId: FeatureId) => string | null,
+): readonly CascadedImpact[] {
+  return cascaded.map((c) => ({
+    name: featureByIdAt(root, c.at, c.featureId)?.attributes.name ?? anyYearName(c.featureId) ?? '',
+    yearLabel: formatYear(c.at.year),
+    whole: c.whole,
+  }));
+}
 
 const KNIFE_DEFAULT_COLOR = withFillOpacity(
   createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1'),
