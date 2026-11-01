@@ -159,9 +159,11 @@ test.describe('読み込みの間の編集', () => {
     }
   });
 
-  test('素性の保存: 名前を変えて保存しても記録せず、「保存した」と言わない', async () => {
-    const target = savedTarget();
-    const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target, E2E_OPEN_PATH: target } });
+  test('素性の保存: 記録せず、打った値は未保存のまま残る。読み込みに失敗したら保存し直せる', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gimoza-load-gate-'));
+    const { app, page } = await launchApp({
+      extraEnv: { E2E_SAVE_AS_PATH: join(dir, 'a.gimoza'), E2E_OPEN_PATH: join(dir, 'missing.gimoza') },
+    });
     try {
       const { faceId } = await savedFace(page);
       await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
@@ -170,12 +172,20 @@ test.describe('読み込みの間の編集', () => {
       const undo = await page.getByTestId(CAN_UNDO).textContent();
       await startHeldLoad(app, page);
 
-      await page.getByTestId('basic-info').getByLabel(PROPERTY_STRINGS.nameLabel).fill('読み込みの間の名前');
+      const nameField = page.getByTestId('basic-info').getByLabel(PROPERTY_STRINGS.nameLabel);
+      await nameField.fill('読み込みの間の名前');
       await page.getByTestId('save-button').click();
       await expect(page.getByTestId(STATUS)).toContainText(REFUSED);
       await expect(page.getByTestId('property-title-name')).toHaveText(title ?? '');
       await expect(page.getByTestId(CAN_UNDO)).toHaveText(undo ?? '');
+      // 保存したことにしない: 打った値が残り、保存ボタンが押せるまま。
+      await expect(nameField).toHaveValue('読み込みの間の名前');
+      await expect(page.getByTestId('save-button')).toBeEnabled();
+
       await releaseLoads(app);
+      await expect(page.getByTestId(STATUS)).not.toContainText(REFUSED);
+      await page.getByTestId('save-button').click();
+      await expect(page.getByTestId('property-title-name')).toHaveText('読み込みの間の名前');
     } finally {
       await app.close();
     }
@@ -200,9 +210,11 @@ test.describe('読み込みの間の編集', () => {
     }
   });
 
-  test('道具の確定: 面を描いて保存しても記録せず、断りが「追加した」で上書きされない', async () => {
-    const target = savedTarget();
-    const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target, E2E_OPEN_PATH: target } });
+  test('道具の確定: 記録せず、下書きは残る。読み込みに失敗したら確定し直せる', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gimoza-load-gate-'));
+    const { app, page } = await launchApp({
+      extraEnv: { E2E_SAVE_AS_PATH: join(dir, 'a.gimoza'), E2E_OPEN_PATH: join(dir, 'missing.gimoza') },
+    });
     try {
       const { cx, cy } = await savedFace(page);
       const stats = await projectStats(page);
@@ -216,7 +228,14 @@ test.describe('読み込みの間の編集', () => {
       await page.waitForTimeout(200);
       await expect(page.getByTestId(STATUS)).toContainText(REFUSED);
       expect((await projectStats(page)).featureCount).toBe(stats.featureCount);
+      // 下書きを捨てない: 素性の欄がまだ出ている。
+      await expect(page.getByTestId('add-property-form')).toBeVisible();
+
       await releaseLoads(app);
+      await expect(page.getByTestId(STATUS)).not.toContainText(REFUSED);
+      await page.getByTestId('add-save').click();
+      await expect(page.getByTestId('add-property-form')).toHaveCount(0);
+      expect((await projectStats(page)).featureCount).toBe(stats.featureCount + 1);
     } finally {
       await app.close();
     }

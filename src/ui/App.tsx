@@ -813,6 +813,13 @@ export function App(): JSX.Element {
       registry.setDispatchGate((id) => isEditingCommand(id) && store.getState().refuseEditDuringLoad()),
     [registry, store],
   );
+  useEffect(
+    () =>
+      setConsistencyProcessGate(() =>
+        store.getState().refuseEditDuringLoad() ? APP_STRINGS.editRefusedDuringLoad : null,
+      ),
+    [store],
+  );
   const dragLoadNonce = useStore(store, (s) => s.projectLoadNonce);
   useEffect(() => {
     if (!dragCancelledByLoadRef.current) return;
@@ -5427,6 +5434,7 @@ import {
   anchorIntervalRecolorTime,
   createBulkKindLabelCommandForRoot,
   createChildIdsSyncAfterAddCommandForRoot,
+  setConsistencyProcessGate,
 } from './consistency-binding';
 import type { AddIdPorts } from '../domain/add/index';
 import type { StartAddProcess } from './add/useAddTool';

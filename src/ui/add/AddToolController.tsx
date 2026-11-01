@@ -974,9 +974,11 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   const runSaveDeferred = saveDeferred.run;
   const runSave = useCallback(
     (properties: AddProperties) => {
+      // 読み込みの間は素性の欄に留まる（確定の手続きで断ると、やめるしかない断りの画面へ移る。B120）。
+      if (store.getState().refuseEditDuringLoad()) return;
       runSaveDeferred(() => save(properties));
     },
-    [runSaveDeferred, save],
+    [runSaveDeferred, save, store],
   );
   const saveBusy = saveDeferred.busy;
   const phase = add.phase;

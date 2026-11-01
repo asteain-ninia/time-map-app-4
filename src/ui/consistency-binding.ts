@@ -212,6 +212,10 @@ function runGuarded<S, Snapshot>(
   proposal: EditProposal<Snapshot>,
   ports: ConsistencyPorts<S, Snapshot>,
 ): ProcessResult<S> {
+  const refusal = processGate?.() ?? null;
+  if (refusal !== null) {
+    return { status: PROCESS_STATUS.Rejected, kind: REJECTION_KIND.ConstraintViolation, message: refusal };
+  }
   try {
     return orchestratorStart(root, proposal, ports);
   } catch (error) {
@@ -230,6 +234,21 @@ const DELETE_COMMIT_KIND = defineCommandKind('u44-delete-commit');
 const INTERVAL_COMMIT_KIND = defineCommandKind('u44-interval-commit');
 /** 一括編集（まとめての種別付け）の識別子（増分 7 の中身 8）。 */
 const BULK_EDIT_COMMIT_KIND = defineCommandKind('u44-bulk-edit-commit');
+
+/**
+ * 全部の束ねが確定の手続きへ入る前に通す関門。断るなら理由の文を返す。読み込みの間の編集を断るのに使う
+ * （`docs/現状.md` の B120 の直し）。**断りを「手続きが断った」として返す**ので、道具は普段の断りと同じ扱いで
+ * 下書きを持ったまま文を出す。確定まで進ませて `App.recordCommand` で断ると、道具は通ったつもりで下書きを捨てる。
+ * 束ねは道具ごとに作られて合成ルートの外にもあるので、渡し漏れが起きないようにここへ 1 つだけ置く。
+ * 戻り値は取り外す関数。
+ */
+let processGate: (() => string | null) | null = null;
+export function setConsistencyProcessGate(gate: () => string | null): () => void {
+  processGate = gate;
+  return () => {
+    if (processGate === gate) processGate = null;
+  };
+}
 
 /**
  * U09 — temporal-consistency check. For an add the feature is new (no existing
