@@ -311,8 +311,8 @@ export const PROPERTY_STRINGS = {
   // --- 増分 7: 影響ダイアログ（設計書 §A.3 / 中身 6）---------------------------
   impactTitle: (name: string): string => `「${name}」を全部の年から消します`,
   impactHeadingGone: '一緒に消えるもの',
-  /** 頂点は消えず、参照だけが消える（司令塔の決定 (5)）。だから別の群にする。 */
-  impactHeadingVertices: '参照されなくなる頂点',
+  /** 共有している頂点は残るので、地物の記録とは別の群で言う（司令塔の決定 (5)）。 */
+  impactHeadingVertices: '頂点',
   impactHeadingReferenced: '他から参照されているところ',
   impactHeadingAuto: '自動で消える地物',
   /**
@@ -326,8 +326,8 @@ export const PROPERTY_STRINGS = {
   impactNoOwnAnchors:
     'この地物は自分の歴史を持たず、上位領域の記録の中に居ます（錨は 0 件）',
   impactVertices: (count: number): string => `頂点 ${String(count)} 個`,
-  impactVerticesUnreferenced: (count: number): string =>
-    `この地物だけが使っていた頂点 ${String(count)} 個が参照されなくなります（頂点そのものは頂点表に残ります）`,
+  impactVerticesGone: (count: number): string =>
+    `この地物だけが使っていた頂点 ${String(count)} 個も一緒に消えます`,
   impactVerticesAllShared:
     'この地物が使っていた頂点はすべて隣の地物と共有しているので、参照は残ります',
   impactVerticesAggregate:

@@ -70,9 +70,9 @@ test.describe('A8 — 地物の削除は 3 経路とも同じ確認を通る', (
       await expect(page.getByTestId(`${IMPACT}-title`)).toContainText(FACE_NAME);
       // **増分 7**: 何が一緒に消えるかも出る（設計書 §A.3 の「一緒に消えるもの」）。
       await expect(page.getByTestId(`${IMPACT}-gone`)).toContainText('記録（錨）');
-      // **頂点は消えない**（司令塔の決定 (5)）。頂点表には残り、消えるのは参照だけなので
-      // 「一緒に消えるもの」ではなく別の群に出る。
-      await expect(page.getByTestId(`${IMPACT}-vertices`)).toContainText('頂点');
+      // 頂点は記録とは別の群で言う（司令塔の決定 (5)）。この地物だけが使っていた頂点は
+      // 表からも消えるので、そのとおりに言う（B40）。
+      await expect(page.getByTestId(`${IMPACT}-vertices`)).toContainText('一緒に消えます');
 
       // やめたら 1 件も消えない（教訓 5.22 確定までドメインを壊さない）。
       await page.getByTestId(`${IMPACT}-cancel`).click();

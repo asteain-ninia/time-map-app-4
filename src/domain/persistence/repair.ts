@@ -319,22 +319,40 @@ function mapSnapshotFeatures(
  */
 function dropFeatures(project: DomainProject, ids: readonly FeatureId[]): DomainProject {
   const drop = new Set<FeatureId>(ids);
-  const filtered = mapSnapshotFeatures(project, (features) =>
-    // Remove the targets AND scrub them from every SURVIVOR's references in BOTH
-    // directions (教訓5.21): clear a parentId that points at a dropped feature
-    // (else a dangling 上位領域参照 remains) AND drop the id from any aggregate's
-    // childIds (else a dangling 下位領域参照 — the bug this repair previously
-    // manufactured). Removing the feature alone left both kinds of dangling
-    // reference behind, so the repaired project still failed validation.
-    scrubReferences(
-      features.filter((f) => !drop.has(f.id)),
-      drop,
-    ),
-  );
   // Drop the histories owned by a removed feature (zombie-history prevention).
-  const histories = filtered.histories.filter((h) => !drop.has(h.featureId));
+  const histories = project.histories
+    .filter((h) => !drop.has(h.featureId))
+    .map((h) => ({
+      featureId: h.featureId,
+      series: {
+        entries: h.series.entries.map((e) => {
+          const before = e.anchor.snapshot;
+          // Remove the targets AND scrub them from every SURVIVOR's references in BOTH
+          // directions (教訓5.21): clear a parentId that points at a dropped feature
+          // (else a dangling 上位領域参照 remains) AND drop the id from any aggregate's
+          // childIds (else a dangling 下位領域参照 — the bug this repair previously
+          // manufactured). Removing the feature alone left both kinds of dangling
+          // reference behind, so the repaired project still failed validation.
+          const kept = before.features.filter((f) => !drop.has(f.id));
+          // 地物を除いた錨では、除いた地物だけが引いていた頂点の体も一緒に除く（B40。削除と同じ
+          // 規則）。地物を除いていない錨の表には触らない。
+          const vertices =
+            kept.length === before.features.length
+              ? before.vertices
+              : pruneVertexStore(before.vertices, kept);
+          return {
+            anchor: {
+              id: e.anchor.id,
+              snapshot: { features: scrubReferences(kept, drop), vertices },
+            },
+            start: e.start,
+            end: e.end,
+          };
+        }),
+      },
+    }));
   // Spread to preserve optional project fields (uiSettings); see mapSnapshotFeatures.
-  return { ...filtered, histories };
+  return { ...project, histories };
 }
 
 /**
