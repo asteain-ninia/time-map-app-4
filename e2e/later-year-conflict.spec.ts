@@ -21,6 +21,8 @@ const scratch = createScratchDirs('gimoza-later-year-');
 test.afterEach(scratch.removeAll);
 
 const STATUS = 'statusbar-result';
+/** 検査が描く面の名前（画面の文言ではない）。 */
+const OUTSIDE = '外';
 
 type DrawnShapes = Record<string, number[][][][]>;
 
@@ -53,7 +55,7 @@ test('1000 年の移動が 1500 年から現れる面に重なると板で止ま
     const ax = box.x + box.width / 2 - 180;
     const xx = box.x + box.width / 2 + 60;
     await jumpToYear(page, 1500);
-    const xId = await commitSquareFace(page, xx, cy, half, { name: '外' });
+    const xId = await commitSquareFace(page, xx, cy, half, { name: OUTSIDE });
     await jumpToYear(page, 1000);
     const aId = await commitSquareFace(page, ax, cy, half, { name: '動く面' });
 
@@ -85,7 +87,7 @@ test('1000 年の移動が 1500 年から現れる面に重なると板で止ま
     // 外の面を残す: 動く面は 1500 年から削られ、1000 年は動いた形のまま。
     await dragBy(page, ax, cy, pull);
     await expect(dialog).toBeVisible();
-    await page.getByTestId('conflict-rows').locator('li').first().getByRole('radio', { name: /外/ }).check();
+    await page.getByTestId('conflict-rows').locator('li').first().getByRole('radio', { name: new RegExp(OUTSIDE) }).check();
     await page.getByTestId('conflict-apply').click();
     await expect(dialog).toHaveCount(0);
     await expect(page.getByTestId(STATUS)).toContainText('重なりを解消しました（1500年）');

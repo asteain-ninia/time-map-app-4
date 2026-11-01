@@ -46,10 +46,10 @@ describe('conflictResolvedMessage', () => {
   });
 
   it('年は重なりの年。後の年にだけ重なったならその年、範囲なら始まり', () => {
-    const later = {
+    const later: Conflict = {
       ...conflict('c1', 'A', 'B'),
       time: { kind: 'range', from: timePointYear(1500), to: timePointYear(2000) },
-    } as unknown as Conflict;
+    };
     expect(conflictResolvedMessage([later])).toBe('AとBの重なりを解消しました（1500年）');
   });
 });
