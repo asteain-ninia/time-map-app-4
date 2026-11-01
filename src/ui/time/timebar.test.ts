@@ -1,8 +1,7 @@
 // U32: 時間バー mapping tests (FR-60, 受け入れ基準 7, 教訓 5.29).
 //
 // All time↔pixel math routes through U02 normalize/denormalize; these tests
-// confirm the mapping, the wheel-zoom centering, the dynamic edge times, and the
-// SINGLE label-occupancy judgment.
+// confirm the mapping, the wheel-zoom centering, and the dynamic edge times.
 
 import { describe, expect, it } from 'vitest';
 
@@ -12,13 +11,10 @@ import { timePointYearMonthDay } from '../../domain/time/time-point';
 import { MAX_YEAR } from '../../domain/time/validate';
 
 import {
-  LABEL_MIN_OCCUPANCY,
   MAX_VIEW_DAYS,
   MIN_VIEW_DAYS,
   NORM_LIMIT,
-  barSegment,
   pixelToTime,
-  shouldShowLabel,
   timeToPixel,
   viewFromTimePoints,
   viewMaxTime,
@@ -69,60 +65,6 @@ describe('timebar mapping (FR-60, U02-backed)', () => {
     const v = view(-100, 100, 800);
     expect(viewMinTime(v, cal).year).toBe(-100);
     expect(viewMaxTime(v, cal).year).toBe(100);
-  });
-});
-
-describe('barSegment (FR-60: 非存在期間は空白)', () => {
-  it('a closed interval produces a finite segment shorter than the axis', () => {
-    const v = view(2000, 2020, 1000);
-    const seg = barSegment(
-      timePointYearMonthDay(2005, 1, 1),
-      timePointYearMonthDay(2010, 1, 1),
-      v,
-      cal,
-    );
-    expect(seg.startPx).toBeGreaterThan(0);
-    expect(seg.endPx).toBeLessThan(1000);
-    expect(seg.endPx).toBeGreaterThan(seg.startPx);
-  });
-
-  it('an open-ended interval extends to the max edge', () => {
-    const v = view(2000, 2020, 1000);
-    const seg = barSegment(timePointYearMonthDay(2010, 1, 1), null, v, cal);
-    expect(seg.endPx).toBe(1000);
-  });
-
-  it('two non-adjacent bars leave a blank gap (non-existence period)', () => {
-    const v = view(2000, 2020, 1000);
-    const a = barSegment(
-      timePointYearMonthDay(2000, 1, 1),
-      timePointYearMonthDay(2005, 1, 1),
-      v,
-      cal,
-    );
-    const b = barSegment(
-      timePointYearMonthDay(2010, 1, 1),
-      timePointYearMonthDay(2015, 1, 1),
-      v,
-      cal,
-    );
-    // The gap between a.endPx and b.startPx is the unfilled non-existence period.
-    expect(b.startPx).toBeGreaterThan(a.endPx);
-  });
-});
-
-describe('shouldShowLabel (教訓 5.29: single judgment)', () => {
-  it('shows the label when occupancy meets the threshold', () => {
-    const v = view(2000, 2020, 1000);
-    // A bar of 50% occupancy is well above the threshold.
-    const seg = { startPx: 0, endPx: 500 };
-    expect(shouldShowLabel(seg, v)).toBe(true);
-  });
-
-  it('hides the label when occupancy is below the threshold', () => {
-    const v = view(2000, 2020, 1000);
-    const seg = { startPx: 0, endPx: LABEL_MIN_OCCUPANCY * 1000 - 1 };
-    expect(shouldShowLabel(seg, v)).toBe(false);
   });
 });
 

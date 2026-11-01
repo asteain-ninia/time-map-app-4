@@ -3,10 +3,8 @@
 // All time↔screen math routes through U02 (domain/time): a view is a normalized
 // [min, max) window in WHOLE DAYS, mapped to screen pixels. Calendar constants /
 // normalization are NEVER re-implemented here — `normalize`/`denormalize` are the
-// single source (受け入れ基準 7). The label-visibility decision is a SINGLE
-// function (教訓 5.29) so every bar uses the same占有率閾値. Pure + framework-free
-// (NFR 5.8): inputs are TimePoints + a Calendar + the pixel length; outputs are
-// screen positions / decisions.
+// single source (受け入れ基準 7). Pure + framework-free (NFR 5.8): inputs are
+// TimePoints + a Calendar + the pixel length; outputs are screen positions.
 
 import type { Calendar } from '../../domain/time/calendar';
 import {
@@ -57,13 +55,6 @@ export const ZOOM_STEP = 1.2;
 export const NORM_LIMIT = 366 * MAX_YEAR;
 /** The widest span a view may zoom OUT to: the full `[-NORM_LIMIT, NORM_LIMIT]` range. */
 export const MAX_VIEW_DAYS = 2 * NORM_LIMIT;
-/**
- * The screen-occupancy threshold (fraction of the axis) a bar must reach before
- * its name label is drawn (教訓 5.29: 単一の判定関数). Below it the label is
- * omitted (would be unreadable). One constant → one rule for every bar.
- */
-export const LABEL_MIN_OCCUPANCY = 0.08;
-
 /** Build a view from min/max TimePoints + a pixel length (single U02 normalize). */
 export function viewFromTimePoints(
   min: TimePoint,
@@ -136,44 +127,6 @@ export function viewMinTime(view: TimeBarView, calendar: Calendar): TimePoint {
 export function viewMaxTime(view: TimeBarView, calendar: Calendar): TimePoint {
   const c = denormalize(view.max, calendar);
   return timePointYearMonthDay(c.year, c.month, c.day);
-}
-
-/**
- * A bar segment on the axis (px). `start`/`end` are clamped screen positions;
- * `end` is null for an open-ended (継続中) interval, drawn to the max edge.
- */
-export interface BarSegment {
-  readonly startPx: number;
-  readonly endPx: number;
-}
-
-/**
- * Compute a bar's clamped screen segment from its [start, end) interval. An
- * open-ended interval (`end === null`) extends to the view's max edge. The
- * non-existence period between bars is simply the GAP left unfilled (FR-60: 非存在
- * 期間は空白) — this function only returns the FILLED segment.
- */
-export function barSegment(
-  start: TimePoint,
-  end: TimePoint | null,
-  view: TimeBarView,
-  calendar: Calendar,
-): BarSegment {
-  const startPx = timeToPixel(start, view, calendar);
-  const endPx =
-    end === null ? view.pixelLength : timeToPixel(end, view, calendar);
-  return { startPx, endPx };
-}
-
-/**
- * The SINGLE label-visibility judgment (教訓 5.29). A bar's label is shown only
- * when its on-screen length is at least {@link LABEL_MIN_OCCUPANCY} of the axis.
- * Both the list-vs-bar rendering and any future hit-test share this one rule.
- */
-export function shouldShowLabel(segment: BarSegment, view: TimeBarView): boolean {
-  if (view.pixelLength <= 0) return false;
-  const lengthPx = Math.max(0, segment.endPx - segment.startPx);
-  return lengthPx / view.pixelLength >= LABEL_MIN_OCCUPANCY;
 }
 
 /**

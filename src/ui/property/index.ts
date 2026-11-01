@@ -92,10 +92,8 @@ export {
 // Pure logic: 時間バー mapping (FR-60)
 export {
   type TimeBarView,
-  type BarSegment,
   MIN_VIEW_DAYS,
   ZOOM_STEP,
-  LABEL_MIN_OCCUPANCY,
   viewFromTimePoints,
   viewSpanDays,
   timeToPixel,
@@ -103,8 +101,6 @@ export {
   pixelToTime,
   viewMinTime,
   viewMaxTime,
-  barSegment,
-  shouldShowLabel,
   zoomView,
 } from '../time/timebar';
 
