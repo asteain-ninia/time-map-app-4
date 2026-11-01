@@ -4451,6 +4451,7 @@ export function App(): JSX.Element {
             <DisplayOptionsSlot<DomainRoot>
               store={store}
               optionBar={optionBarStore}
+              boardOpen={boardHoldsInput}
               getRoot={getDomainRoot}
               getTime={getCurrentTime}
               onOpenChange={popoverOpenChange('display')}

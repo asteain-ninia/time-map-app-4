@@ -29,7 +29,7 @@
 // Neither component holds survey truth of its own — every transition flows
 // through the store's thin survey actions into domain/survey (教訓 5.29).
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -160,6 +160,11 @@ export interface SurveyMapBridgeProps<S> {
    * surveying (the knife bridge pattern). Optional: defaults to a no-op.
    */
   readonly mapCameraInput?: MapCameraInput | undefined;
+  /**
+   * 確認の板が地図を覆っている（B117）。開いた瞬間に左の押下を畳む。畳まないと、板の裏で離しても、
+   * 閉じてから離しても、測量の点が 1 つ打たれる。左ドラッグの地図の移動は地図の入力の層が畳む。
+   */
+  readonly boardOpen?: boolean | undefined;
 }
 
 /**
@@ -188,6 +193,7 @@ export function SurveyMapBridge<S>(props: SurveyMapBridgeProps<S>): JSX.Element 
       store={store}
       screenToWorld={screenToWorld}
       mapCameraInput={mapCameraInput}
+      boardOpen={props.boardOpen ?? false}
     />
   );
 }
@@ -196,17 +202,30 @@ function SurveyInputLayer<S>(props: {
   readonly store: StoreApi<SessionStore<S>>;
   readonly screenToWorld: ScreenToWorld;
   readonly mapCameraInput: MapCameraInput;
+  readonly boardOpen: boolean;
 }): JSX.Element {
-  const { store, screenToWorld, mapCameraInput } = props;
+  const { store, screenToWorld, mapCameraInput, boardOpen } = props;
   const ref = useRef<HTMLDivElement | null>(null);
+  // The in-flight LEFT press (click-vs-drag discrimination, 教訓 5.8).
+  const pressRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+
+  // 板が開いたら押下を畳む（B117）。次のポインタの合図より必ず先に走るよう、描画の確定と同時に。
+  // 入力の捕まえも放す ―― 残すと、板の裏の動きが下書きの線の先を動かし続ける。
+  useLayoutEffect(() => {
+    if (!boardOpen) return;
+    const press = pressRef.current;
+    if (press === null) return;
+    pressRef.current = null;
+    const el = ref.current;
+    if (el !== null && typeof el.hasPointerCapture === 'function' && el.hasPointerCapture(press.pointerId)) {
+      el.releasePointerCapture(press.pointerId);
+    }
+  }, [boardOpen]);
 
   useEffect(() => {
     const el = ref.current;
     if (el === null) return;
     const view = el.ownerDocument.defaultView ?? window;
-
-    // The in-flight LEFT press (click-vs-drag discrimination, 教訓 5.8).
-    let press: { pointerId: number; x: number; y: number } | null = null;
 
     // rAF-coalesced hover (NFR 5.1): N moves within one frame → ONE store write
     // with the LAST point. Falls back to a synchronous flush in environments
@@ -236,7 +255,7 @@ function SurveyInputLayer<S>(props: {
     const onPointerDown = (e: PointerEvent): void => {
       if (e.button === 0) {
         // The LEFT button is survey input — never forwarded as a camera press.
-        press = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+        pressRef.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
         // survey F3 — capture the gesture on the bridge so the release lands HERE
         // even off-element (stale-press hysteresis: without capture, 端で押下→離脱
         // →再進入→解放 could confirm a click from a press the user abandoned). The
@@ -266,13 +285,13 @@ function SurveyInputLayer<S>(props: {
       // the threshold already applies its press→current delta. Forward-first left a
       // one-move hole — a single big move + release panned NOTHING (the forward hit
       // a dispatcher with no pan record, and beginPan alone moves no camera).
-      const p = press;
+      const p = pressRef.current;
       if (
         p !== null &&
         p.pointerId === e.pointerId &&
         Math.hypot(e.clientX - p.x, e.clientY - p.y) >= SURVEY_CLICK_MOVE_THRESHOLD_PX
       ) {
-        press = null;
+        pressRef.current = null;
         mapCameraInput.beginPan?.(e, p.x, p.y);
       }
       // Forward every move so an in-flight pan (middle-button OR the left-pan just
@@ -286,8 +305,8 @@ function SurveyInputLayer<S>(props: {
     const onPointerUp = (e: PointerEvent): void => {
       mapCameraInput.pointerUp(e, e.clientX, e.clientY);
       if (e.button !== 0) return;
-      const p = press;
-      press = null;
+      const p = pressRef.current;
+      pressRef.current = null;
       if (p === null || p.pointerId !== e.pointerId) return;
       const movedPx = Math.hypot(e.clientX - p.x, e.clientY - p.y);
       // A drag at/above the threshold is a camera gesture — confirm nothing
@@ -299,7 +318,7 @@ function SurveyInputLayer<S>(props: {
       store.getState().surveyClickPoint(screenToWorld(p.x, p.y));
     };
     const onPointerCancel = (e: PointerEvent): void => {
-      if (press !== null && press.pointerId === e.pointerId) press = null;
+      if (pressRef.current?.pointerId === e.pointerId) pressRef.current = null;
       mapCameraInput.pointerCancel(e.pointerId);
     };
     // survey F3 — a pointer that LEAVES the bridge abandons its press candidate
@@ -308,7 +327,7 @@ function SurveyInputLayer<S>(props: {
     // stale click. With pointer capture (above) the leave rarely fires mid-gesture;
     // this is the fallback for environments/paths without capture.
     const onPointerLeave = (): void => {
-      press = null;
+      pressRef.current = null;
     };
     // survey F2 — suppress the NATIVE context menu on the bridge, the SAME way the
     // underlying map-input-layer does (App onContextMenu): the bridge forwards the

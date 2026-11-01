@@ -549,11 +549,16 @@ export class PointerDispatcher {
    *
    * 左のパンは押した要素へ入力を捕まえるので、板の覆いが開いても離す合図がここへ届く（捕まえない
    * 押下は覆いへ移った時点で `pointerLeave` が畳む）。中ボタンの移動は畳まない。畳んだものがあれば true。
+   *
+   * 見るのは指で持っているボタン（`pressMask`）。測量の左ドラッグは中ボタンとして渡されるが、指は左である
+   * （B117）。
    */
   foldPressedLeftPans(): boolean {
     let folded = false;
     for (const [pointerId, rec] of this.active) {
-      if (rec.kind !== DISPATCH_TARGET.Pan || rec.button !== POINTER_BUTTON.Left) continue;
+      if (rec.kind !== DISPATCH_TARGET.Pan || (rec.pressMask & pressMaskOf(POINTER_BUTTON.Left)) === 0) {
+        continue;
+      }
       this.active.delete(pointerId);
       releasePointerCapture(rec, pointerId);
       folded = true;
