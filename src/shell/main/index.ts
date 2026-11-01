@@ -39,6 +39,7 @@ import {
   type PendingLoadEntry,
   type PendingLoadPathRef,
 } from './ipc-handlers';
+import { createNativeDialogs } from './native-dialogs';
 import { acquireSingleInstanceLock, revealWindow } from './single-instance';
 import { IPC_CHANNEL, type AutoSaveConfig } from '../ipc/contract';
 import { e2eHarnessAdditionalArguments } from '../ipc/e2e-harness';
@@ -589,35 +590,23 @@ function wireIpc(): void {
       // runtime; bridge the variance here at the single wiring point.
       ipcMain.handle(channel, handler as Parameters<typeof ipcMain.handle>[1]);
     },
-    dialog: {
-      showSaveDialog: async (defaultPath) => {
-        // F2: E2E だけ、ネイティブダイアログの代わりに指定された行き先を返す。
-        if (E2E_SAVE_AS_PATH !== null) return E2E_SAVE_AS_PATH;
-        // 増分 8D: 世代から戻したあとは、元の保存ファイルを既定の名前にする（V14 の規則 ②）。
-        const result = await dialog.showSaveDialog({
-          filters: [{ name: 'gimoza', extensions: ['gimoza'] }],
-          ...(defaultPath === undefined ? {} : { defaultPath }),
-        });
-        return result.canceled ? undefined : result.filePath;
+    // 親の窓を渡して OS のモーダルにする（B120。判断は ./native-dialogs、ここは実物の束縛だけ）。
+    dialog: createNativeDialogs<BrowserWindow>({
+      port: {
+        showOpenDialog: (owner, request) =>
+          owner === undefined
+            ? dialog.showOpenDialog({ ...request })
+            : dialog.showOpenDialog(owner, { ...request }),
+        showSaveDialog: (owner, request) =>
+          owner === undefined
+            ? dialog.showSaveDialog({ ...request })
+            : dialog.showSaveDialog(owner, { ...request }),
       },
-      showOpenDialog: async () => {
-        if (E2E_OPEN_PATH !== null) return E2E_OPEN_PATH;
-        const result = await dialog.showOpenDialog({
-          properties: ['openFile'],
-          filters: [{ name: 'gimoza', extensions: ['gimoza'] }],
-        });
-        return result.canceled || result.filePaths.length === 0 ? undefined : result.filePaths[0];
-      },
-      // FR-04 base-map差し替え: an IMAGE open-dialog (PNG / JPEG — the formats the
-      // renderer guard accepts). No security flag relaxed; main only reads the file.
-      showOpenImageDialog: async () => {
-        const result = await dialog.showOpenDialog({
-          properties: ['openFile'],
-          filters: [{ name: 'image', extensions: ['png', 'jpg', 'jpeg'] }],
-        });
-        return result.canceled || result.filePaths.length === 0 ? undefined : result.filePaths[0];
-      },
-    },
+      owner: () => BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0],
+      // F2: E2E だけ、ネイティブダイアログの代わりに指定された行き先を返す。
+      e2eSaveAsPath: E2E_SAVE_AS_PATH,
+      e2eOpenPath: E2E_OPEN_PATH,
+    }),
     readFile: {
       readFile: (path) => readFile(path),
       // FR-04 pre-read size cap: the file's size without reading it (handleOpenImage
