@@ -143,8 +143,8 @@ export const VERTEX_CANDIDATE_MAX_ROWS = 20;
 export interface DescribedVertexCandidate extends NearVertexCandidate {
   readonly coordinate: WorldCoordinate;
   /**
-   * この頂点を引いている地物の全部（重複なし・データの並び）。当たり判定の索引は
-   * 共有頂点について **最初の持ち主しか覚えていない**（現状.md B42）ので、一覧の
+   * この頂点を引いている地物の全部（重複なし・データの並び）。当たり判定は共有頂点について
+   * **持ち主を 1 つしか返さない**ので、一覧の
    * 「…と共有」はここから作る。共有の判定は描画（琥珀の塗り）・右クリックの「共有を解く」と
    * 同じ 1 本（`containersOf` → `buildReverseIndex`）を通る（教訓 5.29）。
    */

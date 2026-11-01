@@ -20,6 +20,7 @@ import {
   defineCommandKind,
   type CommandResult,
 } from '../command/index';
+import { pruneVertexStore } from '../feature';
 import type { DomainId, FeatureId } from '../ids';
 
 import { sweepDeletionState } from './sweep-state';
@@ -43,9 +44,10 @@ interface DeletionPlan {
  * Compute the deletion plan for `targetId` over `state` (pure, deterministic).
  *
  * For each anchor it sweeps + chain-prunes (`sweepAndPruneAnchor`) and rebuilds the
- * anchor with the surviving features (the vertex store is preserved as-is: the
- * shared-vertex DETACH of the deleted face's participation is delegated to U11 and
- * is out of scope here — spec 実装方針「共有頂点の扱い」). The result aggregates:
+ * anchor with the surviving features. 頂点の体は、残った地物が引くものだけにする（B40）。
+ * 残すと、隣が共有していた頂点を動かしたときに動かない写しが読み込みの検査に「座標の
+ * 食い違い」と言われ、保存データも太る。ほかの確定と同じ `pruneVertexStore` を通す。
+ * The result aggregates:
  *   - deleted: the target PLUS every aggregate that auto-disappeared in any anchor
  *     (連鎖消滅, FR-35) — union across anchors,
  *   - survived: every feature id that still exists after the command (union across
@@ -72,7 +74,7 @@ function planDeletion(state: DeletionState, targetId: FeatureId): DeletionPlan {
     after.push(
       createAnchor(
         anchor.id,
-        createAnchorSnapshot(swept.features, anchor.snapshot.vertices),
+        createAnchorSnapshot(swept.features, pruneVertexStore(anchor.snapshot.vertices, swept.features)),
       ),
     );
     for (const id of swept.removedIds) {

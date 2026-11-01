@@ -107,7 +107,8 @@ export interface DisplayResolution {
    * Every grabbable vertex's OWNING feature (`point.vertexId` / `line.vertexIds` /
    * leaf ring `vertexIds`), restricted to features in {@link grabbable} — the first
    * owner of a shared vertex wins. This is the EXACT map the live hit-test's
-   * vertex-proximity step iterates.
+   * vertex-proximity step iterates. 表示の絞り込みは知らないので、絞り込みが効いているときは
+   * `filtered-display.ts` の `visibleVertexOwners` で持ち主を選び直す（現状.md B42）。
    *
    * WHY IT LIVES HERE (bughunt3 — O(n·v) Map rebuild per pointer event): the map is a
    * pure function of `(features, grabbable, vertices)`, all of which are themselves

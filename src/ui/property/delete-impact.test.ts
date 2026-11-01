@@ -73,18 +73,20 @@ describe('buildDeleteImpactView — 影響の一覧の文（設計書 §A.3 の�
     expect(vertices?.lines.some((l) => l.includes('自分の形を持ちません'))).toBe(true);
   });
 
-  it('形を持つ地物では「参照されなくなる頂点」を別の群に出す（決定 (5)）', () => {
+  it('形を持つ地物では「一緒に消える頂点」を別の群に出す（決定 (5)・B40）', () => {
     const view = buildDeleteImpactView({
       impact: impactOf({ ownsShape: true, vertexCount: 601, soleVertexCount: 601 }),
       targetName: 'バアカ',
       nameOf,
     });
-    // 頂点は消えない（頂点表に残る）ので「一緒に消えるもの」には入れない。
+    // 記録の行とは別の群で言う。
     const gone = view.groups.find((g) => g.testId === 'gone');
     expect(gone?.lines.some((l) => l.includes('601'))).toBe(false);
     const vertices = view.groups.find((g) => g.testId === 'vertices');
     expect(vertices?.lines.some((l) => l.includes('601'))).toBe(true);
-    expect(vertices?.lines.some((l) => l.includes('頂点表に残ります'))).toBe(true);
+    expect(vertices?.lines.some((l) => l.includes('一緒に消えます'))).toBe(true);
+    // 消えると言いながら「残ります」と言わない（B40 の直しの前の文）。
+    expect(vertices?.lines.some((l) => l.includes('残ります'))).toBe(false);
   });
 
   it('共有している頂点しか使っていなければ「参照は残ります」と言う（決定 (5)）', () => {

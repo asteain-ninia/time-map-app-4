@@ -72,14 +72,13 @@ export function buildDeleteImpactView(input: {
           impact.ownAnchorYears.map((y) => PROPERTY_STRINGS.impactYear(y)).join(' / '),
         );
 
-  // 頂点は **消えない**（司令塔の決定 (5)）。頂点表には残り、消えるのは「この地物からの
-  // 参照」だけである。だから「一緒に消えるもの」から外して別の群にし、共有している頂点は
-  // 数えない（相手が参照し続けるので、参照が消えるわけではない）。
+  // 頂点は別の群で言う（司令塔の決定 (5)）。この地物だけが使っていた頂点は表からも消える
+  // （B40）。共有している頂点は数えない（相手が使い続けるので消えない）。
   const vertexLines: readonly string[] = !impact.ownsShape
     ? [PROPERTY_STRINGS.impactVerticesAggregate]
     : impact.soleVertexCount === 0
       ? [PROPERTY_STRINGS.impactVerticesAllShared]
-      : [PROPERTY_STRINGS.impactVerticesUnreferenced(impact.soleVertexCount)];
+      : [PROPERTY_STRINGS.impactVerticesGone(impact.soleVertexCount)];
 
   const promotedNames = impact.promotedChildIds
     .map((id) => nameOf(id))

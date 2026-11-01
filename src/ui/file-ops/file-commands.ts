@@ -28,7 +28,9 @@ import {
   applyChosenRepairs,
   buildRepairRows,
   REPAIR_OUTCOME,
+  triedRepairsFrom,
   type RepairChoices,
+  type TriedRepair,
 } from './repair-flow';
 import { REPAIR_STRINGS } from './strings';
 
@@ -124,10 +126,13 @@ export interface FileCommandPorts {
   //
   // `project` は修復前の読み込んだプロジェクト（増分 8D の手直し）。修復ダイアログが対象の
   // 地物を **名前で** 呼ぶ（名前が無ければ「名前のない面（1500年に作成）」）ために渡す。
+  //
+  // `tried` は出直しの板にだけ渡す、1 回目に選んだ方法（解消しなかった行の既定に戻さない。B79）。
   readonly promptRepair: (
     report: ConsistencyReport,
     isRetry: boolean,
     project: DomainProject,
+    tried?: readonly TriedRepair[],
   ) => Promise<RepairChoices | null>;
 
   // -- reflect + notify ------------------------------------------------------
@@ -222,7 +227,8 @@ async function completeLoad(ports: FileCommandPorts, transport: LoadTransport): 
   if (applied.outcome === REPAIR_OUTCOME.Unresolved) {
     // The chosen repairs did not resolve everything; re-present ONCE (isRetry=true,
     // so the controller shows the『前回は解消できなかった』banner — BUG #2).
-    const retry = await ports.promptRepair(applied.remaining, true, applied.project);
+    const tried = triedRepairsFrom(rows, choices);
+    const retry = await ports.promptRepair(applied.remaining, true, applied.project, tried);
     // BUG #5: a cancelled retry must NOT silently drop the load. Unlike the first
     // 中止 (which keeps the untouched current state with no surprise), reaching the
     // retry means we already told the user their first repair failed; cancelling now
@@ -234,6 +240,7 @@ async function completeLoad(ports: FileCommandPorts, transport: LoadTransport): 
     const retryRows = buildRepairRows(applied.remaining, {
       project: applied.project,
       calendar: ports.calendar,
+      tried,
     });
     const retried = applyChosenRepairs(
       applied.project,
