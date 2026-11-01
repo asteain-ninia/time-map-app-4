@@ -1017,12 +1017,9 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     const el = nameInputRef.current;
     if (el === null) return;
     appliedNameFocusRef.current = nameFocusRequest;
-    // **焦点の既定のスクロールに任せない**（増分 4 の手直し A2）。素性欄の下端には
-    // 保存列が `position: sticky` で貼り付いていて、器を低くすると **名前欄がその下に
-    // 潜る**（実測: 保存列 36px ＋ 予告の行で 65px、名前欄はその中に完全に隠れた）。
-    // 器の `scroll-padding-bottom` は「寄せ先」を上げるだけなので、既に画面内に在る
-    // 判定になると 1px も動かない。**真ん中へ寄せる**と、器がどれだけ低くても
-    // 名前欄が保存列と見出しの両方から離れる（教訓 5.61 の裏面）。
+    // **焦点の既定のスクロールに任せない**（増分 4 の手直し A2）。保存列を重ねていた頃に
+    // 名前欄がその下へ潜ったので入れた形である。いまは重ねない 3 段の flex なので潜らないが
+    // （教訓 5.61）、本文が低いと既定のスクロールでは端に掛かるので、**真ん中へ寄せる**。
     el.focus({ preventScroll: true });
     el.scrollIntoView({ block: 'center' });
     el.select();

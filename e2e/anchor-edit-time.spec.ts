@@ -142,7 +142,7 @@ test.describe('増分 2 — 編集時刻は「いま見ている年」に効く'
       expect(saveBox!.y).toBeGreaterThanOrEqual(panelBox!.y - 1);
       expect(saveBox!.y + saveBox!.height).toBeLessThanOrEqual(panelBox!.y + panelBox!.height + 1);
 
-      // 中身を下までスクロールしても保存ボタンは同じ場所にいる（sticky）。
+      // 中身を下までスクロールしても保存ボタンは同じ場所にいる（3 段の flex の下段）。
       const before = saveBox!.y;
       await panel.evaluate((el) => {
         el.scrollTop = el.scrollHeight;

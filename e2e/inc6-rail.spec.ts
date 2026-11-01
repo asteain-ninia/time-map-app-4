@@ -10,7 +10,7 @@
 //
 // **可視の検査は矩形の交差で数える**（教訓 5.62: `toBeVisible()` は器の外へはみ出した
 // 要素も真にする）。操作列のあふれは「区画の矩形と中の部品の矩形の突き合わせ」で見る
-// （教訓 5.74: `scrollWidth` では `overflow: hidden` の区画は内寸と一致してしまう）。
+// （教訓 5.74: `scrollWidth` は、自分の中で切られて縮む部品や左へはみ出す部品を数えない）。
 
 import { expect, test, type Page } from '@playwright/test';
 

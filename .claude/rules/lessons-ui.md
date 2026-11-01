@@ -115,7 +115,7 @@ paths:
 ### 5.61 下端に固定した部品は、器が低いと上の中身を覆う（`position: sticky` の裏面）
 - 正しい道: 「見出し／本文／保存列」を重ねず縦 flex に並べる。入れ物は `height: 100%` の縦 flex、見出しと保存列は `flex: 0 0 auto`、本文だけ `flex: 1 1 auto; overflow-y: auto`。本文に操作部品 1 つぶんの `min-height`（`.property-panel__body` は 28px）を持たせ、外側の器は `overflow-y: auto` のまま残す（3 段の合計が器を超える窓の受け皿）。
 - 誤った道の兆候: `position: sticky` で重ねたまま器の下限を決めて凌ぐ（固定部品の高さが中身で変わる限り必ず破れた。錨の無い年は保存列が 103px に育ち、1280×800 で帯 20px、1366×768 で帯 3px、26px の名前欄がどのスクロール位置でも押せなかった。0 年は帯 58px で検査をすり抜けた）。「行が見える」下限を「押せる」下限と取り違える。器に `padding-bottom` を足す（sticky は余白の内側に貼り付き、帯が 25px → 5px へ狭まった）。`scroll-padding-bottom` を足す（`scrollIntoView({ block: 'center' })` の真ん中が上の見出しの中へずれる）。可変の行を 1 行に固定して済ませる（保存列で守れなかった）。重ねるのをやめただけで本文の下限が無い（覆われないのに本文 0px、器 178px＝見出し 55＋保存列 103＋すき間 24）。`force: true` で押して済ませる。
-- 確かめ方: `src/ui/property/property-layout.test.ts`（3 段の flex、重ねない、`::after` の遊びが無い）、`e2e/inc4-ledger.spec.ts`「錨の無い年で保存列が育っても、名前欄は本文の中に出て押せる」（1280×800 / 1366×768 / 800×600）。固定部品がいちばん育つ状態・いちばん低い器で `elementFromPoint` が自分を返すかと、本文の取り分を測る。重ねる作りが残る所を押すときは `e2e/helpers.ts` の `clickClearOfStickyBars`（前面に出るまで動かし、出なければ実測値を添えて落とす）。
+- 確かめ方: `src/ui/property/property-layout.test.ts`（3 段の flex、重ねない、`::after` の遊びが無い）、`e2e/inc4-ledger.spec.ts`「錨の無い年で保存列が育っても、名前欄は本文の中に出て押せる」（1280×800 / 1366×768 / 800×600）。固定部品がいちばん育つ状態・いちばん低い器で `elementFromPoint` が自分を返すかと、本文の取り分を測る。低い本文の中の部品を押すときは `e2e/helpers.ts` の `clickClearOfStickyBars`（前面に出るまで動かして押す。名前は重ねていた頃の名残）と `openPropertySection`（出なければ実測値を添えて落とす）。
 
 ### 5.67 共通の既定を反転したら、その既定の **副作用**に寄りかかっていた側を全部探す
 - 正しい道: 既定を変えるときは、その関数の JSDoc とコメントを全文検索し、「〜も一緒にやる」「〜を兼ねる」「subsumes」「ついでに」のような言葉で寄りかかっている側を探す。寄りかかっていた側に自分で書かせ、副作用へ戻さない。書かせる中身は「自分が触ったものだけ戻す」にする（道具の取りやめは `unpromoteOwnTarget` で自分が昇格させた対象だけを元の選択へ戻す）。
@@ -157,7 +157,7 @@ paths:
 ### 5.74 「予算で畳む」と決めたら、その予算を実際に嵌めるところまでやる
 - 正しい道: 予算を `max-width` として実際に嵌め、畳む区画は `flex-shrink: 0` にして余りを隣へ渡す。畳む判断は `max(予算, CSS の min-width)` で行う（`src/ui/shell/OptionBar.tsx` の `Math.max(raw, SETTINGS_MIN_WIDTH)`）。
 - 誤った道の兆候: 予算を計算しただけで幅の配分は `flex: 1 1 auto` 任せ（基準幅に比例して縮む。160px の見込みが実際 189〜204px で設定欄が 36px 狭くなった）。いちばん右の「≫」が `overflow: hidden` の外へこぼれ、窓幅 1024〜1200px で畳んだ中身に手が届かない。
-- 確かめ方: 畳みの引き金になる中身を持たせ（道具を構える・測量 ON）、複数の窓幅で区画と部品の矩形を突き合わせてはみ出し 0 件を見る。開くボタン自身も走査に入れる。`e2e/inc5-shell.spec.ts`（1199 行付近）、`e2e/inc6-rail.spec.ts` の `overflowingChildren`、`src/ui/shell/shell-layout.test.ts`、`src/ui/time/rail-fold.test.ts`。
+- 確かめ方: 畳みの引き金になる中身を持たせ（道具を構える・測量 ON）、複数の窓幅で区画と部品の矩形を突き合わせてはみ出し 0 件を見る。親の `scrollWidth` だけでは足りない（実測: `overflow: hidden` でも右へはみ出す子は数える。設定欄 136px に幅 2000 の子を足すと 2097。左へはみ出す子と、自分の中で切られて縮む子は数えない）。開くボタン自身も走査に入れる。`e2e/inc5-shell.spec.ts` の「手直し D3」、`e2e/inc6-rail.spec.ts` の `overflowingChildren`、`src/ui/shell/shell-layout.test.ts`、`src/ui/time/rail-fold.test.ts`。
 
 ### 5.75 打鍵を止める関門は、打鍵ごとに書くと必ず 1 つ漏れる ―― 入口 1 か所で止める
 - 正しい道: 止める理由（板・読むだけ・入力欄の焦点）は局面の性質なので、述語を 1 本にして `keydown` の先頭で通す（`confirmBlocksToolKey(open, key)`。通すのは Escape だけ）。下書きの確認板を持つ道具（add / knife / drill / ring-edit）は必ず通す。
