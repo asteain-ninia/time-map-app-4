@@ -33,6 +33,11 @@
   --c-disabled-bg: var(--c-panel);
   --c-disabled-border: var(--c-border);
   --radius: 4px;
+  /* 板の器（N-19 / N-20）。作業の板・確認の板・動かせる板で同じ地・角丸・影・内側の余白・暗幕を使う。 */
+  --radius-dialog: 8px;
+  --shadow-dialog: 0 8px 32px rgba(0, 0, 0, 0.35);
+  --dialog-pad: 16px;
+  --c-backdrop: rgba(0, 0, 0, 0.45);
   /* クリック対象の高さは 3 段（増分 8E 後半 / N-26）。
    * sm: 詰まった列（一覧の切替、ヘッダの中）/ 既定: パネルと帯の部品 / lg: 板の確定列・時刻の送り。
    * 道具のレール（`.toolbar button`）と地図のズーム（40px）だけは設計書 §B.3 の別の寸法を持つ。 */
@@ -2765,9 +2770,10 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 
 .draggable-panel {
   background: var(--c-surface);
-  border: 1px solid var(--c-border-strong);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--shadow-dialog);
   min-width: 160px;
+  border-radius: var(--radius-dialog);
+  overflow: hidden;
 }
 
 .draggable-panel__header {
@@ -2775,13 +2781,14 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 4px 8px;
+  padding: 8px 16px;
   background: var(--c-panel);
   user-select: none;
+  font-weight: 600;
 }
 
 .draggable-panel__body {
-  padding: 8px;
+  padding: var(--dialog-pad);
 }
 
 /* Map-anchored overlay layer: scoped to the map cell (.map-area, inset:0), above
@@ -3403,7 +3410,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 .draft-discard-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--c-backdrop);
 }
 
 .draft-discard-dialog {
@@ -3411,10 +3418,10 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   z-index: 1;
   min-width: 320px;
   max-width: 90vw;
-  padding: 20px;
+  padding: var(--dialog-pad);
   background: var(--c-surface);
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  border-radius: var(--radius-dialog);
+  box-shadow: var(--shadow-dialog);
 }
 
 .draft-discard-dialog__title {
@@ -3599,7 +3606,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 .impact-confirm-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--c-backdrop);
 }
 .impact-confirm-dialog {
   position: relative;
@@ -3608,10 +3615,10 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   max-width: 92vw;
   max-height: 80vh;
   overflow-y: auto;
-  padding: 16px 20px;
+  padding: var(--dialog-pad);
   background: var(--c-surface);
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  border-radius: var(--radius-dialog);
+  box-shadow: var(--shadow-dialog);
 }
 .impact-confirm-dialog__title {
   margin: 0 0 10px;

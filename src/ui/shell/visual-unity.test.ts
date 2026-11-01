@@ -246,6 +246,31 @@ describe('灰色の直値（B103）', () => {
   });
 });
 
+describe('板の器（N-19 / N-20）', () => {
+  /** 変数の定義そのものと、板でない小さな吹き出し（どこへでも移動の候補）は外す。 */
+  const isBoard = (selector: string): boolean => /-dialog$/.test(selector) || selector === '.draggable-panel';
+
+  it('板の角丸と影は変数から引く（角丸 8px の板と 12px の板を作らない）', () => {
+    const boards = allRules().filter(({ selector }) => isBoard(selector));
+    expect(boards.length).toBeGreaterThan(5);
+    const offenders = boards
+      .filter(({ body }) => decl(body, 'box-shadow') !== undefined || decl(body, 'border-radius') !== undefined)
+      .filter(
+        ({ body }) => decl(body, 'border-radius') !== 'var(--radius-dialog)' || decl(body, 'box-shadow') !== 'var(--shadow-dialog)',
+      )
+      .map(({ path, selector }) => `${path}: ${selector}`);
+    expect(offenders).toEqual([]);
+  });
+
+  it('暗幕は 1 色', () => {
+    const offenders = allRules()
+      .filter(({ selector }) => /-backdrop$/.test(selector))
+      .filter(({ body }) => decl(body, 'background') !== 'var(--c-backdrop)')
+      .map(({ path, selector }) => `${path}: ${selector}`);
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe('文字の大きさの直値', () => {
   it('補助の文字は変数から引く（11px を直に書かない）', () => {
     const offenders = allCss.filter(({ css }) => /font-size:\s*11px/.test(css)).map(({ path }) => path);

@@ -67,7 +67,7 @@
   z-index: 1000;
   padding: 16px;
   background: var(--c-surface);
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  border-radius: var(--radius-dialog);
+  box-shadow: var(--shadow-dialog);
   pointer-events: auto;
 }

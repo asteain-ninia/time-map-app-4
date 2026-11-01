@@ -13,18 +13,17 @@
 .basemap-aspect-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--c-backdrop);
 }
 
 .basemap-aspect-dialog {
   position: relative;
   max-width: 480px;
-  padding: 16px;
+  padding: var(--dialog-pad);
   background: var(--c-surface);
   color: var(--c-text);
-  border: 1px solid var(--c-border-strong);
-  border-radius: var(--radius);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  border-radius: var(--radius-dialog);
+  box-shadow: var(--shadow-dialog);
 }
 
 .basemap-aspect-dialog__title {
