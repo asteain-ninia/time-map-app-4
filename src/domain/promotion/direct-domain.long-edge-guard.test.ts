@@ -8,7 +8,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { parentExisting } from '../affiliation/decision';
-import { MSG_AFFILIATION_LONG_EDGE } from '../affiliation/messages';
+import {
+  MSG_AFFILIATION_LONG_EDGE,
+  MSG_AFFILIATION_REMAINDER_MISMATCH,
+} from '../affiliation/messages';
 import { buildAffiliationProposal } from '../affiliation/proposal';
 import { createBasicAttributes, createColorInfo } from '../attributes';
 import { createAnchor, createAnchorSnapshot } from '../anchor';
@@ -156,8 +159,12 @@ describe.each([
       vertexStore: createVertexStore([...parent.vertices, ...child.vertices]),
     });
     if (r.status === 'proposal') throw new Error('確定してしまった');
-    expect(r.kind).toBe('long-edge');
-    expect(r.message).toBe(MSG_AFFILIATION_LONG_EDGE);
+    // 半周の形が残っているときだけ「世界を半周以上する」と言う。面積が合わないだけの (b) は
+    // 形が半周していないので別の文になる（B110）。
+    expect(r.kind).toBe(reportNoLongEdges ? 'remainder-mismatch' : 'long-edge');
+    expect(r.message).toBe(
+      reportNoLongEdges ? MSG_AFFILIATION_REMAINDER_MISMATCH : MSG_AFFILIATION_LONG_EDGE,
+    );
   });
 
   it('細分: 確定せず、形の解決の断りで返す', () => {
