@@ -30,11 +30,16 @@
 // **ファイルを開く・新規は聞かない**（B112）。読み込みは道具と鍵を同じコミットで畳むので、見張りには
 // 鍵を閉じたのと同じに見える。世代の印（`projectLoadNonce`。教訓 5.96）で先に見分け、下書きを
 // 捨てて状態行で言う。板を出すと、新しい書類の上で前の点列を確定できてしまう。
+//
+// **同じ年の別の地物を一覧で選んだときも同じ 2 択**（B118。追加の道具と同じ形）。選択は年と違って
+// 入口で止めないので、動いたのを見て聞き、［続ける］で戻す。［捨てる］は年の移動と同じく下書きだけを
+// 捨てて対象は掴んだまま（通史の行で別の年の地物を選んだときと同じ結果になる）。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
+import type { FeatureId } from '../../domain/ids';
 import { EDIT_MODE, type ToolId } from '../state/session';
 import type { SessionStore } from '../state/store';
 
@@ -55,7 +60,12 @@ interface TimeMoveIntent {
   readonly moveTime: () => void;
 }
 
-type GuardIntent = ToolSwitchIntent | TimeMoveIntent;
+/** 一覧で別の地物を選んだ。「続ける」で選択を戻す先を持つ。 */
+interface SelectionMoveIntent {
+  readonly restoreSelection: FeatureId | null;
+}
+
+type GuardIntent = ToolSwitchIntent | TimeMoveIntent | SelectionMoveIntent;
 
 export interface DraftSwitchGuardOptions<S> {
   readonly store: StoreApi<SessionStore<S>>;
@@ -94,6 +104,10 @@ export interface DraftSwitchGuardOptions<S> {
   readonly onDraftDiscarded?: ((count: number) => void) | undefined;
   /** 年の移動・設定の補正・読み込みで捨てたものを報せる口（状態行の言い方が理由で変わる）。 */
   readonly onDraftLost?: DraftLostHandler | undefined;
+  /** 一覧で選んで下書きを片付けたあとに視点を合わせる口（板のあいだは視点を止めている）。 */
+  readonly onFocusSelection?: (() => void) | undefined;
+  /** 選択を動かすと聞く下書きを持っているかの変化を、宿主へ知らせる口（視点を止めるため）。 */
+  readonly onDraftHeldChange?: ((held: boolean) => void) | undefined;
 }
 
 export interface DraftSwitchGuard {
@@ -149,6 +163,13 @@ export function useDraftSwitchGuard<S>(
     (() => (vertexCount > 0 ? DRAFT_DISCARD_STRINGS.discarded(vertexCount) : ''));
   const lostRef = useRef(options.onDraftLost);
   lostRef.current = options.onDraftLost;
+  const focusSelectionRef = useRef(options.onFocusSelection);
+  focusSelectionRef.current = options.onFocusSelection;
+  const asksRef = useRef(asksOnTimeMove);
+  asksRef.current = asksOnTimeMove;
+  const activeFeature = useStore(store, (s) => s.activeFeature);
+  // 見張りの基準（板が開いているあいだは進めない。追加の道具の `prevActiveRef` と同じ）。
+  const selectionBaseRef = useRef<FeatureId | null>(activeFeature);
 
   const loadNonce = useStore(store, (s) => s.projectLoadNonce);
   const loadNonceRef = useRef(loadNonce);
@@ -162,6 +183,7 @@ export function useDraftSwitchGuard<S>(
       const what = prev ? describeRef.current() : '';
       intentRef.current = null;
       setPending(null);
+      selectionBaseRef.current = store.getState().activeFeature;
       prevArmedRef.current = armed;
       if (prev) disarmRef.current();
       if (armed) armRef.current();
@@ -197,6 +219,35 @@ export function useDraftSwitchGuard<S>(
     // 頂点を打つたびに構え直しが走ることはない。
   }, [armed, loadNonce, store, toolId]);
 
+  // 同じ年の別の地物を一覧で選んだ。下の `pending` は板が閉じたら見直すために鍵へ入れてある。
+  useEffect(() => {
+    const prev = selectionBaseRef.current;
+    if (prev === activeFeature) return;
+    if (pendingRef.current !== null) return;
+    if (armed && activeFeature !== null && asksRef.current) {
+      intentRef.current = { restoreSelection: prev };
+      setPending(DISCARD_REASON.Select);
+      return;
+    }
+    selectionBaseRef.current = activeFeature;
+    if (!armed || activeFeature === null) return;
+    const lost = draftRef.current.count;
+    if (lost === 0) return;
+    discardForTimeMoveRef.current();
+    discardedRef.current?.(lost);
+    focusSelectionRef.current?.();
+  }, [armed, activeFeature, pending]);
+
+  const heldChangeRef = useRef(options.onDraftHeldChange);
+  heldChangeRef.current = options.onDraftHeldChange;
+  const onDraftHeldChange = options.onDraftHeldChange;
+  const draftHeld = armed && (asksOnTimeMove || vertexCount > 0);
+  useEffect(() => {
+    if (onDraftHeldChange === undefined) return;
+    onDraftHeldChange(draftHeld);
+    return () => onDraftHeldChange(false);
+  }, [draftHeld, onDraftHeldChange]);
+
   useDraftTimeGate({
     store,
     isBoardOpen: () => pendingRef.current !== null,
@@ -209,6 +260,8 @@ export function useDraftSwitchGuard<S>(
     onDiscardSilently: () => {
       const what = describeRef.current();
       discardForTimeMoveRef.current();
+      // 年の移動の続き（通史の行の選択と視点）は描画より先に走る。もう持っていないと先に言う。
+      heldChangeRef.current?.(false);
       return what;
     },
     onMovedAfterDiscard: (what) => {
@@ -229,20 +282,37 @@ export function useDraftSwitchGuard<S>(
   }, []);
 
   const keep = useCallback(() => {
+    const intent = intentRef.current;
     intentRef.current = null;
     setPending(null);
-  }, []);
+    // 一覧で選んだのを戻す（年の板と違って、選択はもう動いている）。
+    if (intent !== null && 'restoreSelection' in intent) {
+      store.getState().setActiveFeature(intent.restoreSelection);
+    }
+  }, [store]);
 
   const discard = useCallback(() => {
     const intent = intentRef.current;
     intentRef.current = null;
     setPending(null);
     const lost = draftRef.current.count;
+    if (intent !== null && 'restoreSelection' in intent) {
+      // 一覧で選んだほうを残す。下書きだけ捨てて対象は掴んだまま（年の移動と同じ）。視点はここで合わせる。
+      const what = describeRef.current();
+      selectionBaseRef.current = store.getState().activeFeature;
+      discardForTimeMoveRef.current();
+      if (lost > 0) discardedRef.current?.(lost);
+      else if (what !== '') lostRef.current?.(what, DRAFT_LOSS_CAUSE.SelectionMoved, store.getState().currentTime);
+      focusSelectionRef.current?.();
+      return;
+    }
     if (intent !== null && 'moveTime' in intent) {
       // 年の移動 ―― 下書きだけ捨てて年を動かす。道具も、その年に居る対象も保つ。Escape の
       // 1 段戻りを使わない（素性の局面で対象まで手放す）。居ない年なら宿主の見張りが手放す。
       const what = describeRef.current();
       discardForTimeMoveRef.current();
+      // 年の移動の続き（通史の行の選択と視点）は描画より先に走る。もう持っていないと先に言う。
+      heldChangeRef.current?.(false);
       intent.moveTime();
       if (what !== '') {
         lostRef.current?.(what, DRAFT_LOSS_CAUSE.TimeMoved, store.getState().currentTime);

@@ -891,6 +891,9 @@ export function App(): JSX.Element {
         case DRAFT_LOSS_CAUSE.ProjectSwitched:
           statusMessageStore.notice(DRAFT_DISCARD_STRINGS.projectSwitchedDiscarded(what));
           return;
+        case DRAFT_LOSS_CAUSE.SelectionMoved:
+          statusMessageStore.notice(what);
+          return;
       }
     },
     [statusMessageStore],
@@ -2938,9 +2941,6 @@ export function App(): JSX.Element {
     [store],
   );
 
-  // U26 INTEGRATION (教訓 5.7 / 5.2): the knife-tool controller is mounted in the
-  // SAME shell overlay, bound to the SAME store, so selecting 編集モード→ナイフ starts
-  // a session, map-input clicks drive対象面選択 / 分断線入力 / 閉線確定, the继承先 modal +
   /**
    * **分ける・穴あけ・輪郭の取得の関門**（B118）。表示条件を通っているか、隠れていても描いている
    * （§D.6 規則 1 の「選んでいるものと親までの道筋」）なら掴める。［動かす］はもともと描いているものを
@@ -2958,6 +2958,9 @@ export function App(): JSX.Element {
     [store, isToolTargetVisible],
   );
 
+  // U26 INTEGRATION (教訓 5.7 / 5.2): the knife-tool controller is mounted in the
+  // SAME shell overlay, bound to the SAME store, so selecting 編集モード→ナイフ starts
+  // a session, map-input clicks drive対象面選択 / 分断線入力 / 閉線確定, the继承先 modal +
   // U23 form re-use drive継承先選択 / 非継承側プロパティ入力, and 確定 hands a split
   // EditProposal to the U13 seam. Like the add seam, U13 is a deterministic stub;
   // the live binding (`CreateLiveKnifeBinding` in ./consistency-binding.ts) is the
@@ -3248,6 +3251,11 @@ export function App(): JSX.Element {
   const [helpModalOpen, setHelpModalOpen] = useState(false);
   const [fileModalOpen, setFileModalOpen] = useState(false);
   const [addDrawing, setAddDrawing] = useState(false);
+  // 分ける・穴あけ・輪郭が、選択を動かすと聞く下書きを持っている（視点を止める。B118）。
+  const toolHoldsDraftRef = useRef(false);
+  const onToolDraftHeldChange = useCallback((held: boolean): void => {
+    toolHoldsDraftRef.current = held;
+  }, []);
   const [knifeDrawing, setKnifeDrawing] = useState(false);
   const [mergeDrawing, setMergeDrawing] = useState(false);
   const [reparentDrawing, setReparentDrawing] = useState(false);
@@ -4124,7 +4132,8 @@ export function App(): JSX.Element {
       // 抱えたまま一覧の行を押すと、地図だけが世界の反対側へ飛び、そのあと打った点が
       // **世界をまたぐ形**になった（下書きは残るので、利用者は何が起きたか分からない）。
       // 一覧で選ぶこと自体は妨げない ―― 素性を見たいだけのことがあるので。
-      if (addDrawing) return;
+      // 分ける・穴あけ・輪郭も、下書きを持っているあいだは同じ（B118。片付けた道具が呼び直す）。
+      if (addDrawing || toolHoldsDraftRef.current) return;
 
       const s = store.getState();
       // **隠れている地物でも、選んでいるなら視点を合わせる**（2026-09-06、2 回目の手直し）。
@@ -4442,6 +4451,7 @@ export function App(): JSX.Element {
               store={store}
               screenToWorld={screenToWorld}
               mapCameraInput={mapCameraInput}
+              boardOpen={boardHoldsInput}
             />
             {/* 編集モードの 8 つの道具の帯（増分 3 の手直し C3）。DOM は 1 つも作らず、
                 道具名と対象だけをオプションバーへ押し込む。追加モードのときは帯を持たない
@@ -4469,7 +4479,6 @@ export function App(): JSX.Element {
             <DisplayOptionsSlot<DomainRoot>
               store={store}
               optionBar={optionBarStore}
-              boardOpen={boardHoldsInput}
               getRoot={getDomainRoot}
               getTime={getCurrentTime}
               onOpenChange={popoverOpenChange('display')}
@@ -4527,6 +4536,8 @@ export function App(): JSX.Element {
               onModalChange={toolModalChange('knife')}
               onTargetGone={onToolTargetGone}
               onDraftDiscarded={onToolDraftDiscarded}
+              onFocusSelection={focusCameraOnSelection}
+              onDraftHeldChange={onToolDraftHeldChange}
               onDraftLost={onToolDraftLost}
             />
             {/* U30 INTEGRATION (教訓 5.7 / 5.2): the merge-tool controller, bound to the
@@ -4608,6 +4619,8 @@ export function App(): JSX.Element {
               onTargetGone={onToolTargetGone}
               onImpactModalChange={toolModalChange('ring-delete-impact')}
               onDraftDiscarded={onToolDraftDiscarded}
+              onFocusSelection={focusCameraOnSelection}
+              onDraftHeldChange={onToolDraftHeldChange}
               onDraftLost={onToolDraftLost}
             />
             {/* U27 INTEGRATION (教訓 5.7 / 5.2): the drill (穴あけによる新地物生成)
@@ -4637,6 +4650,8 @@ export function App(): JSX.Element {
               onModalChange={toolModalChange('drill')}
               onTargetGone={onToolTargetGone}
               onDraftDiscarded={onToolDraftDiscarded}
+              onFocusSelection={focusCameraOnSelection}
+              onDraftHeldChange={onToolDraftHeldChange}
               onDraftLost={onToolDraftLost}
             />
           </>

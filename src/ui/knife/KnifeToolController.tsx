@@ -187,6 +187,10 @@ export interface KnifeToolControllerProps<S> {
   readonly onDraftDiscarded?: ((count: number) => void) | undefined;
   /** 年の移動・設定の補正・読み込みで捨てたものを報せる口（B112）。 */
   readonly onDraftLost?: DraftLostHandler | undefined;
+  /** 一覧で別の地物を選んで下書きを片付けたあとに視点を合わせる口（B118）。 */
+  readonly onFocusSelection?: (() => void) | undefined;
+  /** 選択を動かすと聞く下書きを持っているかの変化を伝える口（B118。板のあいだ視点を止める）。 */
+  readonly onDraftHeldChange?: ((held: boolean) => void) | undefined;
   /** 掴んでいた面がいまの年に居なくなり、手放したことを伝える口（B112）。 */
   readonly onTargetGone?: (() => void) | undefined;
   /**
@@ -517,6 +521,8 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     },
     onDraftDiscarded: props.onDraftDiscarded,
     onDraftLost: props.onDraftLost,
+    onFocusSelection: props.onFocusSelection,
+    onDraftHeldChange: props.onDraftHeldChange,
   });
 
   // --- Feed the provisional knife primitives to the render sink on every state
