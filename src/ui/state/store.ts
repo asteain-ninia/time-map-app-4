@@ -644,39 +644,13 @@ export interface SessionStoreActions<S> {
   setProjectTimelineRangeYears(minYear: number, maxYear: number): void;
   updateAppSetting<K extends AppSettingKey>(key: K, value: AppSettings[K]): void;
   /**
-   * Hydrate BOTH settings slices wholesale from a loaded / new project's persisted
-   * settings (LOAD / NEW path). This is the missing half of the二重真実源 fix
-   * (教訓 5.30 / 5.36): a load reflects the domain via {@link resetToDomain}, but the
-   * UI settings live in THIS store, so without this call a loaded project's
-   * zoom/timeline/grid/label settings never reach the UI and a previous project's
-   * settings linger. Replaces the whole `projectSettings` / `appSettings` value
-   * atomically and marks the project CLEAN (a load/new is the save baseline, not an
-   * edit), so it must run in the SAME transition family as `resetToDomain`. Passing
-   * `undefined` for either slice leaves that slice at its current (default) value —
-   * the correct behaviour for a pre-`ui` manifest that carried no UI settings.
-   */
-  hydrateSettings(settings: {
-    readonly projectSettings?: ProjectSettings;
-    readonly appSettings?: AppSettings;
-  }): void;
-  /**
-   * ATOMIC LOAD / NEW reflect (bughunt2 finding): swap the domain AND hydrate the
-   * UI settings in ONE transition that fully rolls back on failure. The previous
-   * two-call sequence — `resetToDomain(project)` THEN `hydrateSettings(...)` — was
-   * NOT atomic: `resetToDomain` unconditionally swapped the domain (and cleared the
-   * session state) BEFORE `hydrateSettings` ran, and `hydrateSettings` calls
-   * `deriveTimelineState`, which THROWS on an inverted timeline range
-   * (timelineMin >= timelineMax). A throw there left the store half-applied — the
-   * NEW domain installed but the OLD project's settings (zoom clamp / timeline
-   * range / grid / labels) still in place, with the slider range no longer matching
-   * the domain. The schema (uiProjectSettingsSchema.superRefine) blocks an inverted
-   * range at the parse boundary today, so this was latent rather than live; but any
-   * future reflect path that synthesizes settings (a repair, a new importer) would
-   * corrupt state. This action derives the timeline FIRST (the only throwing step),
-   * so if the incoming settings are invalid NOTHING is mutated, then commits the
-   * domain swap + session discard + settings hydrate + derived range/time in a
-   * SINGLE set(). It carries the exact semantics of {@link resetToDomain} +
-   * {@link hydrateSettings} run back-to-back, only fused and rollback-safe.
+   * ATOMIC LOAD / NEW reflect (bughunt2 finding): swap the domain AND replace the UI
+   * settings in ONE transition that fully rolls back on failure. The timeline is derived
+   * FIRST (`deriveTimelineState` is the only throwing step: it rejects an inverted range),
+   * so if the incoming settings are invalid NOTHING is mutated; then the domain swap +
+   * session discard + whole-slice settings swap + derived range/time land in a SINGLE
+   * set(). Marks the project clean (a load / new is the save baseline, not an edit).
+   * Passing `undefined` for a settings slice leaves it at its current value.
    */
   reflectLoadedProject(
     nextDomain: S,
@@ -912,7 +886,7 @@ function clampTimeToRange(
  * timelineMinYear < timelineMaxYear (validated by validateProjectSettings on every
  * write path); this function asserts it and throws on an inverted range rather than
  * clamping currentTime against a min>=max window. It is run from BOTH paths that can change the effective timeline
- * range: a LOAD / NEW hydrate ({@link SessionStoreActions.hydrateSettings}) AND a
+ * range: a LOAD / NEW reflect ({@link SessionStoreActions.reflectLoadedProject}) AND a
  * live settings-dialog confirm ({@link SessionStoreActions.updateProjectSetting}
  * with a timeline key) — finding: pre-fix the dialog path wrote only
  * projectSettings, so the slider kept the OLD range and currentTime dangled
@@ -1208,7 +1182,7 @@ export function createSessionStore<S>(
     // Every clean-establishing path routes through here so the three references can
     // never drift (single capture site, 二重の真実源 を作らない). `domain` is taken
     // from the caller-supplied value when it is being swapped in the SAME set()
-    // (LOAD / NEW), else from the live store (save / settings hydrate). Defined
+    // (LOAD / NEW), else from the live store (save). Defined
     // inside the store callback so it can read `get()` (the saved baseline lives in
     // the enclosing factory closure).
     const captureSavedBaseline = (domain: S): void => {
@@ -1218,7 +1192,7 @@ export function createSessionStore<S>(
       // A save persists the current base-map bytes and a LOAD / NEW installs a fresh
       // bytes baseline, so at every clean baseline the bytes match the saved file —
       // clear the byte-replace dirty flag (F2 点4). Every savedDomain-writing site does
-      // this; hydrateSettings / reflectLoadedProject (which set savedDomain directly,
+      // this; reflectLoadedProject (which sets savedDomain directly,
       // not via this helper) clear it explicitly for the same reason.
       baseMapBytesDirtySinceSave = false;
     };
@@ -2280,7 +2254,7 @@ export function createSessionStore<S>(
         [key]: value,
       };
       // finding: a live settings-dialog confirm changes the timeline range through
-      // THIS path (not hydrateSettings). The slider reads the derived timelineMin/Max
+      // THIS path (not reflectLoadedProject). The slider reads the derived timelineMin/Max
       // mirror and currentTime, so a timeline-key change must re-derive the range,
       // re-clamp currentTime into it, and re-validate selection — otherwise the
       // slider keeps the OLD range (and currentTime dangles outside the new one)
@@ -2389,74 +2363,16 @@ export function createSessionStore<S>(
       });
     },
 
-    hydrateSettings(settings) {
-      // Whole-slice replacement from a loaded / new project (教訓 5.36 同時初期化).
-      // A load / new is a clean baseline, so projectDirty is cleared in the SAME
-      // transition (mirrors resetToDomain). We do NOT emit a lastSettingsChange:
-      // this is a baseline hydrate, not a user edit, so subscribers (renderer /
-      // zoom supply) re-read the new values via their own domain/settings
-      // subscription rather than treating it as a discrete change event.
-      //
-      // PROJECT-DEPENDENT TIME STATE (finding): the timeline RANGE shown by the
-      // slider (timelineMin/timelineMax, TimePoints) is a derived mirror of the
-      // authoritative projectSettings.timelineMin/MaxYear — there is no second
-      // truth source. So whenever the project settings are hydrated we re-derive
-      // the range from the EFFECTIVE settings (the incoming slice, or the kept
-      // current one for a pre-`ui` manifest), re-clamp currentTime into that new
-      // range, and run the clamped time through U22's revalidateForTime so any
-      // time-dependent state is re-validated against the (already-swapped) new
-      // domain. Without this a previous project's range / out-of-range currentTime
-      // would survive a LOAD / NEW and the domain would resolve at a time outside
-      // the new range (空表示). This runs in the SAME set() as the slice swap so
-      // settings and the derived range/time can never drift apart.
-      // hydrateSettings is a clean baseline (LOAD / NEW settings hydrate) but does NOT
-      // swap the domain — so the current domain becomes the saved reference (bughunt
-      // 全 undo dirty), keeping savedDomain consistent with the cleared dirty flag.
-      // Capture the SETTINGS half from the EFFECTIVE (post-hydrate) values — the
-      // incoming slice when present, else the kept current one — NOT the live store
-      // values, which are about to be replaced in the same set() (bughunt2). Reusing
-      // captureSavedBaseline would read the pre-swap settings, so set the baseline
-      // explicitly here.
-      const effectiveProject =
-        settings.projectSettings ?? get().projectSettings;
-      const effectiveApp = settings.appSettings ?? get().appSettings;
-      savedDomain = get().domain;
-      savedProjectSettings = effectiveProject;
-      savedAppSettings = effectiveApp;
-      // Clean baseline: the current base-map bytes ARE the saved file's — clear the
-      // byte-replace dirty flag (F2 点4; same as captureSavedBaseline, which this path
-      // does not use because it sets savedDomain directly).
-      baseMapBytesDirtySinceSave = false;
-      const timelinePatch = deriveTimelineState(
-        effectiveProject,
-        get().currentTime,
-        get().selection,
-        existence,
-        calendar,
-        timelineDisplayHeal,
-      );
-      set({
-        projectDirty: false,
-        ...(settings.projectSettings !== undefined
-          ? { projectSettings: settings.projectSettings }
-          : {}),
-        ...(settings.appSettings !== undefined
-          ? { appSettings: settings.appSettings }
-          : {}),
-        ...timelinePatch,
-      });
-    },
-
     reflectLoadedProject(nextDomain, settings) {
       // ATOMIC reflect (bughunt2): derive the timeline BEFORE any set() so the only
       // step that can throw (deriveTimelineState on an inverted range) cannot leave
-      // the store half-applied. The two-call form (resetToDomain THEN hydrateSettings)
-      // swapped the domain first, so a throw in hydrateSettings stranded the NEW
+      // the store half-applied. A two-call form (swap the domain, then the settings)
+      // would swap the domain first, so a throw there would strand the NEW
       // domain alongside the OLD settings/range. Here, if the incoming settings are
       // invalid we throw with NOTHING mutated; on success the domain swap, session
       // discard, settings hydrate, and derived range/time all land in ONE set().
       // A LOAD / NEW is a fresh CLEAN baseline (this is the atomic resetToDomain +
-      // hydrateSettings reflect); record the new domain AND the effective settings as
+      // settings reflect); record the new domain AND the effective settings as
       // the saved reference so an undo / redo back to it reads clean (bughunt 全 undo
       // dirty + settings, bughunt2). The settings half must be the EFFECTIVE (post-
       // swap) values — incoming slice or kept current — not the live store values that
@@ -2476,7 +2392,7 @@ export function createSessionStore<S>(
       baseMapBytesDirtySinceSave = false;
       // resetToDomain clears the selection to EMPTY before hydrate derives the range,
       // so derive against EMPTY_SELECTION (the post-reset selection) — preserving the
-      // exact result of the previous resetToDomain → hydrateSettings ordering.
+      // exact result of clearing the session first and deriving the range second.
       const timelinePatch = deriveTimelineState(
         effectiveProject,
         get().currentTime,
@@ -2510,7 +2426,7 @@ export function createSessionStore<S>(
         // 手直し B10: 一覧のスクロール位置は画面側の状態なので、読み込みでは
         // 捨てられない。印を動かして「先頭へ戻れ」と一覧へ伝える。
         projectLoadNonce: get().projectLoadNonce + 1,
-        // -- hydrateSettings half: whole-slice settings swap (教訓 5.36) --
+        // -- whole-slice settings swap (教訓 5.36) --
         ...(settings.projectSettings !== undefined
           ? { projectSettings: settings.projectSettings }
           : {}),

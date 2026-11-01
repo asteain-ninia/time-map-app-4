@@ -369,7 +369,7 @@ describe('読み込み: same flow, reflects into the U16 store (受け入れ基�
     // (finding 4 + bughunt2): it discards stale selection/tool/focus, hydrates the
     // settings, AND clears dirty in one rollback-safe transition, rather than the
     // bare setDomainState (which left them dangling) or the earlier non-atomic
-    // resetToDomain-then-hydrateSettings pair (which could strand a swapped domain
+    // two-call pair of swapping the domain and then the settings (which could strand a swapped domain
     // alongside old settings if the hydrate threw).
     const reflect = vi.spyOn(store.getState(), 'reflectLoadedProject');
     render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);

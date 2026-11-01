@@ -873,9 +873,8 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         // this is its load-half analog (教訓 5.2 全経路で破棄, 教訓 5.36 同時初期化).
         //
         // ATOMIC reflect (bughunt2): the domain swap and the settings hydrate run in
-        // ONE store transition (reflectLoadedProject), not as resetToDomain THEN
-        // hydrateSettings. The two-call form swapped the domain first, so if the
-        // settings hydrate threw on an inverted timeline range it stranded the NEW
+        // ONE store transition (reflectLoadedProject), not as two calls. The two-call
+        // form swapped the domain first, so if the settings hydrate threw on an inverted timeline range it stranded the NEW
         // domain alongside the OLD settings/range; the fused action derives the
         // timeline before mutating, so an invalid project rolls back fully and the
         // store stays on the previous project.
