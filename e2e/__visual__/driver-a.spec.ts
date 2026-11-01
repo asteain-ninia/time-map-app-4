@@ -1512,6 +1512,7 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       expect(await drawnFeatureIds(page)).toContain(faceId);
 
       // --- (4) 選択が動いて描かれなくなる → 対象選択へ戻り、隠れたからと言う -------
+      // 表示の板を閉じる（道具の Escape ではない。板が開いているあいだは板が受ける）。
       await page.keyboard.press('Escape');
       await expect(page.getByTestId(`feature-list-item-${otherId}`)).toBeVisible();
       await page.getByTestId(`feature-list-item-${otherId}`).click();
