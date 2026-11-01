@@ -1620,6 +1620,9 @@ const LONG_LABEL = new Set(['pre-save-confirm']);
 /** 幅が決まっていて省略記号で切る前提のボタン（全文は吹き出しで読める）。 */
 const CLIPS_BY_DESIGN = /^ledger-kind-/;
 
+/** ボタンの文字の大きさ（本文 12px・補助 11px と、幅の決まった 10px の 2 つ。`visual-unity.test.ts` が顔ぶれを固定）。 */
+const BUTTON_FONT_SIZES = ['12px', '11px', '10px'];
+
 /** 土台の本文の色。無効なのにこの色なら、見た目が押せるボタンと同じになる。 */
 const BODY_TEXT_COLOR = 'rgb(31, 39, 51)';
 
@@ -1638,6 +1641,7 @@ export function controlProblems(controls: readonly ControlMetrics[]): string[] {
     if (c.disabled && c.opacity < 1) out.push(`${name}: 無効に透明度を重ねている (${String(c.opacity)})`);
     if (c.offscreen && !c.inScroller) out.push(`${name}: 窓の外に出て、スクロールでも届かない「${c.text}」`);
     if (c.tag !== 'button') continue;
+    if (!BUTTON_FONT_SIZES.includes(c.fontSize)) out.push(`${name}: ボタンの文字が ${c.fontSize}「${c.text}」`);
     if (c.disabled && c.color === BODY_TEXT_COLOR) out.push(`${name}: 無効なのに本文の色のまま「${c.text}」`);
     if (c.clipped && !CLIPS_BY_DESIGN.test(name)) out.push(`${name}: 文字が幅から切れる「${c.text}」`);
     if (c.border.includes('outset')) out.push(`${name}: ブラウザ既定の枠 (${c.border})`);

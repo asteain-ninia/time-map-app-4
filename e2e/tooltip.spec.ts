@@ -2,7 +2,9 @@
 //
 // N-01: **吹き出しがすぐ上のボタンのクリックを飲み込む。** 「結合」にマウスを置くと吹き出しが
 //       真上の「所属変更」の上に出て、`elementFromPoint` が吹き出しを返し、押しても何も
-//       起きなかった（実測 shots/A-15b〜A-15d）。
+//       起きなかった（実測 shots/A-15b〜A-15d）。いまはレールの外の横に出すので、どの道具にも
+//       重ならない（B103。吹き出しが道具の文字を隠していた）。重ならないことと、それでも
+//       `pointer-events: none` で飲み込まないことの両方を見る。
 // N-02: **同じ吹き出しがツールレールの `overflow` で右へ 30.8px 切れる。** レール幅 119.2px に
 //       対し吹き出しは 144px あり、FR-115 の操作ガイドが「地物の所属を変更し…」で読めなかった。
 //
@@ -16,60 +18,67 @@ import { TOOL_ID } from '../src/ui/shell/tools';
 import { enterEditMode, launchApp } from './helpers';
 
 test.describe('ツールチップの吹き出し（設計書 §H.2）', () => {
-  test('N-01: 吹き出しはクリックを飲み込まず、その下のボタンが押せる', async () => {
-    const { app, page } = await launchApp();
-    try {
-      await enterEditMode(page);
+  for (const size of [
+    { width: 1280, height: 800 },
+    { width: 800, height: 600 },
+  ]) {
+    test(`N-01 ${String(size.width)}x${String(size.height)}: どの道具の吹き出しも道具の文字を隠さず、窓の中に出て、上の道具が押せる`, async () => {
+      const { app, page } = await launchApp();
+      try {
+        await page.setViewportSize(size);
+        await enterEditMode(page);
+        const tools = page.getByTestId('toolbar').locator('button[data-testid^="tool-"]');
+        const count = await tools.count();
+        expect(count, '道具の数').toBeGreaterThan(5);
+        for (let i = 0; i < count; i += 1) {
+          const tool = tools.nth(i);
+          await tool.hover();
+          const seen = await page.getByTestId('toolbar').evaluate((rail) => {
+            const bubble = rail.querySelector('[data-testid="tooltip-bubble"]:not([hidden])');
+            if (bubble === null) return null;
+            const b = bubble.getBoundingClientRect();
+            const covers = Array.from(rail.querySelectorAll('button')).filter((button) => {
+              const r = button.getBoundingClientRect();
+              return b.left < r.right && r.left < b.right && b.top < r.bottom && r.top < b.bottom;
+            }).length;
+            return {
+              covers,
+              inWindow: b.left >= 0 && b.top >= 0 && b.right <= window.innerWidth && b.bottom <= window.innerHeight,
+              events: getComputedStyle(bubble).pointerEvents,
+            };
+          });
+          const name = (await tool.getAttribute('data-testid')) ?? '';
+          // 吹き出しを持たない道具（測るの入れ物）は外す。持つものは全部見る。
+          if (seen === null) continue;
+          expect(seen.covers, `${name}: 吹き出しが道具を隠さない`).toBe(0);
+          expect(seen.inWindow, `${name}: 吹き出しが窓の中`).toBe(true);
+          expect(seen.events, `${name}: クリックを飲み込まない`).toBe('none');
+        }
 
-      // 「結合」に置くと、吹き出しは真上の「所属変更」の上に出る（道具の並び順で隣接）。
-      const merge = page.getByTestId('tool-edit.merge');
-      const reparent = page.getByTestId('tool-edit.reparent');
-      await expect(merge).toBeVisible();
-      await merge.hover();
-
-      // **画面の言葉を直書きしない**（教訓 5.64。増分 5 の手直しで吹き出しの動詞を
-      // レールの語幹へ揃えたとき、「結合」で絞っていたこの検査が置き去りになった）。
-      const mergeTip = TOOLTIPS[TOOL_ID.EditMerge];
-      expect(mergeTip, '結ぶ道具の吹き出しの文が写像表に無い').toBeTruthy();
-      const bubble = page.getByTestId('tooltip-bubble').filter({ hasText: mergeTip ?? '' });
-      await expect(bubble).toBeVisible();
-      const box = (await bubble.boundingBox())!;
-      const target = (await reparent.boundingBox())!;
-
-      // 吹き出しが「所属変更」に **本当に重なっている** こと（この重なりが N-01 の前提。
-      // 重なっていなければ検査は空振りなので、ここで落として気づけるようにする）。
-      const overlapTop = Math.max(box.y, target.y);
-      const overlapBottom = Math.min(box.y + box.height, target.y + target.height);
-      const overlapLeft = Math.max(box.x, target.x);
-      const overlapRight = Math.min(box.x + box.width, target.x + target.width);
-      expect(overlapBottom).toBeGreaterThan(overlapTop);
-      expect(overlapRight).toBeGreaterThan(overlapLeft);
-
-      const cx = (overlapLeft + overlapRight) / 2;
-      const cy = (overlapTop + overlapBottom) / 2;
-
-      // 重なっている場所で当たり判定を取ると、**吹き出し自身は返らない**
-      // （pointer-events: none）。これが N-01 の直接の再現条件だった。
-      const hitTestid = await page.evaluate(
-        ([x, y]) => {
-          const el = document.elementFromPoint(x as number, y as number);
-          return el === null
-            ? null
-            : (el.closest('[data-testid]')?.getAttribute('data-testid') ?? null);
-        },
-        [cx, cy],
-      );
-      expect(hitTestid).not.toBe('tooltip-bubble');
-      expect(hitTestid).toBe('tool-edit.reparent');
-
-      // そして実際に押せる。
-      await expect(reparent).toHaveAttribute('aria-pressed', 'false');
-      await page.mouse.click(cx, cy);
-      await expect(reparent).toHaveAttribute('aria-pressed', 'true');
-    } finally {
-      await app.close();
-    }
-  });
+        // 「結合」に置いたまま、真上の「所属変更」を押せる（N-01 の元の害）。
+        const merge = page.getByTestId('tool-edit.merge');
+        const reparent = page.getByTestId('tool-edit.reparent');
+        await merge.hover();
+        // **画面の言葉を直書きしない**（教訓 5.64）。
+        const mergeTip = TOOLTIPS[TOOL_ID.EditMerge];
+        expect(mergeTip, '結ぶ道具の吹き出しの文が写像表に無い').toBeTruthy();
+        await expect(page.getByTestId('tooltip-bubble').filter({ hasText: mergeTip ?? '' })).toBeVisible();
+        const target = (await reparent.boundingBox())!;
+        const cx = target.x + target.width / 2;
+        const cy = target.y + target.height / 2;
+        const hitTestid = await page.evaluate(
+          ([x, y]) => document.elementFromPoint(x as number, y as number)?.closest('[data-testid]')?.getAttribute('data-testid') ?? null,
+          [cx, cy],
+        );
+        expect(hitTestid).toBe('tool-edit.reparent');
+        await expect(reparent).toHaveAttribute('aria-pressed', 'false');
+        await page.mouse.click(cx, cy);
+        await expect(reparent).toHaveAttribute('aria-pressed', 'true');
+      } finally {
+        await app.close();
+      }
+    });
+  }
 
   test('N-02: 吹き出しはツールレールの overflow に切り取られず、窓の中に収まる', async () => {
     const { app, page } = await launchApp();

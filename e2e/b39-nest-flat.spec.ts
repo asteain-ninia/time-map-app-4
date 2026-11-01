@@ -114,9 +114,6 @@ async function drawChild(
   await page.getByTestId('add-save').click();
   // 保存は 1 コマ遅れて走る。素性欄が閉じる（＝保存が走り終えた）のを待つ。
   await expect(page.getByTestId('add-property-form')).toHaveCount(0);
-  // 素性欄が閉じた直後は、まだ鍵盤が板の持ち主のままのことがある。直後の Ctrl+S が
-  // 「確認に答えてから」と断られないよう、持ち主が戻るのを待つ（一覧の修正前のコードでも 24 回中 4 回落ちた）。
-  await expect(page.getByTestId('app-focus-owner')).not.toHaveText('modal');
   return defaultParent;
 }
 
@@ -127,6 +124,40 @@ function expectFlat(saved: Map<string, SavedFeature>, parentId: string, childNam
   expect(under.map((f) => f.attributes?.name ?? '').sort()).toEqual([...childNames, '親 直轄領'].sort());
   expect([...saved.values()].filter((f) => f.directDomain === true)).toHaveLength(1);
 }
+
+test.describe('B116 — 面の保存で「描きかけを捨てますか」の板を出さない', () => {
+  // 保存は選択を新しい面へ移す。その 1 回の描画だけ「選択は新しい面、下書きはまだある」に見えて板が開き、次の
+  // 描画で畳まれていた（保存のたびに 40〜50ms。そのあいだ鍵盤の持ち主が板になり、直後の Ctrl+S を断った）。
+  // 単体の試験の環境では 2 つの更新が 1 回にまとまって再現しないので（教訓 5.41）、実アプリで板の出現を数える。
+  test('保存を 3 回しても板は 1 度も DOM に現れず、持ち主は modal にならない', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await page.evaluate(() => {
+        const seen = { boards: 0, modalOwner: 0 };
+        (window as unknown as { __b116: typeof seen }).__b116 = seen;
+        const owner = document.querySelector('[data-testid="app-focus-owner"]');
+        new MutationObserver(() => {
+          if (document.querySelector('[data-testid="add-draft-discard-confirm"]') !== null) seen.boards += 1;
+          if (owner?.textContent === 'modal') seen.modalOwner += 1;
+        }).observe(document.body, { childList: true, subtree: true, characterData: true });
+      });
+      await armAddAreaTool(page);
+      const b = await addInputLayerBox(page);
+      const cx = b.x + b.width / 2;
+      const cy = b.y + b.height / 2;
+      const parentId = await drawFace(page, squareCorners(cx + 60, cy, 150), { name: '親' });
+      expect(parentId).not.toBe('');
+      await drawChild(page, { x: cx + 10, y: cy - 70, half: 30 }, '子1');
+      await drawChild(page, { x: cx + 110, y: cy - 70, half: 30 }, '子2');
+      // 板は畳まれたあとの描画より遅れて報せるので、落ち着くまで見張りを動かしておく。
+      await page.waitForTimeout(200);
+      const seen = await page.evaluate(() => (window as unknown as { __b116: { boards: number; modalOwner: number } }).__b116);
+      expect(seen).toEqual({ boards: 0, modalOwner: 0 });
+    } finally {
+      await app.close();
+    }
+  });
+});
 
 test.describe('B39 前の期待 — 面の中に子を描くと、開き直しの修復で平らな形になる（何も消えない）', () => {
   test('同じ年に子 3 人（居続ける） → 保存 → 開き直し → 勧められる修復 1 回で 親 →［子1, 子2, 子3, 直轄領］', async () => {

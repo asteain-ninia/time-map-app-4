@@ -6,6 +6,8 @@
 
 import { expect, test, type Page } from '@playwright/test';
 
+import { railFoldOf } from '../src/ui/time/rail-fold';
+
 import {
   addInputLayerBox,
   armAddAreaTool,
@@ -82,11 +84,9 @@ test.describe('見た目の統一（N-24 / N-25 / N-26 / N-28）', () => {
       try {
         await page.setViewportSize(size);
         await expect(page.getByTestId('first-run-guide')).toBeVisible();
-        // 窓を変えた直後は、時刻レールの畳み（ResizeObserver のあとの描き直し）がまだ終わっていない
-        // ことがある。全件を並列で走らせると時々ここで「窓の外」と読んだ。落ち着くまで待つ。
-        await expect
-          .poll(async () => controlProblems((await readControlMetrics(page)).controls))
-          .toEqual([]);
+        // 時刻レールの畳みは窓の resize を受けて変わるので、窓を変えた直後は古い段のことがある。畳みの前は
+        // 操作列の部品が窓の外へ出る（docs/現状.md の B116）。**段を名指しして待つ**。そのあとは待たずに測る。
+        await expect(page.getByTestId('rail-controls')).toHaveAttribute('data-fold', railFoldOf(size.width));
         await expectUnified(page, `${label} ガイド`);
         await page.getByTestId('first-run-guide-close').click();
         await expectUnified(page, `${label} 空の画面`);
@@ -150,6 +150,54 @@ test.describe('見た目の統一（N-24 / N-25 / N-26 / N-28）', () => {
         });
         expect(close.hit, `${label} ショートカット一覧の［閉じる］`).toBe(true);
         expect(close.bottom).toBeLessThanOrEqual(size.height);
+      } finally {
+        await app.close();
+      }
+    });
+
+    test(`${label}: 升目は 16×16 に見えて、24×24 を押せる（N-26）`, async () => {
+      const { app, page } = await launchApp();
+      try {
+        await page.setViewportSize(size);
+        await page.getByTestId('menu-tools').click();
+        await page.getByTestId('menu-items-tools').locator('[data-command="tools.settings"]').click();
+        await expect(page.getByTestId('settings-dialog')).toBeVisible();
+        let measured = 0;
+        for (const tab of ['project', 'app', 'backup']) {
+          await page.getByTestId(`settings-tab-${tab}`).click();
+          const boxes = await page.getByTestId('settings-dialog').evaluate((dialog) =>
+            Array.from(dialog.querySelectorAll<HTMLInputElement>('input[type="checkbox"], input[type="radio"]'))
+              .filter((input) => input.getBoundingClientRect().width > 0)
+              .map((input) => {
+                input.scrollIntoView({ block: 'center' });
+                const r = input.getBoundingClientRect();
+                const cs = getComputedStyle(input);
+                const hits = (x: number, y: number): boolean => {
+                  const found = document.elementFromPoint(x, y);
+                  return found !== null && (found === input || found.contains(input));
+                };
+                return {
+                  w: r.width,
+                  h: r.height,
+                  border: cs.borderTopWidth,
+                  edges: [
+                    hits(r.left + r.width / 2, r.top + 1),
+                    hits(r.left + r.width / 2, r.bottom - 1),
+                    hits(r.left + 1, r.top + r.height / 2),
+                    hits(r.right - 1, r.top + r.height / 2),
+                  ],
+                };
+              }),
+          );
+          for (const box of boxes) {
+            measured += 1;
+            expect(box.w, `${tab}: 当たりの幅`).toBe(24);
+            expect(box.h, `${tab}: 当たりの高さ`).toBe(24);
+            expect(box.border, `${tab}: 見た目を 16px にする枠`).toBe('4px');
+            expect(box.edges, `${tab}: 上下左右の端まで押せる`).toEqual([true, true, true, true]);
+          }
+        }
+        expect(measured, '測った升目の数').toBeGreaterThan(0);
       } finally {
         await app.close();
       }

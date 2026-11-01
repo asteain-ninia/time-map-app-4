@@ -28,7 +28,7 @@
   inset: 0;
   z-index: 900;
   pointer-events: auto;
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--c-backdrop);
 }
 
 /* The dialogs (on the DraggablePanel vessel) re-capture pointer input so their
@@ -69,7 +69,7 @@
 }
 
 .repair-row {
-  border-bottom: 1px solid #ddd;
+  border-bottom: 1px solid var(--c-border);
   padding: 6px 0;
 }
 

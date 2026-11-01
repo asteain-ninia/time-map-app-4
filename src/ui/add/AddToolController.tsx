@@ -270,7 +270,23 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   // The host commit handler is REQUIRED (Codex SPECULATIVE 根治): the controller
   // never writes the store itself — every commit goes through the host's single
   // funnel (App: recordCommit → undo 履歴 + FR-100 自動配色 + dirty)。
-  const onCommitted = props.onCommitted;
+  const hostOnCommitted = props.onCommitted;
+  const activeFeature = useStore(store, (s) => s.activeFeature);
+  const prevActiveRef = useRef<FeatureId | null>(activeFeature);
+  // **保存が選択を新しい面へ移すのは、利用者が別の地物を選んだのではない**（B116）。先に基準を進めて、
+  // 下の見張りに自分の確定を「別の地物を選んだ」と読ませない。
+  //
+  // 順序に頼れないのは、React の中で更新の順番が割れるから。保存は 1 コマ遅れて（イベントの外で）走るので、
+  // ストアの選択の更新は同期の順番で先に描かれ、`discard()` の「待機へ戻す」はそのあとになる。その 1 回の描画だけ
+  // 「選択は新しい面、下書きはまだある」に見えて「描きかけを捨てますか」の板が開き、次の描画で畳まれていた。
+  // 板は保存のたびに 40〜50ms 画面に出て（実測）、そのあいだ鍵盤の持ち主が `modal` になり、直後の Ctrl+S が断られた。
+  const onCommitted = useCallback<typeof hostOnCommitted>(
+    (result, featureId, committed) => {
+      prevActiveRef.current = featureId;
+      hostOnCommitted(result, featureId, committed);
+    },
+    [hostOnCommitted],
+  );
 
   const snapSettings = useStore(store, (s) => s.snapSettings);
 
@@ -442,8 +458,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   // 選び直したなら利用者の関心はもう別の地物にある。**黙って残さない・黙って消さない。**
   // **年は月・日まで見る**（B43）。同じ年の中で 3 月 → 9 月と動いても、下書きと吸着した頂点 id は
   // 持ち越さない。年の関門は輪郭・穴あけ・分けると共有の `useDraftTimeGate`（B112）。
-  const activeFeature = useStore(store, (s) => s.activeFeature);
-  const prevActiveRef = useRef<FeatureId | null>(activeFeature);
+  // 選択そのものと基準（`prevActiveRef`）は、保存の口を包むために上で読んでいる。
 
   const cancelAction = add.cancel;
   const canCompleteNow = add.canComplete;
@@ -523,8 +538,8 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     cancelAction();
     if (lost > 0) onDraftDiscarded?.(lost);
     onFocusSelection?.();
-    // **板が閉じたら見直す**（`pendingDiscard`）。保存の途中で選択が移ると板が 1 コミットだけ開いて
-    // 畳まれ、基準が古いまま残る。残すと次の 1 点目が「別の地物を選んだ」と読まれて捨てられる。
+    // **板が閉じたら見直す**（`pendingDiscard`）。板が開いたまま別の経路で閉じると基準が古いまま残り、
+    // 次の 1 点目が「別の地物を選んだ」と読まれて捨てられる。
   }, [
     activeFeature,
     hasDraftNow,

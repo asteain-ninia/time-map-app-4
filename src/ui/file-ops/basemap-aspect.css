@@ -13,18 +13,17 @@
 .basemap-aspect-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--c-backdrop);
 }
 
 .basemap-aspect-dialog {
   position: relative;
   max-width: 480px;
-  padding: 16px;
-  background: var(--c-surface, #fff);
-  color: var(--c-text, #222);
-  border: 1px solid var(--c-border-strong, #999);
-  border-radius: var(--radius, 4px);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  padding: var(--dialog-pad);
+  background: var(--c-surface);
+  color: var(--c-text);
+  border-radius: var(--radius-dialog);
+  box-shadow: var(--shadow-dialog);
 }
 
 .basemap-aspect-dialog__title {
@@ -39,7 +38,7 @@
 .basemap-aspect-dialog__explain {
   margin: 0 0 12px;
   font-size: 12px;
-  color: var(--c-text-muted, #555);
+  color: var(--c-text-muted);
 }
 
 .basemap-aspect-dialog__actions {

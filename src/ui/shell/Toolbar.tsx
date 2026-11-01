@@ -70,7 +70,7 @@ export function Toolbar<S>(props: ToolbarProps<S>): JSX.Element {
                   ? shell.isSelectToolActive
                   : shell.activeTool === tool;
               return (
-                <Tooltip key={tool} text={tip}>
+                <Tooltip key={tool} text={tip} placement="beside-rail">
                   <button
                     type="button"
                     data-testid={`tool-${tool}`}

@@ -33,6 +33,13 @@
   --c-disabled-bg: var(--c-panel);
   --c-disabled-border: var(--c-border);
   --radius: 4px;
+  /* 板の器（N-19 / N-20）。作業の板・確認の板・動かせる板で同じ地・角丸・影・内側の余白・暗幕を使う。 */
+  --radius-dialog: 8px;
+  --shadow-dialog: 0 8px 32px rgba(0, 0, 0, 0.35);
+  --dialog-pad: 16px;
+  /* 選択肢の下の段下げ（升目 16px ＋ 文字との隙間 4px）。文字の頭に揃える。 */
+  --choice-indent: 20px;
+  --c-backdrop: rgba(0, 0, 0, 0.45);
   /* クリック対象の高さは 3 段（増分 8E 後半 / N-26）。
    * sm: 詰まった列（一覧の切替、ヘッダの中）/ 既定: パネルと帯の部品 / lg: 板の確定列・時刻の送り。
    * 道具のレール（`.toolbar button`）と地図のズーム（40px）だけは設計書 §B.3 の別の寸法を持つ。 */
@@ -142,6 +149,80 @@ html button[aria-pressed='true']:disabled {
   border-color: var(--c-accent-weak);
 }
 
+/* 升目とラジオ（N-26）: 見える大きさは 16×16、押せる範囲は 24×24。
+ * ブラウザ既定の部品は 13×13 に固定されて広げられないので、自分で描く。透明な 4px の枠が当たり判定を広げ、
+ * 負の余白が並びの中の場所を 16px ＋右の隙間 3px（既定の余白と同じ）に戻すので、行の高さも文字の位置も
+ * 変わらない。行全体を押せる `label` はそのまま効く。 */
+:where(input[type='checkbox'], input[type='radio']) {
+  appearance: none;
+  position: relative;
+  box-sizing: border-box;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin: -4px -1px -4px -4px;
+  border: 4px solid transparent;
+  background-color: var(--c-surface);
+  background-clip: padding-box;
+  box-shadow: inset 0 0 0 1px var(--c-border-strong);
+  vertical-align: middle;
+  cursor: pointer;
+}
+
+:where(input[type='checkbox']) {
+  border-radius: 6px;
+}
+
+:where(input[type='radio']) {
+  border-radius: 50%;
+}
+
+:where(input[type='checkbox'], input[type='radio']):checked {
+  background-color: var(--c-accent);
+  box-shadow: inset 0 0 0 1px var(--c-accent);
+}
+
+:where(input[type='checkbox']):checked::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 2px;
+  width: 4px;
+  height: 8px;
+  border: solid var(--c-surface);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+:where(input[type='radio']):checked::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--c-surface);
+}
+
+html input[type='checkbox']:disabled,
+html input[type='radio']:disabled {
+  background-color: var(--c-disabled-bg);
+  box-shadow: inset 0 0 0 1px var(--c-disabled-border);
+  cursor: default;
+}
+
+html input[type='checkbox']:disabled:checked,
+html input[type='radio']:disabled:checked {
+  background-color: var(--c-border-strong);
+  box-shadow: inset 0 0 0 1px var(--c-border-strong);
+}
+
+:where(input[type='checkbox'], input[type='radio']):focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: -3px;
+}
+
 :where(input:not([type='checkbox'], [type='radio'], [type='range'], [type='color']), select, textarea) {
   box-sizing: border-box;
   min-height: var(--control-h-sm);
@@ -154,7 +235,7 @@ html button[aria-pressed='true']:disabled {
   border-radius: var(--radius);
 }
 
-/* 入力欄の無効も同じ組（升目・ラジオ・色・つまみはブラウザの描き方のまま）。`opacity: 1` は、Chromium が
+/* 入力欄の無効も同じ組（升目・ラジオは上で描く。色・つまみはブラウザの描き方のまま）。`opacity: 1` は、Chromium が
  * 無効な select に既定で掛ける 0.7 を消す。 */
 html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='color']), select, textarea):disabled {
   color: var(--c-disabled-text);
@@ -510,9 +591,9 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   width: 100%;
   box-sizing: border-box;
   min-height: var(--control-h-sm);
-  padding: 3px 4px;
+  padding: 2px 4px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-size-body);
   line-height: 1.2;
   text-align: center;
   /* 切れないことは E2E（`scrollWidth <= clientWidth`）が見る。ここで折り返さないのは、
@@ -564,8 +645,10 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   background: transparent;
   border: 0;
   color: inherit;
-  padding: 6px 12px;
+  min-height: var(--control-h-lg);
+  padding: 0 12px;
   font: inherit;
+  font-size: var(--font-size-body);
   cursor: pointer;
 }
 
@@ -608,6 +691,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   background: transparent;
   border: 0;
   font: inherit;
+  font-size: var(--font-size-body);
   color: inherit;
   text-align: left;
   padding: 4px 12px;
@@ -699,7 +783,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   font: inherit;
   /* 設計書 §C.3 の「文字 12px」。13px のままだと「測量モード」（全角 5 文字 ＝ 65px）が
      文字に使える 72px にほとんど余裕なく収まり、環境差で切れる。 */
-  font-size: 12px;
+  font-size: var(--font-size-body);
   display: block;
   width: 100%;
   /* **padding と枠線を高さ・幅の内側に入れる。** これが無いと `min-height: 32px` は
@@ -830,6 +914,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   flex: 1 1 auto;
   min-width: 0;
   font: inherit;
+  font-size: var(--font-size-body);
   text-align: left;
   padding: 4px 10px;
   background: transparent;
@@ -918,6 +1003,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 .sidebar-list__mode {
   flex: 1 1 auto;
   font: inherit;
+  font-size: var(--font-size-body);
   padding: 4px 8px;
   background: var(--c-surface);
   color: var(--c-text);
@@ -949,7 +1035,8 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   width: 100%;
   text-align: left;
   font: inherit;
-  padding: 5px 8px;
+  font-size: var(--font-size-body);
+  padding: 4px 8px;
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border);
@@ -1071,8 +1158,8 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding-bottom: 3px;
+  gap: 4px;
+  padding-bottom: 4px;
   border-bottom: 1px solid var(--c-border);
 }
 
@@ -1274,6 +1361,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   align-items: baseline;
   gap: 4px;
   font: inherit;
+  font-size: var(--font-size-body);
   text-align: left;
   padding: 0 4px;
   background: transparent;
@@ -1405,7 +1493,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
  * パネルが `display: flex` の勝ちで画面左上に居座り、下のボタンのクリックを奪う。 */
 .option-popover__button {
   min-height: var(--control-h);
-  padding: 3px 8px;
+  padding: 2px 8px;
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -1484,7 +1572,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
  * 共有する ―― 置き場所が一覧の下からここへ移っただけである。 */
 .display-options__button {
   min-height: var(--control-h);
-  padding: 3px 8px;
+  padding: 2px 8px;
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -1522,7 +1610,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 .display-filter__labels {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   margin: 0;
   padding: 4px 6px;
   border: 1px solid var(--c-border);
@@ -1555,7 +1643,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   flex: 0 0 auto;
   font: inherit;
   font-size: var(--font-size-small);
-  padding: 1px 5px;
+  padding: 1px 4px;
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border);
@@ -1619,6 +1707,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   align-items: baseline;
   gap: 6px;
   font: inherit;
+  font-size: var(--font-size-body);
   text-align: left;
   padding: 4px 8px;
   background: var(--c-surface);
@@ -2061,7 +2150,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   flex: 0 0 auto;
   min-width: 24px;
   min-height: var(--control-h);
-  padding: 3px 5px;
+  padding: 2px 4px;
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -2118,7 +2207,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
  * その外側は地図の入力層にそのまま届く。閉じるのは document の pointerdown を捕まえる形。 */
 .snap-options__button {
   min-height: var(--control-h);
-  padding: 3px 8px;
+  padding: 2px 8px;
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -2286,7 +2375,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 /* 空状態その 2（0 年にしか節目が無い）は **印そのものは描かれている**ので、左端の
  * 印を文で隠さないよう少し右から書き始める。 */
 .rail__lane-empty[data-kind='only-origin'] {
-  padding-left: 14px;
+  padding-left: 16px;
   text-overflow: ellipsis;
 }
 
@@ -2343,6 +2432,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   width: 100%;
   text-align: left;
   font: inherit;
+  font-size: var(--font-size-small);
   background: none;
   border: none;
   padding: 2px 4px;
@@ -2616,6 +2706,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   min-width: 52px;
   padding: 2px 6px;
   font: inherit;
+  font-size: var(--font-size-body);
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -2672,6 +2763,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   min-width: 64px;
   padding: 2px 6px;
   font: inherit;
+  font-size: var(--font-size-body);
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -2690,6 +2782,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   width: 88px;
   padding: 2px 6px;
   font: inherit;
+  font-size: var(--font-size-body);
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -2764,10 +2857,11 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 }
 
 .draggable-panel {
-  background: #fff;
-  border: 1px solid #888;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  background: var(--c-surface);
+  box-shadow: var(--shadow-dialog);
   min-width: 160px;
+  border-radius: var(--radius-dialog);
+  overflow: hidden;
 }
 
 .draggable-panel__header {
@@ -2775,13 +2869,14 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 4px 8px;
-  background: #eee;
+  padding: 8px 16px;
+  background: var(--c-panel);
   user-select: none;
+  font-weight: 600;
 }
 
 .draggable-panel__body {
-  padding: 8px;
+  padding: var(--dialog-pad);
 }
 
 /* Map-anchored overlay layer: scoped to the map cell (.map-area, inset:0), above
@@ -2834,7 +2929,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 
 .first-run-guide__panel ol {
   margin: 0;
-  padding-left: 18px;
+  padding-left: 16px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -2877,7 +2972,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   height: 40px;
   pointer-events: auto;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-size-body);
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -2956,9 +3051,10 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   justify-content: space-between;
   gap: 8px;
   font: inherit;
+  font-size: var(--font-size-body);
   background: none;
   border: none;
-  padding: 3px 4px;
+  padding: 2px 4px;
   cursor: pointer;
   text-align: left;
 }
@@ -2983,6 +3079,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 .vertex-candidates__more button {
   margin-left: 6px;
   font: inherit;
+  font-size: var(--font-size-body);
   padding: 1px 6px;
   cursor: pointer;
 }
@@ -3069,7 +3166,8 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 /* Compact buttons for the上部バー (相対ジョグ ◀▶ + presets). */
 .longitude-shift button {
   font: inherit;
-  padding: 3px 8px;
+  font-size: var(--font-size-body);
+  padding: 2px 8px;
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -3194,7 +3292,8 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 /* Compact buttons for the 上部バー (深度 ± + フォーカス). */
 .global-depth button {
   font: inherit;
-  padding: 3px 8px;
+  font-size: var(--font-size-body);
+  padding: 2px 8px;
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -3230,8 +3329,8 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   left: 0;
   top: 0;
   max-width: calc(100vw - 8px);
-  background: #333;
-  color: #fff;
+  background: var(--c-chrome);
+  color: var(--c-chrome-text);
   padding: 2px 6px;
   font-size: 12px;
   white-space: nowrap;
@@ -3372,8 +3471,8 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   left: 50%;
   transform: translate(-50%, -50%);
   pointer-events: auto;
-  background: #fff;
-  border: 1px solid #888;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-strong);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
   padding: 12px;
 }
@@ -3403,7 +3502,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 .draft-discard-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--c-backdrop);
 }
 
 .draft-discard-dialog {
@@ -3411,10 +3510,10 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   z-index: 1;
   min-width: 320px;
   max-width: 90vw;
-  padding: 20px;
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  padding: var(--dialog-pad);
+  background: var(--c-surface);
+  border-radius: var(--radius-dialog);
+  box-shadow: var(--shadow-dialog);
 }
 
 .draft-discard-dialog__title {
@@ -3424,7 +3523,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 
 .draft-discard-dialog__body {
   margin: 0 0 16px;
-  color: #333;
+  color: var(--c-text);
   font-size: 13px;
 }
 
@@ -3483,7 +3582,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   align-self: flex-start;
   font: inherit;
   font-size: var(--font-size-small);
-  padding: 3px 8px;
+  padding: 2px 8px;
   background: var(--c-accent);
   color: #fff;
   border: 1px solid var(--c-accent);
@@ -3560,7 +3659,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 .display-filter__clear-emphasis {
   align-self: flex-start;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-size-body);
   padding: 4px 8px;
   background: var(--c-surface);
   color: var(--c-text);
@@ -3599,7 +3698,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 .impact-confirm-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--c-backdrop);
 }
 .impact-confirm-dialog {
   position: relative;
@@ -3608,10 +3707,10 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   max-width: 92vw;
   max-height: 80vh;
   overflow-y: auto;
-  padding: 16px 20px;
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  padding: var(--dialog-pad);
+  background: var(--c-surface);
+  border-radius: var(--radius-dialog);
+  box-shadow: var(--shadow-dialog);
 }
 .impact-confirm-dialog__title {
   margin: 0 0 10px;
@@ -3622,14 +3721,14 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 }
 .impact-confirm-dialog__heading {
   margin: 0 0 2px;
-  color: #444;
+  color: var(--c-text-muted);
   font-size: var(--font-size-body);
   font-weight: 600;
 }
 .impact-confirm-dialog__lines {
   margin: 0;
-  padding-left: 18px;
-  color: #333;
+  padding-left: 16px;
+  color: var(--c-text);
   font-size: 12px;
 }
 .impact-confirm-dialog__blocked {
@@ -3650,7 +3749,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 }
 .impact-confirm-dialog__note {
   margin: 6px 0 0;
-  color: #555;
+  color: var(--c-text-muted);
   font-size: var(--font-size-small);
   text-align: right;
 }
@@ -3658,16 +3757,23 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 /* 対象の印（`markedFeatures`。増分 7 / 設計書 §D.5・§C.5）。行の升目と、件数の帯。 */
 .ledger__mark {
   flex: 0 0 auto;
-  width: 13px;
-  height: 13px;
-  margin: 0 2px 0 0;
+}
+.ledger__marks > span {
+  white-space: nowrap;
+}
+.ledger__marks button {
+  min-height: var(--control-h-sm);
+  padding: 2px 6px;
+  font-size: var(--font-size-small);
 }
 .ledger__row[data-marked='true'] {
   background: rgba(255, 214, 0, 0.18);
 }
 .ledger__marks {
   display: flex;
-  gap: 6px;
+  /* 窓幅 279px の欄に 1 行では入らない。折り返さないと 3 つ目のボタンが窓の外へ出て、件数が縦に潰れた。 */
+  flex-wrap: wrap;
+  gap: 4px 6px;
   align-items: center;
   padding: 2px 4px;
   color: #664d00;

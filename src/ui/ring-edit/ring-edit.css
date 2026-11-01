@@ -66,8 +66,8 @@
   transform: translate(-50%, -50%);
   z-index: 1000;
   padding: 16px;
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  background: var(--c-surface);
+  border-radius: var(--radius-dialog);
+  box-shadow: var(--shadow-dialog);
   pointer-events: auto;
 }

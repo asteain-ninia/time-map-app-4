@@ -224,9 +224,109 @@ describe('押せる高さ', () => {
   });
 });
 
+describe('灰色の直値（B103）', () => {
+  // 地図の下にある `map/zoom-limit-note.css` は別の担当の範囲なので、まだ代わりの値を持つ（docs/現状.md の B103）。
+  const GREYS = /#(?:555|666|777|444|333|1a1a1a|222|888|999|ddd|eee|ccc|e3e3e3|cfd8dc|fafafa|f7f7f7|5b6573)\b/i;
+
+  it('文字・枠・地の灰色は変数から引く', () => {
+    const offenders = allRules()
+      .filter(({ selector }) => selector !== ':root')
+      .filter(({ path }) => !path.endsWith('zoom-limit-note.css'))
+      .filter(({ body }) => GREYS.test(body))
+      .map(({ path, selector }) => `${path}: ${selector}`);
+    expect(offenders).toEqual([]);
+  });
+
+  it('板の地は白の直値で書かない', () => {
+    const offenders = allRules()
+      .filter(({ selector }) => /-dialog$/.test(selector) || selector === '.draggable-panel')
+      .filter(({ body }) => /background:\s*#/i.test(body))
+      .map(({ path, selector }) => `${path}: ${selector}`);
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe('板の器（N-19 / N-20）', () => {
+  /** 変数の定義そのものと、板でない小さな吹き出し（どこへでも移動の候補）は外す。 */
+  const isBoard = (selector: string): boolean => /-dialog$/.test(selector) || selector === '.draggable-panel';
+
+  it('板の角丸と影は変数から引く（角丸 8px の板と 12px の板を作らない）', () => {
+    const boards = allRules().filter(({ selector }) => isBoard(selector));
+    expect(boards.length).toBeGreaterThan(5);
+    const offenders = boards
+      .filter(({ body }) => decl(body, 'box-shadow') !== undefined || decl(body, 'border-radius') !== undefined)
+      .filter(
+        ({ body }) => decl(body, 'border-radius') !== 'var(--radius-dialog)' || decl(body, 'box-shadow') !== 'var(--shadow-dialog)',
+      )
+      .map(({ path, selector }) => `${path}: ${selector}`);
+    expect(offenders).toEqual([]);
+  });
+
+  it('暗幕は 1 色', () => {
+    const offenders = allRules()
+      .filter(({ selector }) => /-backdrop$/.test(selector))
+      .filter(({ body }) => decl(body, 'background') !== 'var(--c-backdrop)')
+      .map(({ path, selector }) => `${path}: ${selector}`);
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe('余白の体系（N-26）', () => {
+  // 4 / 6 / 8 / 10 / 12 / 16 と、詰まった行の 1 / 2 と、0。
+  const SCALE = new Set(['0', '1', '2', '4', '6', '8', '10', '12', '16']);
+
+  it('余白の宣言は体系の値か変数だけを使う', () => {
+    const offenders: string[] = [];
+    for (const { path, selector, body } of allRules()) {
+      for (const m of body.matchAll(/(?:^|[;\s])((?:padding|margin|gap|row-gap|column-gap)(?:-[a-z]+)?)\s*:\s*([^;]+);/g)) {
+        for (const px of (m[2] ?? '').matchAll(/(-?)(\d+(?:\.\d+)?)px/g)) {
+          if (!SCALE.has(px[2] ?? '')) offenders.push(`${path}: ${selector} ${m[1] ?? ''} ${m[2] ?? ''}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe('升目とラジオ（N-26）', () => {
+  it('土台は 24×24 の当たり判定で、透明な枠と負の余白で見た目を 16×16 にする', () => {
+    const base = ruleBody(":where(input[type='checkbox'], input[type='radio'])");
+    expect(decl(base, 'appearance')).toBe('none');
+    expect(decl(base, 'width')).toBe('24px');
+    expect(decl(base, 'height')).toBe('24px');
+    expect(decl(base, 'border')).toBe('4px solid transparent');
+    expect(decl(base, 'margin')).toBe('-4px -1px -4px -4px');
+  });
+
+  it('一覧の印の升目も土台の寸法のまま', () => {
+    expect(decl(ruleBody('.ledger__mark'), 'width')).toBeUndefined();
+    expect(decl(ruleBody('.ledger__mark'), 'margin')).toBeUndefined();
+  });
+
+  it('部品の規則で升目の寸法を上書きしない', () => {
+    const offenders = allRules()
+      .filter(({ selector }) => /type='(?:checkbox|radio)'/.test(selector) && !selector.includes(':where('))
+      .filter(({ selector }) => !selector.includes(':not('))
+      .filter(({ body }) => decl(body, 'width') !== undefined || decl(body, 'height') !== undefined)
+      .map(({ path, selector }) => `${path}: ${selector}`);
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe('文字の大きさの直値', () => {
   it('補助の文字は変数から引く（11px を直に書かない）', () => {
     const offenders = allCss.filter(({ css }) => /font-size:\s*11px/.test(css)).map(({ path }) => path);
+    expect(offenders).toEqual([]);
+  });
+
+  it('ボタンの文字の大きさを `font: inherit` で親（13px）から受けない', () => {
+    // 部品の規則で `font: inherit` だけを書くと、親の 13px に戻って土台の 12px と混ざる（B103）。`font: inherit` は
+    // 行の高さも親から受けるので残し、大きさを続けて書く。入力欄は別なので、ボタンだけを見る。
+    const offenders = allRules()
+      .filter(({ selector }) => /(^|[\s,>])button\b|__button\b|__item\b|__mode\b|__name\b|__panel-title\b/.test(selector))
+      .filter(({ selector }) => !selector.startsWith(':where'))
+      .filter(({ body }) => decl(body, 'font') === 'inherit' && decl(body, 'font-size') === undefined)
+      .map(({ path, selector }) => `${path}: ${selector}`);
     expect(offenders).toEqual([]);
   });
 

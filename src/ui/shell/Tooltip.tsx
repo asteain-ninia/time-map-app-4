@@ -29,9 +29,10 @@ export interface TooltipProps {
   readonly children: ReactNode;
   /**
    * 置き場所。`above`（既定）はアンカーの上。`beside-menu` はメニューの器の外の横で、縦に並んだ
-   * 項目の文字を隠さない（上に出すと、すぐ上の項目を幅 432px の帯が覆っていた）。
+   * 項目の文字を隠さない（上に出すと、すぐ上の項目を幅 432px の帯が覆っていた）。`beside-rail` は
+   * 道具のレールの外の横で、同じ理由（上に出すと、すぐ上の道具の文字を隠していた）。
    */
-  readonly placement?: 'above' | 'beside-menu';
+  readonly placement?: 'above' | 'beside-menu' | 'beside-rail';
 }
 
 /** 吹き出しと窓の端との余白（px）。 */
@@ -51,8 +52,14 @@ interface Box {
   readonly bottom: number;
 }
 
+/** 横へ出す吹き出しの、アンカーの器の探し方。 */
+const BESIDE_CONTAINER = {
+  'beside-menu': '[role="menu"]',
+  'beside-rail': '[data-testid="toolbar"]',
+} as const;
+
 /**
- * メニューの項目の吹き出しの位置。器の右 → 左 → 器の下の順に、窓に入る最初の場所へ置く。
+ * メニューの項目（と道具のレールの道具）の吹き出しの位置。器の右 → 左 → 器の下の順に、窓に入る最初の場所へ置く。
  * どの場所も器の外なので、項目の文字を隠さない。器の下にも入らないときは窓の中へ寄せる
  * （器に重なるが、窓の外へ切れて読めないよりよい）。
  */
@@ -99,7 +106,7 @@ export function Tooltip(props: TooltipProps): JSX.Element {
     const a = anchor.getBoundingClientRect();
     const b = bubble.getBoundingClientRect();
     const viewportWidth = window.innerWidth;
-    const menu = placement === 'beside-menu' ? anchor.closest('[role="menu"]') : null;
+    const menu = placement === 'above' ? null : anchor.closest(BESIDE_CONTAINER[placement]);
     if (menu !== null) {
       const beside = bubbleBesideMenu(a, menu.getBoundingClientRect(), b, {
         width: viewportWidth,
