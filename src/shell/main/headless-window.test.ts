@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { isHeadlessRun, windowRevealAction, type HeadlessFlags } from './headless-window';
+import { isHeadlessRun, shouldWatchParentProcess, windowRevealAction, type HeadlessFlags } from './headless-window';
 
 const NO_FLAGS: HeadlessFlags = { e2eTest: false, smokeTest: false, e2eOffscreen: false };
 
@@ -52,5 +52,14 @@ describe('windowRevealAction — 旗があるときは show を呼ばない', ()
     for (const flags of cases) {
       expect(windowRevealAction(flags) === 'keep-hidden').toBe(isHeadlessRun(flags));
     }
+  });
+});
+
+describe('shouldWatchParentProcess — 親が消えたら終わる見張りは E2E のときだけ', () => {
+  it('E2E_TEST のときだけ真。本番・スモーク・本番の露出を確かめる起動には生えない', () => {
+    expect(shouldWatchParentProcess({ ...NO_FLAGS, e2eTest: true })).toBe(true);
+    expect(shouldWatchParentProcess(NO_FLAGS)).toBe(false);
+    expect(shouldWatchParentProcess({ ...NO_FLAGS, smokeTest: true })).toBe(false);
+    expect(shouldWatchParentProcess({ ...NO_FLAGS, e2eOffscreen: true })).toBe(false);
   });
 });

@@ -42,6 +42,8 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e',
+  // 残った一時フォルダの片付け（`docs/現状.md` の B122）。
+  globalSetup: './e2e/global-setup.ts',
   // A launch + a few assertions should be quick; cap it so a broken launch fails
   // fast rather than hanging the unattended runner.
   timeout: 60_000,

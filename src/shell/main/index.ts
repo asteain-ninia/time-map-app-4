@@ -26,7 +26,8 @@ import {
   isDevToolsChord,
   type ApplicationMenuApi,
 } from './app-menu';
-import { isHeadlessRun, windowRevealAction, type HeadlessFlags } from './headless-window';
+import { isHeadlessRun, shouldWatchParentProcess, windowRevealAction, type HeadlessFlags } from './headless-window';
+import { isProcessAlive, startParentWatch } from './parent-watch';
 import { isAllowedNavigation, isTrustedDevServerUrl } from './renderer-entry';
 import { CLOSE_DECISION, createCloseGuardHub } from './close-guard';
 import {
@@ -145,6 +146,21 @@ app.setName(APP_DISPLAY_NAME);
 //
 // 不変条件（FR-107 close ガードとの非干渉）: 取得失敗時の app.quit() は **ウィンドウ生成前** に
 // 起きるため、close ガード（createWindow で window に貼る）は一切関与しない。
+// E2E のときだけ、検査の実行が強制終了されたら自分で終わる（隠れた窓が残らない。B122）。
+if (shouldWatchParentProcess(HEADLESS_FLAGS)) {
+  const parentPid = process.ppid;
+  startParentWatch({
+    isParentAlive: () => isProcessAlive(parentPid, (pid, signal) => process.kill(pid, signal)),
+    onParentGone: () => {
+      app.exit(0);
+    },
+    setInterval: (run, ms) => setInterval(run, ms).unref(),
+    clearInterval: (handle) => {
+      clearInterval(handle);
+    },
+  });
+}
+
 const shouldBootApp = acquireSingleInstanceLock({
   app,
   skipLock: E2E_TEST || SMOKE_TEST || E2E_OFFSCREEN,

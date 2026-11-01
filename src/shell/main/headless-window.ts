@@ -47,3 +47,11 @@ export type WindowRevealAction = 'show' | 'keep-hidden';
 export function windowRevealAction(flags: HeadlessFlags): WindowRevealAction {
   return isHeadlessRun(flags) ? 'keep-hidden' : 'show';
 }
+
+/**
+ * 親のプロセスが消えたら自分で終わるか（`./parent-watch`。`docs/現状.md` の B122）。Playwright が駆動する
+ * `E2E_TEST` のときだけ。スモークは自分で終わり、`E2E_OFFSCREEN` は本番の露出を確かめる起動なので生やさない。
+ */
+export function shouldWatchParentProcess(flags: HeadlessFlags): boolean {
+  return flags.e2eTest;
+}
