@@ -6,6 +6,8 @@
 
 import { expect, test, type Page } from '@playwright/test';
 
+import { railFoldOf } from '../src/ui/time/rail-fold';
+
 import {
   addInputLayerBox,
   armAddAreaTool,
@@ -82,11 +84,9 @@ test.describe('見た目の統一（N-24 / N-25 / N-26 / N-28）', () => {
       try {
         await page.setViewportSize(size);
         await expect(page.getByTestId('first-run-guide')).toBeVisible();
-        // 窓を変えた直後は、時刻レールの畳み（ResizeObserver のあとの描き直し）がまだ終わっていない
-        // ことがある。全件を並列で走らせると時々ここで「窓の外」と読んだ。落ち着くまで待つ。
-        await expect
-          .poll(async () => controlProblems((await readControlMetrics(page)).controls))
-          .toEqual([]);
+        // 時刻レールの畳みは窓の resize を受けて変わるので、窓を変えた直後は古い段のことがある。畳みの前は
+        // 操作列の部品が窓の外へ出る（docs/現状.md の B116）。**段を名指しして待つ**。そのあとは待たずに測る。
+        await expect(page.getByTestId('rail-controls')).toHaveAttribute('data-fold', railFoldOf(size.width));
         await expectUnified(page, `${label} ガイド`);
         await page.getByTestId('first-run-guide-close').click();
         await expectUnified(page, `${label} 空の画面`);
