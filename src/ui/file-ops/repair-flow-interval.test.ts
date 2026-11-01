@@ -4,7 +4,7 @@
 //   - 集約地物の開始年を前へ動かした形（B74）／後ろへ動かしてから戻した形: 子の居ない区間だけ
 //     集約地物を無くし、子の並びを揃える。子の居る年の集約地物の記録・子の記録は残る。
 //   - 古いファイルの「子の居ない集約地物」「その年に居ない親を指す子」: 区間の修復が既定。
-//   - 一度も子を持たない集約地物は区間の修復では消さない（未解決のまま、次の方法を選ぶ）。
+//   - 一度も子を持たない集約地物は区間の修復では消さない（板の並びは repair-flow-no-effect.test.ts）。
 //
 // 開き直しは画面の読み込みと同じ関数（serialize → parseManifest → checkConsistency →
 // buildRepairRows → applyChosenRepairs）を通す。
@@ -140,6 +140,7 @@ describe('既定の修復で記録を全部の年から消さない（手直し 
     const inc = checkConsistency(old, CAL).inconsistencies.find((i) => i.detail === 'aggregate-no-children')!;
     expect(repairOptionsFor(inc).map((o) => o.id)).toEqual([
       REPAIR_OPTION.RemoveEmptyAggregateIntervals,
+      REPAIR_OPTION.KeepEmptyAggregate,
       REPAIR_OPTION.DropShapeRoleFeature,
     ]);
     const done = reopenWithDefaults(old);

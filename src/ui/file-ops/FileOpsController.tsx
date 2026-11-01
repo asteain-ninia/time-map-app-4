@@ -96,7 +96,7 @@ import { PreSaveConfirmDialog } from './PreSaveConfirmDialog';
 import { RepairDialog } from './RepairDialog';
 import { BackupListDialog } from './BackupListDialog';
 import { OVERWRITE_STRINGS, REPAIR_STRINGS } from './strings';
-import type { RepairChoices } from './repair-flow';
+import type { RepairChoices, TriedRepair } from './repair-flow';
 import { buildRepairNamer, type RepairNamer } from './repair-names';
 import type { UnsavedChoice } from './unsaved-guard';
 
@@ -264,6 +264,8 @@ interface PendingRepair {
   readonly namer: RepairNamer;
   /** 選択肢を並べるために見るプロジェクト（読み込んだもの。適用と同じ並びにする）。 */
   readonly project: DomainProject;
+  /** 出直しの板で、1 回目に選んだ方法（解消しなかった行の既定に戻さない。B79）。 */
+  readonly tried: readonly TriedRepair[] | undefined;
   readonly resolve: (choices: RepairChoices | null) => void;
 }
 
@@ -836,7 +838,12 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
             },
           });
         }),
-      promptRepair: (report: ConsistencyReport, isRetry: boolean, project: DomainProject) =>
+      promptRepair: (
+        report: ConsistencyReport,
+        isRetry: boolean,
+        project: DomainProject,
+        tried?: readonly TriedRepair[],
+      ) =>
         new Promise<RepairChoices | null>((resolve) => {
           // BUG #2: a retry-open (the first chosen repairs left the project
           // inconsistent, REPAIR_OUTCOME.Unresolved) shows the『前回の修復では解消
@@ -848,6 +855,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
             report,
             namer: buildRepairNamer(project),
             project,
+            tried,
             resolve: (choices) => {
               setPendingRepair(null);
               setRepairUnresolved(false);
@@ -1522,7 +1530,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         <RepairDialog
           report={pendingRepair.report}
           namer={pendingRepair.namer}
-          context={{ project: pendingRepair.project, calendar }}
+          context={{ project: pendingRepair.project, calendar, tried: pendingRepair.tried }}
           onResolve={pendingRepair.resolve}
           unresolved={repairUnresolved}
         />

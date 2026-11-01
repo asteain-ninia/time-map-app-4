@@ -223,7 +223,8 @@ describe('repair retry flow (BUG #2 / BUG #5)', () => {
     expect(promptRepair).toHaveBeenCalledTimes(2);
     // 増分 8D の手直し: 修復ダイアログが名前を引けるよう、修復前のプロジェクトも渡す。
     expect(promptRepair).toHaveBeenNthCalledWith(1, BROKEN_REPORT, false, FAKE_PROJECT);
-    expect(promptRepair).toHaveBeenNthCalledWith(2, REMAINING_REPORT, true, FAKE_PROJECT);
+    // 出直しの板には、1 回目に選んだ方法も渡す（B79）。
+    expect(promptRepair).toHaveBeenNthCalledWith(2, REMAINING_REPORT, true, FAKE_PROJECT, expect.any(Array));
     // The second repair resolved everything ⇒ the project reflects (success path).
     expect(reflectProject).toHaveBeenCalledOnce();
     // 修復してから反映したことを添える（世代から開いた中身なら未保存にするため）。

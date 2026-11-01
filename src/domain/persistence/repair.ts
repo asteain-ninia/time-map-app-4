@@ -120,6 +120,11 @@ export const REPAIR_OPTION = {
    * それが既定だったので、何も触らずに押すと利用者の描いた地物が消えた。こちらを既定にする。
    */
   KeepOverlap: 'keep-overlap',
+  /**
+   * 下位領域の居ない集約地物 → **そのまま残して読み込む**（記録を何も変えない。B79）。一度も子を
+   * 持たない集約地物には区間の修復が効かず、ほかに除外しか無いので、記録を消さずに開く道を残す。
+   */
+  KeepEmptyAggregate: 'keep-empty-aggregate',
   /** リング階層不整合（穴の親不在・包含/交差違反など）→ 当該地物を除外する。 */
   DropRingHierarchyFeature: 'drop-ring-hierarchy-feature',
   /** 末端排他違反 / 錨間オーバーラップ → 当該地物の一方を除外する。 */
@@ -168,6 +173,7 @@ const LABELS: Readonly<Record<RepairOptionId, string>> = {
     PERSISTENCE_MESSAGES.repairMaterializeDirectDomain,
   [REPAIR_OPTION.KeepLeafWithChildren]: PERSISTENCE_MESSAGES.repairKeepLeafWithChildren,
   [REPAIR_OPTION.KeepOverlap]: PERSISTENCE_MESSAGES.repairKeepOverlap,
+  [REPAIR_OPTION.KeepEmptyAggregate]: PERSISTENCE_MESSAGES.repairKeepEmptyAggregate,
   [REPAIR_OPTION.DropRingHierarchyFeature]:
     PERSISTENCE_MESSAGES.repairDropRingHierarchyFeature,
   [REPAIR_OPTION.DropOverlappingFeature]: PERSISTENCE_MESSAGES.repairDropOverlappingFeature,
@@ -244,6 +250,7 @@ export function repairOptionsFor(inc: Inconsistency): RepairOption[] {
       if (inc.detail === 'aggregate-no-children') {
         return [
           opt(REPAIR_OPTION.RemoveEmptyAggregateIntervals),
+          opt(REPAIR_OPTION.KeepEmptyAggregate),
           opt(REPAIR_OPTION.DropShapeRoleFeature),
         ];
       }
@@ -1308,6 +1315,7 @@ function orphanResidentsWithOwnSeries(
 export const KEEP_REPAIR_OPTIONS: ReadonlySet<RepairOptionId> = new Set<RepairOptionId>([
   REPAIR_OPTION.KeepLeafWithChildren,
   REPAIR_OPTION.KeepOverlap,
+  REPAIR_OPTION.KeepEmptyAggregate,
 ]);
 
 /** {@link repairOptionsInContext} の結果: 並べた選択肢と、並びを変えた理由（1 行。無ければ省略）。 */
@@ -1320,31 +1328,99 @@ export interface RepairOptionsInContext {
 export const KEEP_LEAF_WITH_CHILDREN_NOTE = PERSISTENCE_MESSAGES.repairKeepLeafWithChildrenNote;
 
 /**
- * 読み込んだプロジェクトを見て選択肢を並べる（2026-10-04 のガード B。判定は 2026-11-01、B93）。
- * 子を持つ末端の行で、分け残しを作る修復が何も変えられない形なら、既定（先頭）を「そのまま残す」に
- * し、「分け残しを作る」を 2 番目に置く。それ以外は {@link repairOptionsFor} のまま。既定が記録を
- * 消す選択肢になることは無い（除外は常に最後）。純粋。
+ * 読み込んだプロジェクトを見て選択肢を並べる（2026-10-04 のガード B。判定は 2026-11-01、B93。B79）。
+ *
+ * 1. 子を持つ末端の行で、分け残しを作る修復が何も変えられない形なら、既定（先頭）を「そのまま残す」に
+ *    し、「分け残しを作る」を 2 番目に置く。
+ * 2. 年を区切る修復が何も変えられない行では、その方法を出さない（押しても解消できないので）。
+ * 3. `tried`（出直した板で、この行に 1 回目に選んで解消しなかった方法）は先頭から外す。
+ *
+ * それ以外は {@link repairOptionsFor} のまま。**既定が記録を消す選択肢になることは無い**（除外は常に
+ * 最後。3 で残りが除外だけなら、前回の方法を先頭に残して理由の 1 行で選ばせる）。純粋。
  */
 export function repairOptionsInContext(
   inc: Inconsistency,
   project: DomainProject,
   calendar: Calendar,
+  tried: readonly RepairOptionId[] = [],
+): RepairOptionsInContext {
+  const settled = withoutIneffectiveOptions(inc, project, calendar);
+  return tried.length === 0 ? settled : withTriedOptionsMoved(settled, tried);
+}
+
+/** {@link repairOptionsInContext} の 1・2。 */
+function withoutIneffectiveOptions(
+  inc: Inconsistency,
+  project: DomainProject,
+  calendar: Calendar,
 ): RepairOptionsInContext {
   const options = repairOptionsFor(inc);
-  const targetId = inc.featureIds[0];
   if (
-    inc.kind !== INCONSISTENCY.ShapePreservation ||
-    inc.detail !== SHAPE_DETAIL_LEAF_WITH_CHILDREN ||
-    targetId === undefined ||
-    !leafWithChildrenCannotSettle(project, inc, calendar)
+    inc.kind === INCONSISTENCY.ShapePreservation &&
+    inc.detail === SHAPE_DETAIL_LEAF_WITH_CHILDREN &&
+    inc.featureIds[0] !== undefined &&
+    leafWithChildrenCannotSettle(project, inc, calendar)
   ) {
-    return { options };
+    const keep = options.find((o) => o.id === REPAIR_OPTION.KeepLeafWithChildren);
+    if (keep === undefined) return { options };
+    return {
+      options: [keep, ...options.filter((o) => o.id !== REPAIR_OPTION.KeepLeafWithChildren)],
+      note: KEEP_LEAF_WITH_CHILDREN_NOTE,
+    };
   }
-  const keep = options.find((o) => o.id === REPAIR_OPTION.KeepLeafWithChildren);
-  if (keep === undefined) return { options };
+  const effective = options.filter((o) => !intervalRepairHasNoEffect(o.id, inc, project, calendar));
+  return effective.length === options.length
+    ? { options }
+    : { options: effective, note: PERSISTENCE_MESSAGES.repairNoEffectNote };
+}
+
+/**
+ * 年を区切る修復（子の居ない区間だけ無くす・親の居ない区間だけ外す）が何も変えられないか（B79）。
+ * 実際の修復と同じ関数を見るので、「効かない」の判定と修復の結果が食い違わない。親を外すほうは、
+ * 修復が先に自分の系列を起こすので（入力と同じものが返らない）、外す区間があるかで見る。
+ */
+function intervalRepairHasNoEffect(
+  optionId: RepairOptionId,
+  inc: Inconsistency,
+  project: DomainProject,
+  calendar: Calendar,
+): boolean {
+  if (optionId === REPAIR_OPTION.RemoveEmptyAggregateIntervals) {
+    return removeEmptyAggregateIntervals(project, inc.featureIds, calendar) === project;
+  }
+  if (optionId === REPAIR_OPTION.DetachToTopLevelWithin) {
+    return inc.featureIds.every((id) => {
+      const histories = materializeOwnSeries(project.histories, [id], calendar).histories;
+      return absentParentIntervals(histories, id, calendar).size === 0;
+    });
+  }
+  return false;
+}
+
+/** 記録を読み込みから除く方法か（`REPAIR_OPTION.Drop*`）。 */
+function isDropOption(optionId: RepairOptionId): boolean {
+  return optionId.startsWith('drop-');
+}
+
+/**
+ * {@link repairOptionsInContext} の 3。並びは「まだ試していない方法 → 試した方法 → 除く方法」。
+ * 除く方法は試していても最後のまま（既定に繰り上げない）。
+ */
+function withTriedOptionsMoved(
+  settled: RepairOptionsInContext,
+  tried: readonly RepairOptionId[],
+): RepairOptionsInContext {
+  const wasTried = (o: RepairOption): boolean => tried.includes(o.id);
+  if (!settled.options.some(wasTried)) return settled;
+  const fresh = settled.options.filter((o) => !wasTried(o) && !isDropOption(o.id));
+  const retried = settled.options.filter((o) => wasTried(o) && !isDropOption(o.id));
+  const drops = settled.options.filter((o) => isDropOption(o.id));
   return {
-    options: [keep, ...options.filter((o) => o.id !== REPAIR_OPTION.KeepLeafWithChildren)],
-    note: KEEP_LEAF_WITH_CHILDREN_NOTE,
+    options: [...fresh, ...retried, ...drops],
+    note:
+      fresh.length > 0
+        ? PERSISTENCE_MESSAGES.repairTriedMovedNote
+        : PERSISTENCE_MESSAGES.repairTriedOnlyDropNote,
   };
 }
 
@@ -1411,6 +1487,7 @@ export function applyRepair(
       return materializeDirectDomain(project, inc, calendar);
     case REPAIR_OPTION.KeepLeafWithChildren:
     case REPAIR_OPTION.KeepOverlap:
+    case REPAIR_OPTION.KeepEmptyAggregate:
       return project; // 記録を変えない（読み込みの流れが、この行を残したまま開く）。
     case REPAIR_OPTION.DetachToTopLevel:
       return detachToTopLevel(project, inc.featureIds);

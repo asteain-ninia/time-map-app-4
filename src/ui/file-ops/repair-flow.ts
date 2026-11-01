@@ -72,6 +72,24 @@ export interface RepairRow {
 export interface RepairRowContext {
   readonly project: DomainProject;
   readonly calendar: Calendar;
+  /** 出直した板で、1 回目に選んだ方法（解消しなかった行の既定に戻さない。B79）。 */
+  readonly tried?: readonly TriedRepair[] | undefined;
+}
+
+/** 1 回目の板で、ある不整合に選んだ方法。 */
+export interface TriedRepair {
+  readonly inconsistency: Inconsistency;
+  readonly optionId: RepairOptionId;
+}
+
+/** 板の行と選んだ方法から、出直しの板へ渡す {@link TriedRepair} を作る。 */
+export function triedRepairsFrom(rows: readonly RepairRow[], choices: RepairChoices): TriedRepair[] {
+  const out: TriedRepair[] = [];
+  for (const row of rows) {
+    const optionId = choices.get(row.index);
+    if (optionId !== undefined) out.push({ inconsistency: row.inconsistency, optionId });
+  }
+  return out;
 }
 
 /** Build the per-inconsistency rows from a U14 report (option lists from U14). */
@@ -81,7 +99,15 @@ export function buildRepairRows(report: ConsistencyReport, context?: RepairRowCo
       // 種別ごとに U14 から動的に取得 (過剰共有しない, 受け入れ基準 3).
       return { index, inconsistency, options: repairOptionsFor(inconsistency) };
     }
-    const { options, note } = repairOptionsInContext(inconsistency, context.project, context.calendar);
+    const tried = (context.tried ?? [])
+      .filter((t) => sameIssueAnyYear(t.inconsistency, inconsistency))
+      .map((t) => t.optionId);
+    const { options, note } = repairOptionsInContext(
+      inconsistency,
+      context.project,
+      context.calendar,
+      tried,
+    );
     return { index, inconsistency, options, ...(note === undefined ? {} : { note }) };
   });
 }
@@ -341,10 +367,11 @@ export type RepairApplyResult =
     };
 
 /**
- * 「そのまま残す」を選んだ不整合と同じもの（種類・内訳・対象の地物が同じ。年は問わない）か。
- * 子を持つ末端は親（先頭の id）で、重なりは組（id の集合）で見る。
+ * 同じ不整合（種類・内訳・対象の地物が同じ。年は問わない）か。「そのまま残す」を選んだ行の
+ * 持ち越しと、出直しの板の前回の方法の突き合わせが使う。
+ * 形の規則の違反は先頭の id で、重なりなどは組（id の集合）で見る。
  */
-function sameKeptIssue(kept: Inconsistency, inc: Inconsistency): boolean {
+function sameIssueAnyYear(kept: Inconsistency, inc: Inconsistency): boolean {
   if (kept.kind !== inc.kind || kept.detail !== inc.detail) return false;
   if (kept.kind === 'shape-preservation') {
     return kept.featureIds[0] !== undefined && kept.featureIds[0] === inc.featureIds[0];
@@ -403,7 +430,7 @@ export function applyChosenRepairs(
     discardedRecords += applied.discardedRecords;
   }
   const checked: ConsistencyReport = checkConsistency(current, calendar);
-  const stillOpen = checked.inconsistencies.filter((inc) => !kept.some((k) => sameKeptIssue(k, inc)));
+  const stillOpen = checked.inconsistencies.filter((inc) => !kept.some((k) => sameIssueAnyYear(k, inc)));
   const lastRemaining: ConsistencyReport =
     stillOpen.length === checked.inconsistencies.length
       ? checked

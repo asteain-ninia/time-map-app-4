@@ -30,7 +30,7 @@ import {
   type ReflectInfo,
   type SaveOutcome,
 } from './file-commands';
-import type { RepairChoices } from './repair-flow';
+import type { RepairChoices, TriedRepair } from './repair-flow';
 import type { UnsavedChoice } from './unsaved-guard';
 import { zoomRangeOf, type ZoomRangeValue } from './zoom-limit';
 import type { ProjectSettings as UiProjectSettings } from '../state/settings';
@@ -89,6 +89,7 @@ export interface FileOpsHost {
     report: ConsistencyReport,
     isRetry: boolean,
     project: DomainProject,
+    tried?: readonly TriedRepair[],
   ) => Promise<RepairChoices | null>;
   /**
    * Reflect a validated project into the store + adopt its save context (教訓 5.22).

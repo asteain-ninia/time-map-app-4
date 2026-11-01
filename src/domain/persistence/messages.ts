@@ -64,6 +64,8 @@ export const PERSISTENCE_MESSAGES = {
   repairKeepLeafWithChildren:
     'この地物をそのまま残して読み込みます（記録は何も変えません。下位領域と重なって見えるので、あとで整えてください）。',
   repairKeepOverlap: 'そのまま残して読み込みます（重なりは残ります。記録は何も変えません）。',
+  repairKeepEmptyAggregate:
+    'この集約地物をそのまま残して読み込みます（記録は何も変えません。下位領域が無いので地図には描かれません。あとで整えてください）。',
   repairDropRingHierarchyFeature:
     'リング階層（領土と穴の入れ子関係・包含）が壊れている地物を読み込みから除外します。',
   repairDropOverlappingFeature: '重なっている地物の一方を読み込みから除外します。',
@@ -83,4 +85,11 @@ export const PERSISTENCE_MESSAGES = {
   // --- 選択肢の並びを変えた理由の 1 行（repair.ts の repairOptionsInContext） ---
   /** 子を持つ末端の行で、既定を「そのまま残す」にしたときの理由。 */
   repairKeepLeafWithChildrenNote: 'この形は自動では整わないので、そのまま開きます。',
+  /** 年を区切る直し方が何も変えられない行で、その方法を外したときの理由（B79）。 */
+  repairNoEffectNote: '年を区切る直し方はこの形には効かないので、選択肢から外しました。',
+  /** 出直した板で、前回の方法を先頭から外したときの理由（B79）。 */
+  repairTriedMovedNote: '前回選んだ方法では解消できなかったので、別の方法を先頭にしました。',
+  /** 出直した板で、前回の方法のほかに捨てる方法しか無いときの理由（B79）。 */
+  repairTriedOnlyDropNote:
+    '前回選んだ方法では解消できませんでした。ほかには読み込みから除外する方法しかありません。除外するかどうかを選んでください。',
 } as const;
