@@ -19,6 +19,7 @@ import {
   createAggregateFeature,
   createLeafFeature,
   createLineFeature,
+  createPointFeature,
   type Feature,
 } from '../../domain/feature';
 import { asAnchorId, asFeatureId, asRingId, asVertexId, type VertexId } from '../../domain/ids';
@@ -300,6 +301,7 @@ export const SYNTHETIC_MOVE_IDS = {
   stateD: 'syn-move-d',
   neighbour: 'syn-move-neighbour',
   road: 'syn-move-road',
+  town: 'syn-move-town',
   sealed: 'syn-move-sealed',
   sealedState: 'syn-move-sealed-state',
   sealedRoad: 'syn-move-sealed-road',
@@ -321,6 +323,7 @@ const MOVE_TILE_DEG = 20;
  *       └ 州 D（1500 年の連邦の錨にだけ居る）
  *     隣の国（最上位の末端。自分の系列）
  *     街道（線情報。州 A の西南の角を引く）
+ *     町（点情報。州 A の上に描かれ、頂点は共有しない）
  *     封じられた連合（集約）— 州の頂点を全部、外の線情報が引いているので何も動かせない
  */
 export function buildSyntheticAggregateMoveProject(base: DomainProject): DomainProject {
@@ -421,6 +424,8 @@ export function buildSyntheticAggregateMoveProject(base: DomainProject): DomainP
       timePointYear(year),
     );
 
+  const townBody = v('town', -23, LAT + 15);
+  const town = createPointFeature(asFeatureId(ids.town), attrs('町'), color, townBody.id);
   const sealedId = asFeatureId(ids.sealed);
   const sealedState = createLeafFeature(
     asFeatureId(ids.sealedState),
@@ -463,6 +468,7 @@ export function buildSyntheticAggregateMoveProject(base: DomainProject): DomainP
         series: { entries: [entry('n', 1000, [neighbour], [b3, b4, t4, t3])] },
       },
       { featureId: road.id, series: { entries: [entry('r', 1000, [road], [b0, roadEnd])] } },
+      { featureId: town.id, series: { entries: [entry('t', 1000, [town], [townBody])] } },
       {
         featureId: sealedId,
         series: { entries: [entry('s', 1000, [sealed, sealedState], sealedBox)] },

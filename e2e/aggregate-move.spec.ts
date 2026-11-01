@@ -273,6 +273,22 @@ test.describe('［動かす］で集約地物を引く', () => {
     }
   });
 
+  test('州の上に描いた点情報を押して引いても、集約地物は掴まない', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await ready(page, 1000);
+      await armAndSelect(page, INSIDE_B, IDS.federation);
+      const before = await shapes(page);
+      await drag(page, { lon: -23, lat: 15 }, 6, -4);
+      expect(await shapes(page)).toEqual(before);
+      await expect(page.getByTestId(STATUS)).not.toContainText(
+        APP_STRINGS.moveAggregateDone(3, 3),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
   test('隠している下位領域も動く', async () => {
     const { app, page } = await launchApp();
     try {

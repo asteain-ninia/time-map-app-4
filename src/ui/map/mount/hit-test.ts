@@ -609,6 +609,7 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
   // 親までの道筋は深さに関わらず描く（設計書 §D.6）ので、途中の集約地物を選ぶと押した所の当たりは親に
   // なり、深さを下げると下位領域になる。そのままでは選んでいる地物と違うので引けない。
   // 末端地物を選んでいるときは今までどおり（当たった地物が選んでいる地物のときだけ動く）。
+  // 州の上に描いた線情報・点情報を押したときは、見えているものを優先して掴まない（教訓 5.14）。
   const aggregateUnderPress = (hit: HitResult, point: ScreenPoint): HitResult => {
     const s = store.getState();
     const active = s.selection.activeFeature;
@@ -622,6 +623,8 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
     }
     const live = aggregateMoveAt(s.domain, s.currentTime, active);
     if (live === undefined) return hit;
+    const kind = featuresAt(s.domain, s.currentTime).find((f) => f.id === hit.featureId)?.kind;
+    if (kind === FEATURE_KIND.Point || kind === FEATURE_KIND.Line) return hit;
     const leaf = leafAtPoint(s.domain, s.currentTime, surfaceToWorld(point));
     return leaf !== null && live.plan.leaves.some((f) => f.id === leaf)
       ? { kind: HIT_KIND.FeatureBody, featureId: active }
