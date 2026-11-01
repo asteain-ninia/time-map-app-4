@@ -212,6 +212,9 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
    * 出ているあいだ状態行だけが「5000年へ移動しました」と言い、画面の年は 1500 のままだった。
    *
    * 確かめる相手は **ストアの現物**である。頼んだ時刻がストアにあれば動いた、無ければ黙る。
+   *
+   * 印は移動が通ったときにだけ置く（`jumpToTime` の続きに渡す。{@link moveAnnounced}）。先に置くと、
+   * 関門に止められた印が残り、あとで別の経路でその年へ着いたときに文が出て、控えの文まで消費される。
    */
   const pendingMoveRef = useRef<{
     readonly point: TimePoint;
@@ -256,6 +259,17 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
     pending.say(statusMessages?.takeMoveTrailers(moveTrailerKey(pending.point)) ?? '');
   }, [t.currentTime, t.calendar, store, statusMessages]);
 
+  /** 年を動かし、動いたら言う。`andThen` は移動の続き（止められたら走らず、［捨てる］で走る。B112）。 */
+  const moveAnnounced = useCallback(
+    (point: TimePoint, andThen?: () => void): void => {
+      t.jumpToTime(point, undefined, () => {
+        andThen?.();
+        announceMove(point);
+      });
+    },
+    [t, announceMove],
+  );
+
   // --- 時刻を動かす（すべて `useTimeline` の 1 本を通る） ---------------------
   const jumpTo = useCallback(
     // `andThen` は移動の続き。下書きの板で止まったら走らず、［捨てる］で走る（B112）。
@@ -265,10 +279,9 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
         refuse(message);
         return;
       }
-      t.jumpToTime(point, undefined, andThen);
-      announceMove(point);
+      moveAnnounced(point, andThen);
     },
-    [t, refuse, announceMove],
+    [t, refuse, moveAnnounced],
   );
 
   /**
@@ -298,19 +311,19 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
         }
         // 下書きの板で止まったら、動いたとは言わない（B112）。動いたら、端で止まったことと
         // 捨てた下書きを 1 つの文で言う（普通の送りと同じ見張りが言う）。
-        pendingMoveRef.current = {
-          point: edge,
-          say: (trailers) => {
-            refuse(RAIL_STRINGS.stepClampedTo(formatYear(edge.year)) + trailers);
-          },
-        };
-        t.jumpToTime(edge);
+        t.jumpToTime(edge, undefined, () => {
+          pendingMoveRef.current = {
+            point: edge,
+            say: (trailers) => {
+              refuse(RAIL_STRINGS.stepClampedTo(formatYear(edge.year)) + trailers);
+            },
+          };
+        });
         return;
       }
-      t.jumpToTime(next);
-      announceMove(next);
+      moveAnnounced(next);
     },
-    [t, refuse, announceMove],
+    [t, refuse, moveAnnounced],
   );
 
   const jumpYear = useCallback(
@@ -322,11 +335,10 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
         refuse(message);
         return message;
       }
-      t.jumpToTime(point);
-      announceMove(point);
+      moveAnnounced(point);
       return null;
     },
-    [t, refuse, announceMove],
+    [t, refuse, moveAnnounced],
   );
 
   // --- 前後の錨へ（二分探索。対数時間） --------------------------------------
@@ -410,13 +422,12 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
     }
     // 履歴を減らすのも、レールの見える範囲を動かすのも移動の続き ―― 下書きの板で［続ける］と
     // 答えられたら、どちらも起きていない（B112）。
-    t.jumpToTime(previous, undefined, () => {
+    moveAnnounced(previous, () => {
       historyRef.current.pop();
       suppressPushRef.current = true;
       rail.revealTime(previous);
     });
-    announceMove(previous);
-  }, [t, rail, refuse, announceMove]);
+  }, [rail, refuse, moveAnnounced]);
 
   // --- 鍵盤のコマンド（`commands.ts` と `menu.ts` の両方に足してある＝結合点 #10） ---
   //

@@ -304,6 +304,88 @@ describe('年の欄の断りと粒度（2026-09-07 の手直し）', () => {
     expect(s.getState().currentTime.year).toBe(10000);
     expect(messageStore.get()?.text).toBe(`${RAIL_STRINGS.stepClampedTo('10000年')}trailer。`);
   });
+
+  it('関門に止められた端の送りの印は残らない。あとで別の経路で端へ着いても断らず、控えも消費しない', () => {
+    const s = store();
+    const messageStore = new StatusMessageStore();
+    act(() => {
+      s.getState().setCurrentTime(timePointYear(9995), TIME_CHANGE_SOURCE.NumericJump);
+    });
+    render(<Timeline store={s} statusMessages={messageStore} />);
+    messageStore.clear();
+    const remove = s.getState().addTimeChangeGate(() => true);
+    const forward = screen.getByRole('button', { name: RAIL_STRINGS.stepForwardLabel(10, '年') });
+    fireEvent.pointerDown(forward);
+    fireEvent.pointerUp(forward);
+    remove();
+    expect(s.getState().currentTime.year).toBe(9995);
+
+    const key = moveTrailerKey(timePointYear(10000));
+    messageStore.stageMoveTrailer(key, 'trailer');
+    act(() => {
+      s.getState().setCurrentTime(timePointYear(10000), TIME_CHANGE_SOURCE.Playback);
+    });
+    expect(s.getState().currentTime.year).toBe(10000);
+    expect(messageStore.get()).toBeNull();
+    expect(messageStore.takeMoveTrailers(key)).toContain('trailer');
+  });
+
+  it('関門に止められた普通の送りの印も残らない。あとで別の経路でその年へ着いても「移動しました」と言わない', () => {
+    const s = store();
+    const messageStore = new StatusMessageStore();
+    act(() => {
+      s.getState().setCurrentTime(timePointYear(5000), TIME_CHANGE_SOURCE.NumericJump);
+    });
+    render(<Timeline store={s} statusMessages={messageStore} />);
+    messageStore.clear();
+    const remove = s.getState().addTimeChangeGate(() => true);
+    const forward = screen.getByRole('button', { name: RAIL_STRINGS.stepForwardLabel(10, '年') });
+    fireEvent.pointerDown(forward);
+    fireEvent.pointerUp(forward);
+    remove();
+    expect(s.getState().currentTime.year).toBe(5000);
+
+    const key = moveTrailerKey(timePointYear(5010));
+    messageStore.stageMoveTrailer(key, 'trailer');
+    act(() => {
+      s.getState().setCurrentTime(timePointYear(5010), TIME_CHANGE_SOURCE.Playback);
+    });
+    expect(messageStore.get()).toBeNull();
+    expect(messageStore.takeMoveTrailers(key)).toContain('trailer');
+  });
+
+  it('板で預かった端の送りは、［捨てる］にあたる続きで動いたときに端の文を言う。［続ける］なら残らない', () => {
+    const s = store();
+    const messageStore = new StatusMessageStore();
+    act(() => {
+      s.getState().setCurrentTime(timePointYear(9995), TIME_CHANGE_SOURCE.NumericJump);
+    });
+    render(<Timeline store={s} statusMessages={messageStore} />);
+    messageStore.clear();
+    let held: { readonly go: () => void } | null = null;
+    let passing = false;
+    const remove = s.getState().addTimeChangeGate((time, source, andThen) => {
+      if (passing) return false;
+      held = {
+        go: () => {
+          passing = true;
+          s.getState().setCurrentTime(time, source, andThen);
+          passing = false;
+        },
+      };
+      return true;
+    });
+    const forward = screen.getByRole('button', { name: RAIL_STRINGS.stepForwardLabel(10, '年') });
+    fireEvent.pointerDown(forward);
+    fireEvent.pointerUp(forward);
+    expect(messageStore.get()).toBeNull();
+    act(() => {
+      (held as { readonly go: () => void } | null)?.go();
+    });
+    remove();
+    expect(s.getState().currentTime.year).toBe(10000);
+    expect(messageStore.get()?.text).toBe(RAIL_STRINGS.stepClampedTo('10000年'));
+  });
 });
 
 describe('錨レーンの空状態（§B.4 / §H.4）', () => {
