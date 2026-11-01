@@ -18,7 +18,7 @@ import { EDIT_MODE } from '../../state/session';
 import { TIME_CHANGE_SOURCE } from '../../state/store';
 import { POINTER_BUTTON, pointerButtonFromCode } from '../dispatch';
 import { DRAG_CANCEL_CAUSE, type DragCancelCause, type DragYearHost } from '../drag-year';
-import { PointerDispatcher } from '../PointerDispatcher';
+import { PointerDispatcher, type NormalizedPointer } from '../PointerDispatcher';
 import type { ZoomDirection } from '../keyboard-zoom';
 import type { ZoomRange } from '../../../render/camera';
 import {
@@ -38,6 +38,9 @@ import {
 } from '../vertex-candidates';
 import type { FeatureId } from '../../../domain/ids';
 import type { MountStore, MountTransients } from './shared';
+
+/** `PointerEvent.buttons` の左ボタンのビット。 */
+const LEFT_BUTTON_MASK = 1;
 
 /** {@link createMountInput} の入力。 */
 export interface MountInputOptions {
@@ -227,7 +230,42 @@ export function createMountInput(options: MountInputOptions): MountInput {
     BROWSER_CLOCK,
   );
 
+  // **離した知らせを取りこぼした押下は、記録せずに取り消す**（2026-11-01。`docs/ui-redesign/README.md`
+  // の B-3）。別の窓で離すと `pointerup` はこの窓へ届かない。残すと年が動かないままになり、次のクリックは
+  // 「既に押下中」で無視され、その離しが古いドラッグの確定になる。地図の移動も畳むが、記録が無いので言わない。
+  const cancelledFor = (heldEdit: boolean, cause: DragCancelCause): void => {
+    if (!heldEdit) return;
+    options.dragYearHostRef?.current?.cancelled(cause, store.getState().currentTime);
+  };
+  const dropLostPress = (pointerId: number): void => {
+    const heldEdit = dispatcher.holdsEditPressOf(pointerId);
+    dispatcher.pointerCancel(pointerId);
+    candidateGesture?.cancel(pointerId);
+    cancelledFor(heldEdit, DRAG_CANCEL_CAUSE.LostRelease);
+  };
+  /**
+   * マウスは次のボタンを足しても `pointerdown` を出さない（離すまで同じ押下の移動になる）ので、同じ
+   * ポインタの `pointerdown` が来たら前の離しを取りこぼしている。別のポインタ（2 本目の指）は同時押しで、
+   * ディスパッチャの単一ポインタの関門に任せる。
+   */
+  const dropPressBeforeNewPress = (pointerId: number): void => {
+    if (dispatcher.isTracking(pointerId)) dropLostPress(pointerId);
+  };
+  const dropPressIfReleaseLost = (sample: NormalizedPointer): void => {
+    if (dispatcher.lostRelease(sample)) dropLostPress(sample.pointerId);
+  };
+  const dropPressesOnWindowLeft = (): void => {
+    const heldEdit = dispatcher.holdsEditPress;
+    dispatcher.pointerLeave();
+    candidateGesture?.cancel();
+    cancelledFor(heldEdit, DRAG_CANCEL_CAUSE.WindowLeft);
+  };
+  const onDocumentVisibility = (): void => {
+    if (hookTarget.ownerDocument.visibilityState === 'hidden') dropPressesOnWindowLeft();
+  };
+
   const onPointerDown = (e: PointerEvent): void => {
+    dropPressBeforeNewPress(e.pointerId);
     // STALE-FRAME HIT-TEST FIX (bughunt round-2): drain any throttled redraw NOW so
     // the pixels match the live store state BEFORE the hit-test runs. The hit-test
     // reads LIVE store state + the live camera (hitTester.hitTest), but the redraw is
@@ -254,11 +292,16 @@ export function createMountInput(options: MountInputOptions): MountInput {
     // stable background element, but routing capture through the dispatcher keeps
     // the native and overlay-bridge paths under ONE capture discipline (教訓 5.2 /
     // 5.29) rather than each re-implementing setPointerCapture/release.
+    const heldBefore = dispatcher.holdsEditPress;
     dispatcher.pointerDown(PointerDispatcher.normalize(e, x, y), hookTarget);
+    // 掴んだ瞬間の年が記録の年になる。ここから先、再生で年を進めない。
+    if (!heldBefore && dispatcher.holdsEditPress) options.dragYearHostRef?.current?.pressBegan();
   };
   const onPointerMove = (e: PointerEvent): void => {
     const { x, y } = toSurface(e.clientX, e.clientY);
-    dispatcher.pointerMove(PointerDispatcher.normalize(e, x, y, true));
+    const sample = PointerDispatcher.normalize(e, x, y, true);
+    dropPressIfReleaseLost(sample);
+    dispatcher.pointerMove(sample);
     candidateGesture?.move({ x, y }, e.pointerId);
   };
   // FR-111 ステータスバーのカーソル座標 — on the map CELL (see `mapCell` above) so it sees
@@ -330,6 +373,8 @@ export function createMountInput(options: MountInputOptions): MountInput {
   // `passive: false` so `preventDefault` actually suppresses page scroll on wheel.
   hookTarget.addEventListener('wheel', onWheel, { passive: false });
   keyWindow?.addEventListener('keydown', onKeyDown, true);
+  keyWindow?.addEventListener('blur', dropPressesOnWindowLeft);
+  hookTarget.ownerDocument.addEventListener('visibilitychange', onDocumentVisibility);
   // The cursor readout listens on the map CELL (above the input layer AND the tool
   // overlays in the DOM tree), so it survives a tool bridge taking over the surface.
   mapCell.addEventListener('pointermove', onCursorMove);
@@ -356,6 +401,7 @@ export function createMountInput(options: MountInputOptions): MountInput {
       // sequence for it here. Non-left presses (middle/right) go to the dispatcher,
       // which decides pan vs context-menu from its mode×button table.
       if (e.button === 0) return;
+      dropPressBeforeNewPress(e.pointerId);
       // Drain a throttled redraw before the dispatcher hit-tests (a right-button
       // press resolves a context-menu hit), for the same『見える＝掴める』reason as
       // the background pointerdown above (single flush rule).
@@ -379,7 +425,9 @@ export function createMountInput(options: MountInputOptions): MountInput {
       // so an untracked move is a safe no-op. We still forward every move so an
       // in-flight middle-button pan keeps updating.
       const { x, y } = toSurface(clientX, clientY);
-      dispatcher.pointerMove(PointerDispatcher.normalize(e, x, y, true));
+      const sample = PointerDispatcher.normalize(e, x, y, true);
+      dropPressIfReleaseLost(sample);
+      dispatcher.pointerMove(sample);
     },
     pointerUp: (e, clientX, clientY): void => {
       const { x, y } = toSurface(clientX, clientY);
@@ -402,11 +450,13 @@ export function createMountInput(options: MountInputOptions): MountInput {
     // release on every teardown path (the same capture discipline as pointerDown
     // above); subsequent moves/ups flow through the ordinary forwarding.
     beginPan: (e, pressClientX, pressClientY): void => {
+      dropPressBeforeNewPress(e.pointerId);
       transients.flushRedraw();
       const { x, y } = toSurface(pressClientX, pressClientY);
       const n = PointerDispatcher.normalize(e, x, y);
       dispatcher.pointerDown(
-        { ...n, button: POINTER_BUTTON.Middle },
+        // 指で持っているのは左のまま（離したかどうかは左のビットで見る）。
+        { ...n, button: POINTER_BUTTON.Middle, pressMask: LEFT_BUTTON_MASK },
         (e.currentTarget as Element | null) ?? undefined,
       );
     },
@@ -496,6 +546,8 @@ export function createMountInput(options: MountInputOptions): MountInput {
     hookTarget.removeEventListener('contextmenu', onContextMenu);
     hookTarget.removeEventListener('wheel', onWheel);
     keyWindow?.removeEventListener('keydown', onKeyDown, true);
+    keyWindow?.removeEventListener('blur', dropPressesOnWindowLeft);
+    hookTarget.ownerDocument.removeEventListener('visibilitychange', onDocumentVisibility);
     mapCell.removeEventListener('pointermove', onCursorMove);
     mapCell.removeEventListener('pointerleave', onCursorLeave);
     // Stop the cursor readout BEFORE disposing the host: a trailing throttle call

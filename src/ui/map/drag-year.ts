@@ -15,8 +15,12 @@ export const DRAG_CANCEL_CAUSE = {
   Project: 'project',
   /** 取り消しなどで書類の中身が変わった。 */
   Document: 'document',
-  /** 確認の板や作業の板が開いた（覆いの裏で離されても記録しない）。 */
+  /** 確認の板や作業の板、メニューが開いた（覆いの裏で離されても記録しない）。 */
   Board: 'board',
+  /** 窓の焦点が外れた・窓が隠れた（別の窓で離されると、離した知らせは届かない）。 */
+  WindowLeft: 'window-left',
+  /** 離した知らせが届かないまま、ボタンを離したあとの移動か次の押下が来た。 */
+  LostRelease: 'lost-release',
 } as const;
 
 export type DragCancelCause = (typeof DRAG_CANCEL_CAUSE)[keyof typeof DRAG_CANCEL_CAUSE];

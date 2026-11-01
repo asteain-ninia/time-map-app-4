@@ -1098,7 +1098,6 @@ export function App(): JSX.Element {
       announceCarryForwardRef,
       announceEditRejectionRef,
       openEditConflictRef,
-      dragYearHostRef,
       contextMenuOpenerRef,
       focusOwnerRef,
       toolDraftRef,
@@ -1653,6 +1652,12 @@ export function App(): JSX.Element {
           return;
         case DRAG_CANCEL_CAUSE.Board:
           statusMessageStore.notice(APP_STRINGS.dragCancelledByBoard);
+          return;
+        case DRAG_CANCEL_CAUSE.WindowLeft:
+          statusMessageStore.notice(APP_STRINGS.dragCancelledByWindowLeft);
+          return;
+        case DRAG_CANCEL_CAUSE.LostRelease:
+          statusMessageStore.notice(APP_STRINGS.dragCancelledByLostRelease);
           return;
       }
     },

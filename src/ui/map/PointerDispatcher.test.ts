@@ -1002,6 +1002,49 @@ describe('掴んだ押下が生きているか（引いている最中の年の�
   });
 });
 
+describe('離した知らせの取りこぼし（呼び元が畳む。判定だけを見る）', () => {
+  const left = POINTER_BUTTON.Left;
+  const held = (heldButtons?: number): NormalizedPointer => ({
+    ...ptr(1, 5, 5, left),
+    ...(heldButtons === undefined ? {} : { heldButtons }),
+  });
+
+  it('押したボタンが `buttons` に無ければ取りこぼし。分からなければ判定しない', () => {
+    const { dispatcher } = setup(EDIT_MODE.View);
+    dispatcher.pointerDown(ptr(1, 0, 0, left));
+    expect(dispatcher.lostRelease(held(1))).toBe(false);
+    expect(dispatcher.lostRelease(held(3))).toBe(false);
+    expect(dispatcher.lostRelease(held())).toBe(false);
+    expect(dispatcher.lostRelease(held(0))).toBe(true);
+    expect(dispatcher.lostRelease(held(2))).toBe(true);
+  });
+
+  it('中ボタンの押下は中ボタンのビットで見る', () => {
+    const { dispatcher } = setup(EDIT_MODE.View);
+    dispatcher.pointerDown(ptr(1, 0, 0, POINTER_BUTTON.Middle));
+    expect(dispatcher.lostRelease(held(4))).toBe(false);
+    expect(dispatcher.lostRelease(held(1))).toBe(true);
+  });
+
+  it('押下で渡したビット（測量の左ドラッグ）を優先する', () => {
+    const { dispatcher } = setup(EDIT_MODE.View);
+    dispatcher.pointerDown({ ...ptr(1, 0, 0, POINTER_BUTTON.Middle), pressMask: 1 });
+    expect(dispatcher.lostRelease(held(1))).toBe(false);
+    expect(dispatcher.lostRelease(held(4))).toBe(true);
+  });
+
+  it('記録の無いポインタは取りこぼしではない（ただ動いているだけ）', () => {
+    const { dispatcher } = setup(EDIT_MODE.View);
+    expect(dispatcher.lostRelease(held(0))).toBe(false);
+  });
+
+  it('移動の見本にだけ `buttons` が載る（押下と離しの `buttons` は読まない）', () => {
+    const e = { pointerId: 1, button: 0, buttons: 0, shiftKey: false, ctrlKey: false, altKey: false, metaKey: false };
+    expect(PointerDispatcher.normalize(e, 0, 0).heldButtons).toBeUndefined();
+    expect(PointerDispatcher.normalize(e, 0, 0, true).heldButtons).toBe(0);
+  });
+});
+
 describe('地図を動かしている最中のカメラの変更（B114 の検証の指摘）', () => {
   const MODES = [
     ['読むだけ', EDIT_MODE.View, POINTER_BUTTON.Left],

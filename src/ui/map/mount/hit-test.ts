@@ -15,7 +15,6 @@ import {
   type FocusOwner,
 } from '../../shell/focus-owner';
 import { TOOL_ID, toolShowsVertexHandles } from '../../shell/tools';
-import type { DragYearHost } from '../drag-year';
 import { EDIT_MODE, type EditMode, type ToolId } from '../../state/session';
 import { createEditSessionPort } from '../edit-session-adapter';
 import {
@@ -165,8 +164,6 @@ export interface MountHitTestOptions {
       ) => void)
     | null
   >;
-  /** 掴んだことを宿主へ知らせる口（再生を止める。{@link DragYearHost}）。 */
-  readonly dragYearHostRef?: MutableRefObject<DragYearHost | null>;
   /** 右クリックメニューの React 側の開く口。 */
   readonly contextMenuOpenerRef: MutableRefObject<ContextMenuOpener | null>;
   /**
@@ -594,10 +591,7 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
         { context: candidateContextOf(), selection: store.getState().selection },
         () => probeNear(point),
       );
-      const began = editSessionInner.begin(preferred, point, modifiers);
-      // 掴んだ瞬間の年が記録の年になる。ここから先、再生で年を進めない。
-      if (began) options.dragYearHostRef?.current?.pressBegan();
-      return began;
+      return editSessionInner.begin(preferred, point, modifiers);
     },
     update: (point) => editSessionInner.update(point),
     release: (point, wasDrag) => {

@@ -60,6 +60,16 @@ export interface NormalizedPointer {
   /** The button that changed state (down/up). For move it is the held button. */
   readonly button: PointerButton;
   readonly modifiers: PointerModifiers;
+  /**
+   * いま押されているボタンの全部（`PointerEvent.buttons` のビット）。{@link PointerDispatcher.lostRelease}
+   * が読む。省略 ＝ 分からない（DOM を通らない呼び出し）。
+   */
+  readonly heldButtons?: number;
+  /**
+   * この押下を指で持ち続けているボタンのビット（押下のときだけ読む）。省略 ＝ {@link button} のビット。
+   * 測量の左ドラッグは中ボタンとして地図の移動へ渡すので、実際のボタンをここで伝える。
+   */
+  readonly pressMask?: number;
 }
 
 /**
@@ -156,6 +166,8 @@ type ActiveKind =
 interface ActivePointer {
   readonly kind: ActiveKind;
   readonly button: PointerButton;
+  /** この押下を持ち続けているボタンのビット（`PointerEvent.buttons` と比べる）。 */
+  readonly pressMask: number;
   /** Press origin in screen px (the click/drag judgement & pan reference base). */
   readonly originX: number;
   readonly originY: number;
@@ -229,6 +241,28 @@ export class PointerDispatcher {
     return false;
   }
 
+  /** そのポインタの押下が、頂点・辺・面を掴んだものか（{@link holdsEditPress} の 1 本ぶん）。 */
+  holdsEditPressOf(pointerId: number): boolean {
+    const rec = this.active.get(pointerId);
+    return rec !== undefined && rec.kind === DISPATCH_TARGET.SelectEdit && rec.editing;
+  }
+
+  /** そのポインタの押下がまだ生きているか。 */
+  isTracking(pointerId: number): boolean {
+    return this.active.has(pointerId);
+  }
+
+  /**
+   * **離した知らせを取りこぼしたか**（移動の見本で見る）。押下を持つボタンが `buttons` に無いのに
+   * 記録が残っている。別の窓で離すと `pointerup` はこの窓へ届かない。次にどうするかは呼び元が決める
+   * （`mount/input.ts`。{@link pointerCancel} で畳んで、掴んでいたものがあれば言う）。
+   */
+  lostRelease(p: NormalizedPointer): boolean {
+    if (p.heldButtons === undefined) return false;
+    const rec = this.active.get(p.pointerId);
+    return rec !== undefined && (p.heldButtons & rec.pressMask) === 0;
+  }
+
   /** Number of live tracked pointers (受け入れ基準 6 leak-check). */
   get activeCount(): number {
     return this.active.size;
@@ -283,6 +317,7 @@ export class PointerDispatcher {
         this.active.set(p.pointerId, {
           kind: DISPATCH_TARGET.Pan,
           button: p.button,
+          pressMask: p.pressMask ?? pressMaskOf(p.button),
           originX: p.x,
           originY: p.y,
           panRef: { camera, viewport, origin: point },
@@ -324,6 +359,7 @@ export class PointerDispatcher {
         this.active.set(p.pointerId, {
           kind: DISPATCH_TARGET.SelectEdit,
           button: p.button,
+          pressMask: p.pressMask ?? pressMaskOf(p.button),
           originX: p.x,
           originY: p.y,
           panRef: null,
@@ -343,6 +379,7 @@ export class PointerDispatcher {
         this.active.set(p.pointerId, {
           kind: DISPATCH_TARGET.Add,
           button: p.button,
+          pressMask: p.pressMask ?? pressMaskOf(p.button),
           originX: p.x,
           originY: p.y,
           modifiers: p.modifiers,
@@ -648,6 +685,7 @@ export class PointerDispatcher {
       x,
       y,
       button,
+      ...(forMove ? { heldButtons: e.buttons } : {}),
       modifiers: {
         shift: e.shiftKey,
         ctrl: e.ctrlKey,
@@ -677,6 +715,21 @@ function releasePointerCapture(rec: ActivePointer, pointerId: number): void {
     rec.captureTarget.releasePointerCapture(pointerId);
   } catch {
     // Already released / element detached — nothing to clean up.
+  }
+}
+
+/** ボタンを `PointerEvent.buttons` のビットへ写す（{@link buttonFromButtonsMask} の逆）。 */
+function pressMaskOf(button: PointerButton): number {
+  switch (button) {
+    case POINTER_BUTTON.Left:
+      return 1;
+    case POINTER_BUTTON.Right:
+      return 2;
+    case POINTER_BUTTON.Middle:
+      return 4;
+    case POINTER_BUTTON.Other:
+      // 戻る・進むのボタンなど。押下を始めないが、始めても「無い」とは判定しない。
+      return ~0;
   }
 }
 

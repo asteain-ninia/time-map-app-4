@@ -610,3 +610,159 @@ test.describe('引いている最中の年 — 関門が要らない所', () => 
     }
   });
 });
+
+// 離した知らせを取りこぼす（2026-11-01）。OS の窓の切り替えはオフスクリーンの窓では作れないので、
+// 実機で届くはずの合図の列を合成して地図の入力層へ送る。実機の `blur`・`buttons` の値そのものは
+// ここでは確かめていない（`docs/現状.md` の B121）。
+const INPUT_LAYER = 'map-input-layer';
+
+interface SyntheticPointer {
+  readonly x: number;
+  readonly y: number;
+  readonly buttons: number;
+}
+
+/** 地図の入力層へポインタの合図を 1 つ送る（マウスの `pointerId` は 1）。 */
+async function sendPointer(page: Page, type: string, p: SyntheticPointer): Promise<void> {
+  await page.getByTestId(INPUT_LAYER).dispatchEvent(type, {
+    pointerId: 1,
+    pointerType: 'mouse',
+    isPrimary: true,
+    bubbles: true,
+    button: type === 'pointermove' ? -1 : 0,
+    buttons: p.buttons,
+    clientX: p.x,
+    clientY: p.y,
+  });
+}
+
+/** 押して引く（離さない）を合成で行う。 */
+async function pressAndPullSynthetic(page: Page, grip: Grip): Promise<void> {
+  await sendPointer(page, 'pointerdown', { ...grip, buttons: 1 });
+  await sendPointer(page, 'pointermove', { x: grip.x - 15, y: grip.y - 10, buttons: 1 });
+  await sendPointer(page, 'pointermove', { x: grip.x - 30, y: grip.y - 20, buttons: 1 });
+}
+
+/** 取り消しのあと: 年は普通に動き、再生も始まって止まる。 */
+async function expectTimeWorks(page: Page): Promise<void> {
+  await page.keyboard.press('.');
+  await expect(page.getByTestId(YEAR)).toHaveText('1501年');
+  const play = page.getByTestId('timeline-playback').getByRole('button').first();
+  await play.click();
+  await expect(page.getByTestId(YEAR)).not.toHaveText('1501年');
+  await expect(play).toHaveAttribute('aria-pressed', 'true');
+  await play.click();
+  await expect(play).toHaveAttribute('aria-pressed', 'false');
+  await jumpToYear(page, 1500);
+}
+
+for (const tool of TOOLS) {
+  test.describe(`離した知らせの取りこぼし — ${tool}`, () => {
+    test('押したボタンが無い移動: 記録せずに取り消して言う。年と再生は動き、古いドラッグは確定しない', async () => {
+      const { app, page } = await launchApp();
+      try {
+        const { faceId, grip } = await faceReady(page, tool);
+        const before = await committedVertices(page, faceId);
+        const stats = await projectStats(page);
+        const undo = await page.getByTestId('app-can-undo').textContent();
+        await pressAndPullSynthetic(page, grip);
+        await sendPointer(page, 'pointermove', { x: grip.x - 40, y: grip.y - 25, buttons: 0 });
+        await expect(page.getByTestId(STATUS)).toContainText(APP_STRINGS.dragCancelledByLostRelease);
+        await expectTimeWorks(page);
+        // 遅れて届いた離しは、もう何も確定しない。
+        await sendPointer(page, 'pointerup', { x: grip.x - 80, y: grip.y - 50, buttons: 0 });
+        await page.waitForTimeout(200);
+        expect(await committedVertices(page, faceId)).toEqual(before);
+        expect((await projectStats(page)).anchorCount).toBe(stats.anchorCount);
+        await expect(page.getByTestId('app-can-undo')).toHaveText(undo ?? '');
+      } finally {
+        await app.close();
+      }
+    });
+
+    test('離しが無いまま次の押下: 前を取り消して言い、その離しは古いドラッグを確定しない', async () => {
+      const { app, page } = await launchApp();
+      try {
+        const { faceId, grip } = await faceReady(page, tool);
+        const before = await committedVertices(page, faceId);
+        await pressAndPullSynthetic(page, grip);
+        // 同じものを掴み直して、動かさず離す。古いドラッグが確定する形なら、ここで形が変わる。
+        await sendPointer(page, 'pointerdown', { ...grip, buttons: 1 });
+        await expect(page.getByTestId(STATUS)).toContainText(APP_STRINGS.dragCancelledByLostRelease);
+        await sendPointer(page, 'pointerup', { ...grip, buttons: 0 });
+        await page.waitForTimeout(200);
+        expect(await committedVertices(page, faceId)).toEqual(before);
+        // そのあとの押下は新しい押下として効く。
+        await pressAndPull(page, grip);
+        await page.mouse.up();
+        await expect.poll(async () => committedVertices(page, faceId)).not.toEqual(before);
+      } finally {
+        await app.close();
+      }
+    });
+
+    for (const signal of ['blur', 'visibilitychange'] as const) {
+      test(`押したまま ${signal}: 記録せずに取り消して言う。離しても確定しない`, async () => {
+        const { app, page } = await launchApp();
+        try {
+          const { faceId, grip } = await faceReady(page, tool);
+          const before = await committedVertices(page, faceId);
+          await pressAndPull(page, grip);
+          await page.evaluate((s) => {
+            if (s === 'blur') {
+              window.dispatchEvent(new Event('blur'));
+              return;
+            }
+            Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+            document.dispatchEvent(new Event('visibilitychange'));
+            // 覆った読み取りを外すと、元の値が見える。
+            delete (document as unknown as { visibilityState?: unknown }).visibilityState;
+          }, signal);
+          await expect(page.getByTestId(STATUS)).toContainText(APP_STRINGS.dragCancelledByWindowLeft);
+          await page.mouse.up();
+          await expectTimeWorks(page);
+          expect(await committedVertices(page, faceId)).toEqual(before);
+        } finally {
+          await app.close();
+        }
+      });
+    }
+  });
+}
+
+test.describe('離した知らせの取りこぼし — 地図の移動', () => {
+  test('押したボタンが無い移動・焦点が外れたあとは地図が動かず、次の押下は新しい押下として動く。何も言わない', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await faceReady(page, 'edit.move');
+      await page.getByTestId('tool-edit.select').click();
+      const box = (await page.getByTestId(INPUT_LAYER).boundingBox())!;
+      // 面から離れた、何もない所（下の左隅の近く）。
+      const start = { x: box.x + 40, y: box.y + box.height - 40 };
+      const status = await page.getByTestId(STATUS).textContent();
+      await sendPointer(page, 'pointerdown', { ...start, buttons: 1 });
+      await sendPointer(page, 'pointermove', { x: start.x + 30, y: start.y, buttons: 1 });
+      const panned = await liveCamera(page);
+      await sendPointer(page, 'pointermove', { x: start.x + 60, y: start.y, buttons: 0 });
+      await sendPointer(page, 'pointermove', { x: start.x + 90, y: start.y, buttons: 1 });
+      expect(await liveCamera(page)).toEqual(panned);
+
+      await sendPointer(page, 'pointerdown', { ...start, buttons: 1 });
+      await sendPointer(page, 'pointermove', { x: start.x + 30, y: start.y, buttons: 1 });
+      const moved = await liveCamera(page);
+      expect(moved).not.toEqual(panned);
+      await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+      await sendPointer(page, 'pointermove', { x: start.x + 90, y: start.y, buttons: 1 });
+      expect(await liveCamera(page)).toEqual(moved);
+
+      await sendPointer(page, 'pointerdown', { ...start, buttons: 1 });
+      await sendPointer(page, 'pointerdown', { x: start.x + 5, y: start.y, buttons: 1 });
+      await sendPointer(page, 'pointermove', { x: start.x + 45, y: start.y, buttons: 1 });
+      await sendPointer(page, 'pointerup', { x: start.x + 45, y: start.y, buttons: 0 });
+      expect(await liveCamera(page)).not.toEqual(moved);
+      await expect(page.getByTestId(STATUS)).toHaveText(status ?? '');
+    } finally {
+      await app.close();
+    }
+  });
+});
