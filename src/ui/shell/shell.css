@@ -2432,7 +2432,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   width: 100%;
   text-align: left;
   font: inherit;
-  font-size: var(--font-size-body);
+  font-size: var(--font-size-small);
   background: none;
   border: none;
   padding: 2px 4px;
