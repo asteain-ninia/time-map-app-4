@@ -180,7 +180,7 @@ describe('alternation: geometry validity (FR-25)', () => {
           assertStructurallyValid(after);
           // The vertex store is unchanged by reorganization; remaining rings keep
           // their original geometry. Reorganization must not introduce overlaps
-          // (the 教訓5.40 enclave-absorption defect class).
+          // (穴を消すと中の飛び地を親へ昇格させて親と重ねてしまう、飛び地の吸収の欠陥の類).
           const geo = validateGeometry(after, store);
           expect(geo.violations).toEqual([]);
         },
@@ -460,7 +460,7 @@ describe('alternation (seed=2004): rich multi-child geometry under deletion', ()
     );
   });
 
-  it('deleting ANY ring of a rich hierarchy never manufactures a geometry violation (教訓5.40)', () => {
+  it('deleting ANY ring of a rich hierarchy never manufactures a geometry violation', () => {
     fc.assert(
       fc.property(
         richGeoShapeArb().chain(({ shape, store }) =>

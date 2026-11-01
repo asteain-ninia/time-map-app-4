@@ -289,7 +289,7 @@ export function depthsConsistent(shape: Shape): boolean {
 //    save->load identity, and op∘inverse metamorphic laws.
 //
 // The campaign-1/2 geometry generator only ever produces ONE hole per territory
-// and ONE enclave per hole. The documented 教訓5.40 defect class (deletion
+// and ONE enclave per hole. The defect class this guards (deletion
 // MANUFACTURING an overlap by absorbing/lifting siblings) only fires when a ring
 // has MULTIPLE same-parent siblings. This campaign therefore generates trees
 // with up to 3 holes per territory and up to 3 enclaves per hole, all laid out

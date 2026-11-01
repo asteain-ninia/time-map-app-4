@@ -671,7 +671,7 @@ export function validateRingHierarchy(
  *     an independent outer ring without overlapping the parent (this is the
  *     correctness defect the old "promote enclave to top-level" rule produced —
  *     validateGeometry flagged enclaves-overlap on a shape this very unit
- *     reorganized; 教訓5.40). So each enclave is DROPPED (absorbed), and its own
+ *     reorganized). So each enclave is DROPPED (absorbed), and its own
  *     children — which are holes — are lifted UP to the hole's parent territory:
  *     those holes were inside the enclave ⊂ hole ⊂ parent, so they become holes
  *     punched directly in the parent (territory→hole alternation preserved AND
