@@ -5,8 +5,6 @@
 //   穴あけ ― 板なし、確定を押すと居ない面のまま素性入力へ進む。
 //   分ける ― 板なし、確定できる 2 点の分断線が黙って消える。
 
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { expect, test, type Locator, type Page } from '@playwright/test';
@@ -33,6 +31,10 @@ import {
   requestYear,
   squareCorners,
 } from './helpers';
+import { createScratchDirs } from './scratch-dirs';
+
+const scratch = createScratchDirs('gimoza-b112-');
+test.afterEach(scratch.removeAll);
 
 interface ToolCase {
   readonly tool: string;
@@ -420,7 +422,7 @@ for (const c of CASES) {
     });
 
     test('ファイルを開く: 板を出さず、下書きを捨てて状態行で言う。新しい書類は変わらない', async () => {
-      const target = join(mkdtempSync(join(tmpdir(), 'gimoza-b112-')), 'a.gimoza');
+      const target = join(scratch.make(), 'a.gimoza');
       const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });
       try {
         await jumpToYear(page, 1500);
@@ -538,7 +540,7 @@ test.describe('B112 の指摘 — 追加の道具', () => {
   });
 
   test('ファイルを開く: 板を出さず、下書きを捨てて言う', async () => {
-    const target = join(mkdtempSync(join(tmpdir(), 'gimoza-b112-')), 'a.gimoza');
+    const target = join(scratch.make(), 'a.gimoza');
     const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });
     try {
       await jumpToYear(page, 1500);
@@ -728,7 +730,7 @@ test.describe('B112 の指摘 — そのほかの入口', () => {
 
 test.describe('B112 の指摘 — 新規作成', () => {
   test('下書きを持ったまま新規にしても板を出さず、捨てて言う', async () => {
-    const target = join(mkdtempSync(join(tmpdir(), 'gimoza-b112-')), 'a.gimoza');
+    const target = join(scratch.make(), 'a.gimoza');
     const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });
     try {
       await jumpToYear(page, 1500);
@@ -769,7 +771,7 @@ test.describe('B112 の指摘 — ファイルを開く: 点列を持たない�
   }
 
   test('［動かす］で引いている最中に開いても、離したときに新しい書類へ何も確定しない', async () => {
-    const target = join(mkdtempSync(join(tmpdir(), 'gimoza-b112-')), 'a.gimoza');
+    const target = join(scratch.make(), 'a.gimoza');
     const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });
     try {
       const { cx, cy, stats } = await savedFace(page);
@@ -798,7 +800,7 @@ test.describe('B112 の指摘 — ファイルを開く: 点列を持たない�
   });
 
   test('測っている最中に開くと、測量は終わり、板も出ない', async () => {
-    const target = join(mkdtempSync(join(tmpdir(), 'gimoza-b112-')), 'a.gimoza');
+    const target = join(scratch.make(), 'a.gimoza');
     const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });
     try {
       const { cx, cy, stats } = await savedFace(page);
@@ -818,7 +820,7 @@ test.describe('B112 の指摘 — ファイルを開く: 点列を持たない�
 
   for (const tool of ['edit.merge', 'edit.reparent'] as const) {
     test(`${tool} で対象を選んでいる最中に開くと、板を出さず道具が外れる`, async () => {
-      const target = join(mkdtempSync(join(tmpdir(), 'gimoza-b112-')), 'a.gimoza');
+      const target = join(scratch.make(), 'a.gimoza');
       const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });
       try {
         const { cx, cy, stats } = await savedFace(page);

@@ -29,6 +29,24 @@ describe('消してよい一時フォルダの選び方', () => {
     expect(picked).toEqual(['tmap-e2e-userdata-Stale']);
   });
 
+  it('E2E の作業用フォルダは、確かめた頭に mkdtemp の 6 文字が続くものだけを選ぶ', () => {
+    const picked = selectStaleUserData({
+      nowMs: NOW,
+      electronCommandLines: ['electron.exe C:\\t\\gimoza-b112-InUse1\\a.gimoza'],
+      entries: [
+        { name: 'gimoza-b112-AbC123', mtimeMs: OLD },
+        { name: 'gimoza-b112-InUse1', mtimeMs: OLD },
+        { name: 'gimoza-move-tool-Xy9z01', mtimeMs: NOW - 1000 },
+        // 作り手の分からないものは消さない。
+        { name: 'gimoza-b114-probe-Xv1lCE', mtimeMs: OLD },
+        { name: 'gimoza-probe-3x829w', mtimeMs: OLD },
+        { name: 'gimoza-ui-text-tour', mtimeMs: OLD },
+        { name: 'gimoza-b112-', mtimeMs: OLD },
+      ],
+    });
+    expect(picked).toEqual(['gimoza-b112-AbC123']);
+  });
+
   it('ちょうど 1 日は古いと数えない', () => {
     expect(
       selectStaleUserData({

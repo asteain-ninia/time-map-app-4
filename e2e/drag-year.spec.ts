@@ -7,8 +7,6 @@
 //   1501 年に別の形 ― 1501 年の形が書き換わる。
 //   `,` で 1499 年 ― 面が居ないので何も記録されず、ドラッグが消えたことも言わない。
 
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
@@ -34,6 +32,10 @@ import {
   projectStats,
   worldToClient,
 } from './helpers';
+import { createScratchDirs } from './scratch-dirs';
+
+const scratch = createScratchDirs('gimoza-drag-year-');
+test.afterEach(scratch.removeAll);
 
 const STATUS = 'statusbar-result';
 const YEAR = 'timeline-current';
@@ -280,7 +282,7 @@ for (const tool of TOOLS) {
     });
 
     test('ファイルを開く: 記録せずに取り消して言う', async () => {
-      const target = join(mkdtempSync(join(tmpdir(), 'gimoza-drag-year-')), 'a.gimoza');
+      const target = join(scratch.make(), 'a.gimoza');
       const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });
       try {
         const { grip } = await faceReady(page, tool);
@@ -299,7 +301,7 @@ for (const tool of TOOLS) {
     });
 
     test('押したまま読み込みを始める: 反映の前に離しても記録しない。始めた時点で言い、反映のあとも言う', async () => {
-      const target = join(mkdtempSync(join(tmpdir(), 'gimoza-drag-year-')), 'a.gimoza');
+      const target = join(scratch.make(), 'a.gimoza');
       const { app, page } = await launchApp({
         extraEnv: { E2E_SAVE_AS_PATH: target, E2E_OPEN_PATH: target },
       });
@@ -328,7 +330,7 @@ for (const tool of TOOLS) {
     });
 
     test('読み込みに失敗したら、始めた時点の文が残り、あとの読み込みで「閉じた」と言わない', async () => {
-      const dir = mkdtempSync(join(tmpdir(), 'gimoza-drag-year-'));
+      const dir = scratch.make();
       const target = join(dir, 'a.gimoza');
       const { app, page } = await launchApp({
         extraEnv: { E2E_SAVE_AS_PATH: target, E2E_OPEN_PATH: join(dir, 'missing.gimoza') },

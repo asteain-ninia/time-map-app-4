@@ -6,8 +6,6 @@
 // OS のダイアログは差し替えで見る（本物を出すと焦点を奪う）。
 
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
@@ -32,6 +30,7 @@ import {
   projectStats,
   squareCorners,
 } from './helpers';
+import { createScratchDirs } from './scratch-dirs';
 
 const STATUS = 'statusbar-result';
 const CAN_UNDO = 'app-can-undo';
@@ -92,15 +91,9 @@ async function pull(page: Page, grip: { readonly x: number; readonly y: number }
 }
 
 /** 検査ごとの一時フォルダ。検査のあとで消す。 */
-const madeDirs: string[] = [];
-function scratchDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'gimoza-load-gate-'));
-  madeDirs.push(dir);
-  return dir;
-}
-test.afterEach(() => {
-  for (const dir of madeDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+const scratch = createScratchDirs('gimoza-load-gate-');
+const scratchDir = scratch.make;
+test.afterEach(scratch.removeAll);
 
 function savedTarget(): string {
   return join(scratchDir(), 'a.gimoza');

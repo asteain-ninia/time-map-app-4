@@ -5,7 +5,7 @@
 // 実データは全体図 1 px/度のアルラーク国（小さな国の内側は全部が頂点から 8px 以内）。直す前の［動かす］は
 // 押すと候補一覧が出て、国を動かせなかった。正本は開かない（コピーを開く。§5.48）。
 
-import { copyFileSync, existsSync, mkdtempSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -456,6 +456,7 @@ test.describe('裁定 2026-11-01: ［動かす］（実データの全体図）'
       expect(await committedVertices(page, report.id)).toEqual(before);
     } finally {
       await app.close();
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }
   });
 });

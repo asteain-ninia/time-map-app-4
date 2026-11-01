@@ -9,7 +9,7 @@ import { join } from 'node:path';
 
 import {
   PROCESS_LISTING_END,
-  STALE_USERDATA_PREFIX,
+  isE2eTempName,
   parseProcessListing,
   selectStaleUserData,
   staleUserDataSummary,
@@ -44,7 +44,7 @@ function listElectronCommandLines(): readonly string[] | null {
 function readTempEntries(dir: string): readonly TempEntry[] {
   const entries: TempEntry[] = [];
   for (const name of readdirSync(dir)) {
-    if (!name.startsWith(STALE_USERDATA_PREFIX)) continue;
+    if (!isE2eTempName(name)) continue;
     try {
       entries.push({ name, mtimeMs: statSync(join(dir, name)).mtimeMs });
     } catch {

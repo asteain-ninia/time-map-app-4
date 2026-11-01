@@ -12,8 +12,7 @@
 //   端の送り       板のあいだ状態行が「動いた」と言う／捨てたことだけ残って端が読めない。
 //   打っていた場所 ［続ける］で選択だけ動く。
 
-import { copyFileSync, mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { copyFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { expect, test, type Page } from '@playwright/test';
@@ -36,6 +35,10 @@ import {
   railView,
   requestYear,
 } from './helpers';
+import { createScratchDirs } from './scratch-dirs';
+
+const scratch = createScratchDirs('gimoza-b112-');
+test.afterEach(scratch.removeAll);
 
 const RING = 'edit.ring';
 const ASK = 'ring-edit-draft-discard-confirm';
@@ -384,7 +387,7 @@ test.describe('B112 の入口 — 新規作成で手放したとは言わない�
 
   for (const c of TOOLS) {
     test(`${c.tool}: 新規にすると面は消えるが、捨てたことだけを言う`, async () => {
-      const target = join(mkdtempSync(join(tmpdir(), 'gimoza-b112-')), 'a.gimoza');
+      const target = join(scratch.make(), 'a.gimoza');
       const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });
       try {
         await draftOnNewFace(page, c);
@@ -397,7 +400,7 @@ test.describe('B112 の入口 — 新規作成で手放したとは言わない�
     });
 
     test(`${c.tool}: 面の無い書類を開いても、捨てたことだけを言う`, async () => {
-      const dir = mkdtempSync(join(tmpdir(), 'gimoza-b112-'));
+      const dir = scratch.make();
       const target = join(dir, 'a.gimoza');
       const empty = join(dir, 'empty.gimoza');
       const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });

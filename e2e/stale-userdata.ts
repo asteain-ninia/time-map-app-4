@@ -1,16 +1,42 @@
-// 打ち切りや強制終了で `%TEMP%` に残った `tmap-e2e-userdata-*` を、実行の始めに片付ける判断
-// （`docs/現状.md` の B122 の直し）。`e2e/helpers.ts` の `process.on('exit')` は、強制終了では走らず、
-// Electron が掴んでいる間は消し残す。
+// 打ち切りや強制終了で `%TEMP%` に残った `tmap-e2e-userdata-*` と、E2E が作る `gimoza-*` の作業用フォルダを、
+// 実行の始めに片付ける判断（`docs/現状.md` の B122 の直し）。`e2e/helpers.ts` の `process.on('exit')` は、
+// 強制終了では走らず、Electron が掴んでいる間は消し残す。
 //
 // 判断は純粋な関数に置く（`src/test-support/e2e-stale-userdata.test.ts`）。消してよいのは次を全部満たす
 // ものだけ。迷ったら消さない。
-//   - 名前が `tmap-e2e-userdata-` で始まる
+//   - 名前が `tmap-e2e-userdata-` で始まるか、E2E のコードが作ると確かめた頭（{@link E2E_SCRATCH_PREFIXES}）に
+//     `mkdtempSync` の 6 文字が続くだけのもの（作り手の分からない `gimoza-b114-probe-Xv1lCE` などは消さない）
 //   - 更新が 1 日より古い
 //   - 動いている Electron のコマンドラインに名前が出てこない
 //   - プロセスの一覧を読めた
 
 export const STALE_USERDATA_PREFIX = 'tmap-e2e-userdata-';
 export const STALE_USERDATA_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** E2E のコードが `mkdtempSync` で作る作業用フォルダの頭（実データの写しや保存の検査の置き場）。 */
+export const E2E_SCRATCH_PREFIXES: readonly string[] = [
+  'gimoza-b102-',
+  'gimoza-b105-',
+  'gimoza-b112-',
+  'gimoza-b114-',
+  'gimoza-b90-',
+  'gimoza-basemap-seam-',
+  'gimoza-drag-conflict-',
+  'gimoza-drag-year-',
+  'gimoza-load-gate-',
+  'gimoza-move-tool-',
+  'gimoza-ring-conflict-',
+];
+
+const MKDTEMP_SUFFIX = /^[A-Za-z0-9]{6}$/;
+
+/** E2E が残したものとして片付けの対象にしてよい名前か。 */
+export function isE2eTempName(name: string): boolean {
+  if (name.startsWith(STALE_USERDATA_PREFIX)) return true;
+  return E2E_SCRATCH_PREFIXES.some(
+    (prefix) => name.startsWith(prefix) && MKDTEMP_SUFFIX.test(name.slice(prefix.length)),
+  );
+}
 
 export interface TempEntry {
   readonly name: string;
@@ -32,7 +58,7 @@ export function selectStaleUserData(input: {
   return entries
     .filter(
       (entry) =>
-        entry.name.startsWith(STALE_USERDATA_PREFIX) &&
+        isE2eTempName(entry.name) &&
         nowMs - entry.mtimeMs > STALE_USERDATA_AGE_MS &&
         !running.some((line) => line.includes(entry.name.toLowerCase())),
     )
@@ -59,6 +85,6 @@ export function parseProcessListing(stdout: string): readonly string[] | null {
 /** 片付けの結果の 1 行。 */
 export function staleUserDataSummary(removed: number, listingReadable: boolean): string {
   return listingReadable
-    ? `[e2e] 古い一時フォルダ（${STALE_USERDATA_PREFIX}*）を ${String(removed)} 個消しました。`
-    : `[e2e] プロセスの一覧を読めなかったので、古い一時フォルダ（${STALE_USERDATA_PREFIX}*）を消しません。`;
+    ? `[e2e] 古い一時フォルダ（${STALE_USERDATA_PREFIX}* と E2E の作業用）を ${String(removed)} 個消しました。`
+    : `[e2e] プロセスの一覧を読めなかったので、古い一時フォルダ（${STALE_USERDATA_PREFIX}* と E2E の作業用）を消しません。`;
 }

@@ -4,7 +4,7 @@
 // 押すと頂点が選ばれ候補一覧が出て、国は選ばれず、続けて［動かす］を構えても対象が無かった。
 // 正本は開かない（コピーを開く。§5.48）。
 
-import { copyFileSync, existsSync, mkdtempSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -93,6 +93,7 @@ test.describe('B114: 「選択」の道具は地物だけを選ぶ（実デー�
       await expect(page.getByTestId('option-bar-target')).toContainText('アルラーク国');
     } finally {
       await app.close();
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }
   });
 });
