@@ -185,6 +185,7 @@ import {
   type CommandId,
   type CommandRefusal,
 } from './shell/commands';
+import { alwaysDrawnIds } from './map/always-drawn';
 import { featureByIdAt, featuresAt, verticesAt, leafShapeAt, leafAtPoint } from './live-lookup';
 import {
   buildVertexDeletePlan,
@@ -2940,6 +2941,23 @@ export function App(): JSX.Element {
   // U26 INTEGRATION (教訓 5.7 / 5.2): the knife-tool controller is mounted in the
   // SAME shell overlay, bound to the SAME store, so selecting 編集モード→ナイフ starts
   // a session, map-input clicks drive対象面選択 / 分断線入力 / 閉線確定, the继承先 modal +
+  /**
+   * **分ける・穴あけ・輪郭の取得の関門**（B118）。表示条件を通っているか、隠れていても描いている
+   * （§D.6 規則 1 の「選んでいるものと親までの道筋」）なら掴める。［動かす］はもともと描いているものを
+   * 掴むので、見えているのに道具だけ断る形が残っていた。見えていない面は今までどおり掴めない。
+   *
+   * {@link isToolTargetVisible} を変えないのは、視点の側が「隠れている」ことを読んで言い分けるため。
+   */
+  const isToolTargetDrawn = useCallback(
+    (featureId: FeatureId): boolean => {
+      if (isToolTargetVisible(featureId)) return true;
+      const s = store.getState();
+      const { forest } = resolveDisplayFor(s.domain, s.currentTime, s.displayControl);
+      return alwaysDrawnIds(forest, s.activeFeature).has(featureId);
+    },
+    [store, isToolTargetVisible],
+  );
+
   // U23 form re-use drive継承先選択 / 非継承側プロパティ入力, and 確定 hands a split
   // EditProposal to the U13 seam. Like the add seam, U13 is a deterministic stub;
   // the live binding (`CreateLiveKnifeBinding` in ./consistency-binding.ts) is the
@@ -2958,9 +2976,9 @@ export function App(): JSX.Element {
         // W3-A: 対象取得は生リーフ (`leafAtPoint`) + FR-113 可視ゲート — merge / reparent /
         // ring-edit / drill と同じ単一の取得規約 (HB3-16). 対象面強調も同じ live-lookup
         // (`leafShapeAt`) 由来なので、取得と強調が食い違わない。
-        isToolTargetVisible,
+        isToolTargetDrawn,
       ),
-    [store, sharedMint, isToolTargetVisible],
+    [store, sharedMint, isToolTargetDrawn],
   );
 
   // U30 INTEGRATION (教訓 5.7 / 5.2): the merge-tool bootstrap mirrors the knife one —
@@ -3008,9 +3026,9 @@ export function App(): JSX.Element {
         () => store.getState().domain,
         () => store.getState().currentTime,
         sharedMint,
-        isToolTargetVisible,
+        isToolTargetDrawn,
       ),
-    [store, sharedMint, isToolTargetVisible],
+    [store, sharedMint, isToolTargetDrawn],
   );
 
   // U27 INTEGRATION (教訓 5.7 / 5.2): the drill (穴あけによる新地物生成) bootstrap mirrors
@@ -3026,9 +3044,9 @@ export function App(): JSX.Element {
         () => store.getState().domain,
         () => store.getState().currentTime,
         sharedMint,
-        isToolTargetVisible,
+        isToolTargetDrawn,
       ),
-    [store, sharedMint, isToolTargetVisible],
+    [store, sharedMint, isToolTargetDrawn],
   );
 
   // ADD COMMIT (教訓 5.11 / U12): record the committed add as one history unit and
