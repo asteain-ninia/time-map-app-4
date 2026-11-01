@@ -37,7 +37,8 @@ import type {
   ProjectSettingKey,
   ProjectSettings,
 } from '../state/settings';
-import { isPaletteSettingKey } from '../state/settings';
+import { appSettingDirtiesProject, isPaletteSettingKey } from '../state/settings';
+import { APP_STRINGS } from '../shell/strings';
 
 import { changedAppKeys, changedProjectKeys } from './diff';
 import {
@@ -70,6 +71,11 @@ export interface SettingsStorePort {
    * validated (min < max) pair removes that intermediate inversion.
    */
   setProjectTimelineRangeYears(minYear: number, maxYear: number): void;
+  /**
+   * 読み込みの間なら真を返し、状態行で理由を言う（U16）。**確定の前に見る**: 店の書き込みは読み込みの間は
+   * 黙って断るので、見ないまま進むと、書けていないのに板が閉じて入力が消える。省略時は断らない。
+   */
+  refuseEditDuringLoad?(): boolean;
   /** U16: write ONE app setting (app-level persistence, notifies, 教訓 5.35). */
   updateAppSetting<K extends AppSettingKey>(key: K, value: AppSettings[K]): void;
   /**
@@ -180,6 +186,14 @@ export function useSettingsDialog(
     [],
   );
 
+  /** 書類を変える鍵が変わっていて、読み込みの間なら真。書類を変えない鍵だけなら断らない（店と同じ）。 */
+  const refusedDuringLoad = (
+    changedProject: readonly ProjectSettingKey[],
+    changedApp: readonly AppSettingKey[],
+  ): boolean =>
+    (changedProject.length > 0 || changedApp.some(appSettingDirtiesProject)) &&
+    store.refuseEditDuringLoad?.() === true;
+
   const confirm = useCallback((): ConfirmResult => {
     // K-6「読むだけ」の関門（教訓 5.13）。ここが**実際に書き込む唯一の場所**なので、
     // 見た目（disabled）とは別にもう一度権限を確かめる。プロジェクト設定は 1 件も
@@ -200,6 +214,15 @@ export function useSettingsDialog(
         };
       }
       const changedAppOnly = changedAppKeys(store.appSettings, appOnlyV.value);
+      if (refusedDuringLoad([], changedAppOnly)) {
+        setErrors(LOAD_REFUSAL_ERRORS);
+        return {
+          status: CONFIRM_STATUS.Rejected,
+          changedProject: [],
+          changedApp: [],
+          errors: LOAD_REFUSAL_ERRORS,
+        };
+      }
       for (const key of changedAppOnly) {
         writeApp(store, appOnlyV.value, key);
       }
@@ -230,6 +253,15 @@ export function useSettingsDialog(
     // the SAME committed source the draft initialised from (教訓 5.24).
     const changedProject = changedProjectKeys(store.projectSettings, projectV.value);
     const changedApp = changedAppKeys(store.appSettings, appV.value);
+    if (refusedDuringLoad(changedProject, changedApp)) {
+      setErrors(LOAD_REFUSAL_ERRORS);
+      return {
+        status: CONFIRM_STATUS.Rejected,
+        changedProject: [],
+        changedApp: [],
+        errors: LOAD_REFUSAL_ERRORS,
+      };
+    }
 
     // finding bughunt2: the two timeline bounds MUST be written in ONE transaction.
     // Writing them one-by-one (the generic per-key path) derives the timeline state
@@ -291,6 +323,11 @@ export function useSettingsDialog(
 
   return { projectDraft, appDraft, errors, setProjectField, setAppField, confirm, cancel };
 }
+
+/** 読み込みの間に確定を断ったときに板へ出す理由。 */
+const LOAD_REFUSAL_ERRORS: readonly SettingsValidationError[] = [
+  { field: 'documentLoad', message: APP_STRINGS.editRefusedDuringLoad },
+];
 
 /** The two timeline-range bound keys, written atomically (finding bughunt2). */
 function isTimelineKey(key: ProjectSettingKey): boolean {

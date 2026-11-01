@@ -516,6 +516,15 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
   const enteringYear = anchorTime().year;
   const drillSave = drill.save;
   const drillCancel = drill.cancel;
+  // 読み込みの間は素性の欄に留まる（確定の手続きで断ると、やめるしかない断りの画面へ移り、囲んだ頂点と
+  // 名前を捨てることになる。追加の道具の `runSave` と同じ）。
+  const runDrillSave = useCallback(
+    (properties: Parameters<typeof drillSave>[0]) => {
+      if (store.getState().refuseEditDuringLoad()) return;
+      drillSave(properties);
+    },
+    [drillSave, store],
+  );
   // 素性欄の打ちかけ（増分 8B の手直し）。欄が変わったときだけ知らせてもらう。
   const onPropertiesDirtyChange = useCallback((dirty: boolean) => {
     propertiesDirtyRef.current = dirty;
@@ -538,7 +547,7 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
       onChooseParent: NOOP_CHOOSE_PARENT,
       // **戻り値は丸ごと渡す**（種別ラベルを黙って落とさない ―― 過去に同じ取りこぼしが
       // あった）。`AddProperties` は `drill.save` が受ける形と同じ 3 つ組である。
-      onSave: drillSave,
+      onSave: runDrillSave,
       onCancel: drillCancel,
       onDirtyChange: onPropertiesDirtyChange,
     };
@@ -547,7 +556,7 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
     return () => {
       if (addDraft.get() === mine) addDraft.set(null);
     };
-  }, [addDraft, drillEntering, enteringYear, drillSave, drillCancel, onPropertiesDirtyChange]);
+  }, [addDraft, drillEntering, enteringYear, runDrillSave, drillCancel, onPropertiesDirtyChange]);
 
   // **モーダルは別に報せる**（増分 5 の手直し A4）。新地物の素性入力は、Escape / Tab しか
   // 自分では受けない本物のモーダルである。

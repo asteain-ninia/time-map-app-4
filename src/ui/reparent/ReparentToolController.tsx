@@ -237,6 +237,7 @@ export function ReparentToolController<S>(
   }, [store]);
 
   const reparent = useReparentTool<S>({
+    refuseCommit: () => store.getState().refuseEditDuringLoad(),
     resolveFeatures,
     anchorTime,
     startProcess,

@@ -1579,9 +1579,10 @@ export function App(): JSX.Element {
       command: Command<DomainRoot>,
       preference: NextTargetPreference | undefined,
       anchorTime: TimePoint,
-    ): void => {
+    ): boolean => {
       // 全部の確定がここを通る。履歴を進める前に断る（店で断ると履歴だけ進む。B120）。
-      if (store.getState().refuseEditDuringLoad()) return;
+      // **記録したかを返す**: 呼び手は真のときだけ成功の文を出し、板や印を片付ける。
+      if (store.getState().refuseEditDuringLoad()) return false;
       const wrapped = maybeComposeAutoRecolor(command, historyRef.current.state, anchorTime);
       const step = historyExecute(historyRef.current, wrapped);
       historyRef.current = step.history;
@@ -1597,6 +1598,7 @@ export function App(): JSX.Element {
       // （開発ガイド §5.51 / 現状.md B7）。対象の名前を運ぶのは別の作業なので、
       // 名前を知っている呼び出し元（削除）だけが直後に自分の文言で上書きする。
       announceResult(RESULT_STRINGS.done(commandLabelJa(wrapped.label)));
+      return true;
     },
     [store, refreshUndoRedoEnabled, announceResult],
   );
@@ -2061,7 +2063,7 @@ export function App(): JSX.Element {
       if (command === null) return;
       // fr100: the 全錨 delete has no single anchor time (it sweeps every anchor);
       // the recolor evaluates at the CURRENT view time.
-      recordCommand(command, undefined, store.getState().currentTime);
+      if (!recordCommand(command, undefined, store.getState().currentTime)) return;
       // recordCommand は「地物の削除しました」まで出すので、名前を知っているここが
       // 「〈名前〉を削除しました」で上書きする（削除だけは何を消したかを名指しする）。
       statusMessageStore.success(RESULT_STRINGS.deleted(name));
@@ -2417,12 +2419,14 @@ export function App(): JSX.Element {
       const s = store.getState();
       const at = toYearPoint(s.currentTime);
       const built = createBulkKindLabelCommandForRoot(s.domain, targets, kindLabel, at);
-      setBulkKindTargets(null);
       if (built === null) {
+        setBulkKindTargets(null);
         statusMessageStore.failure(PROPERTY_STRINGS.bulkKindNoChange);
         return;
       }
-      recordCommand(built.command, undefined, at);
+      // 断られたら（読み込みの間）板と印を残す。読み込みに失敗したらそのまま確定し直せる。
+      if (!recordCommand(built.command, undefined, at)) return;
+      setBulkKindTargets(null);
       // **確定したら印を捨てる**（設計書 §D.5「捨てる契機: 確定」/ 設計適合 指摘 4）。
       // 残すと、続けて所属の道具を構えた瞬間に同じ地物がまた対象になる（所属変更・結合と
       // 同じ寿命にそろえる）。
@@ -4022,11 +4026,13 @@ export function App(): JSX.Element {
         // fr100: an interval edit's commit time is the BOUNDARY the op moved (new
         // start / new end / the deleted anchor's own start) — NOT the view time; the
         // recolor time is resolved by the single helper beside the command builder.
-        recordCommand(
+        const recorded = recordCommand(
           result.command,
           { featureId: intent.featureId },
           anchorIntervalRecolorTime(root, intent, store.getState().currentTime),
         );
+        // 断られた（読み込みの間）。投げれば、欄は理由を出して入力を残し、呼び手は成功の文を出さない。
+        if (!recorded) throw new Error(APP_STRINGS.editRefusedDuringLoad);
         // **黙らない**（手直し 3 回目 / 締め D）: 存続期間の欄の編集で、下位領域を全て失った
         // 集約地物が一緒に終わったら、名前と年を状態行に出す。「この年に終わったことにする」は
         // 呼び手（`commitEndHere`）が同じことを自分の文に含めるので、ここでは言わない。

@@ -27,7 +27,8 @@ import {
   useBackupSettings,
   validateBackupDraft,
 } from './useBackupSettings';
-import { BACKUP_SETTINGS_STRINGS } from './strings';
+import { APP_STRINGS } from '../shell/strings';
+import { BACKUP_SETTINGS_STRINGS, PROJECT_FIELD_STRINGS } from './strings';
 import { type SettingsStorePort, useSettingsDialog, CONFIRM_STATUS } from './useSettingsDialog';
 import { REJECTION } from './validation';
 
@@ -1008,5 +1009,45 @@ describe('useBackupSettings — 応答が、待っている間に打った値を
     // 15 は残る（まだ書いていない変更として dirty）。
     expect(result.current.intervalDraft).toBe('15');
     expect(result.current.dirty).toBe(true);
+  });
+});
+
+describe('読み込みの間の確定（B120）', () => {
+  const during = () => {
+    const store = makeStore();
+    store.getState().setDocumentLoadActive(true);
+    const refused = vi.fn();
+    store.getState().addLoadRefusalListener(refused);
+    const port: SettingsStorePort = {
+      ...portFrom(store),
+      refuseEditDuringLoad: store.getState().refuseEditDuringLoad,
+    };
+    return { store, port, refused };
+  };
+
+  it('書類を変える鍵を変えて保存しても、板を閉じず、入力を残し、理由を言い、何も書かない', () => {
+    const { store, port, refused } = during();
+    const onClose = vi.fn();
+    render(<SettingsDialog store={port} canEdit onClose={onClose} />);
+    const before = store.getState().projectSettings;
+    const field = screen.getByLabelText(PROJECT_FIELD_STRINGS.timelineMaxYear);
+    fireEvent.change(field, { target: { value: '9000' } });
+    fireEvent.click(screen.getByTestId('settings-save'));
+    expect(screen.getByTestId('settings-error-documentLoad')).toHaveTextContent(
+      APP_STRINGS.editRefusedDuringLoad,
+    );
+    expect(onClose).not.toHaveBeenCalled();
+    expect(field).toHaveValue(9000);
+    expect(store.getState().projectSettings).toBe(before);
+    expect(refused).toHaveBeenCalledTimes(1);
+  });
+
+  it('何も変えていなければ断らずに閉じる', async () => {
+    const { port, refused } = during();
+    const onClose = vi.fn();
+    render(<SettingsDialog store={port} canEdit onClose={onClose} />);
+    fireEvent.click(screen.getByTestId('settings-save'));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(refused).not.toHaveBeenCalled();
   });
 });

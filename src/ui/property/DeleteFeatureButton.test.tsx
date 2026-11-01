@@ -150,3 +150,25 @@ describe('DeleteFeatureButton 確認ダイアログ — 共有モーダル a11y 
     expect(document.activeElement).toBe(cancelBtn);
   });
 });
+
+describe('読み込みの間（B120）', () => {
+  it('断るなら確認の板を出さない。断らなくなれば出す', async () => {
+    const onConfirm = vi.fn();
+    const refuseOpen = vi.fn(() => true);
+    render(
+      <DeleteFeatureButton
+        target={ACTIVE}
+        onConfirm={onConfirm}
+        refuseOpen={refuseOpen}
+        resolveImpact={() => {
+          throw new Error('断るなら影響を数えない');
+        }}
+      />,
+    );
+    const button = screen.getByRole('button', { name: DELETE_BUTTON_LABEL });
+    await userEvent.click(button);
+    expect(refuseOpen).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+});

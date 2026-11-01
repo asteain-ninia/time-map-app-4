@@ -1210,6 +1210,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
                 <DeleteFeatureButton
                   target={{ kind: DELETE_TARGET_KIND.ActiveFeature, featureId: feature.id }}
                   onConfirm={onDeleteFeature}
+                  refuseOpen={() => store.getState().refuseEditDuringLoad()}
                   editable={editable && pendingDiscard === null}
                   featureName={feature.attributes.name}
                   {...(props.resolveDeleteImpact === undefined

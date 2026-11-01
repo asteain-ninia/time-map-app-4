@@ -207,6 +207,7 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
   }, [store]);
 
   const merge = useMergeTool<S>({
+    refuseCommit: () => store.getState().refuseEditDuringLoad(),
     resolveFeatures,
     resolveStore,
     anchorTime,

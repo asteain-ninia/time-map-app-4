@@ -746,9 +746,12 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   );
   const runKnifeSave = useCallback(
     (properties: Parameters<typeof knifeSave>[0]) => {
+      // 読み込みの間は素性の欄に留まる（確定の手続きで断ると、やめるしかない断りの画面へ移り、切り線と
+      // 名前を捨てることになる。追加の道具の `runSave` と同じ）。
+      if (store.getState().refuseEditDuringLoad()) return;
       knifeSaveDeferred.run(() => knifeSave(properties));
     },
-    [knifeSaveDeferred, knifeSave],
+    [knifeSaveDeferred, knifeSave, store],
   );
   const saveBusy = knifeSaveDeferred.busy;
   // **素性欄の打ちかけ**（増分 8B の手直し / 反証 2-2）。欄が変わったときだけ知らせて

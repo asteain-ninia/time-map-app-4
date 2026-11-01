@@ -76,6 +76,11 @@ export interface DeleteFeatureButtonProps {
    * Ctrl+Z / Delete が背後へ抜ける（Fable #1）。
    */
   readonly onModalChange?: (open: boolean) => void;
+  /**
+   * 板を出す前に断るなら真を返す（読み込みの間。理由は呼ばれた側が状態行へ出す）。板を出してから読み込みが
+   * 終わると、新しい書類へ効く。
+   */
+  readonly refuseOpen?: () => boolean;
 }
 
 /** Read the feature id out of a feature-bearing target, else null (None → null). */
@@ -104,13 +109,15 @@ export function DeleteFeatureButton(props: DeleteFeatureButtonProps): JSX.Elemen
   const [impact, setImpact] = useState<DeleteImpactView | null>(null);
 
   const resolveImpact = props.resolveImpact;
+  const refuseOpen = props.refuseOpen;
   const openConfirm = useCallback(() => {
     // 権限が無いときは確認ダイアログすら開かない（disabled 属性だけに頼ると、
     // 属性を外せる経路が 1 つでもあれば削除が通ってしまう）。
     if (featureId === null || !editable) return;
+    if (refuseOpen?.() === true) return;
     setImpact(resolveImpact === undefined ? null : resolveImpact());
     setConfirming(true);
-  }, [featureId, editable, resolveImpact]);
+  }, [featureId, editable, resolveImpact, refuseOpen]);
 
   const cancel = useCallback(() => {
     // 教訓 5.22 / FR-85: cancel does nothing — no command, no history.

@@ -80,6 +80,8 @@ export interface UseReparentToolOptions<S> {
   /** Live-lookup of the vertices at the anchor time → enables the shape-gap check (基準 5). */
   readonly resolveStore?: ResolveVertexStore;
   readonly startProcess: StartAffiliationProcess<S>;
+  /** 確定を局面ごと断るなら真を返す（読み込みの間。理由は呼ばれた側が状態行へ出す）。 */
+  readonly refuseCommit?: () => boolean;
   /** Host commit handler (教訓 5.11): swap state + re-resolve selection to the target. */
   readonly onCommitted?: (result: ProcessResult<S>, snapshot: AffiliationSnapshot) => void;
   /** Host conflict handler (FR-62): open the conflict-resolution flow. */
@@ -236,7 +238,7 @@ function rejectionMessage(rejection: AffiliationRejected): string {
 }
 
 export function useReparentTool<S>(options: UseReparentToolOptions<S>): UseReparentTool {
-  const { resolveFeatures, anchorTime, startProcess } = options;
+  const { resolveFeatures, anchorTime, startProcess, refuseCommit } = options;
   const resolveStore = options.resolveStore;
   const onCommitted = options.onCommitted;
   const onConflicts = options.onConflicts;
@@ -411,6 +413,9 @@ export function useReparentTool<S>(options: UseReparentToolOptions<S>): UseRepar
       decision: ParentDecision,
       commitOptions?: { readonly directDomainNameOverride?: string },
     ): boolean => {
+      // 読み込みの間は局面を変えない（確定の手続きで断ると断りの画面へ移り、対象を捨てることになる）。
+      // 偽を返すので板も閉じない。
+      if (refuseCommit?.() === true) return false;
       const features = resolveFeatures();
       const at = anchorTime();
       // **確定の直前にもう 1 度洗い直す**（増分 7 の中身 2b）。印を付けてから年を動かす・
@@ -453,7 +458,7 @@ export function useReparentTool<S>(options: UseReparentToolOptions<S>): UseRepar
           return false;
       }
     },
-    [resolveFeatures, anchorTime, resolveStore, startProcess, onCommitted, onConflicts, reset],
+    [resolveFeatures, anchorTime, resolveStore, startProcess, onCommitted, onConflicts, reset, refuseCommit],
   );
 
   /**

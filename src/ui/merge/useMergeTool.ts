@@ -70,6 +70,8 @@ export interface UseMergeToolOptions<S> {
   readonly anchorTime: ResolveAnchorTime;
   readonly ids: MergeIdPorts;
   readonly startProcess: StartMergeProcess<S>;
+  /** 確定を局面ごと断るなら真を返す（読み込みの間。理由は呼ばれた側が状態行へ出す）。 */
+  readonly refuseCommit?: () => boolean;
   /** Host commit handler (教訓 5.11): swap state + re-resolve selection to the result. */
   readonly onCommitted?: (result: ProcessResult<S>, snapshot: MergeSnapshot) => void;
   /** Host conflict handler (FR-62): open the conflict-resolution flow. */
@@ -188,7 +190,7 @@ function rejectionMessage(rejection: MergeRejected): string {
 }
 
 export function useMergeTool<S>(options: UseMergeToolOptions<S>): UseMergeTool {
-  const { resolveFeatures, resolveStore, anchorTime, ids, startProcess } = options;
+  const { resolveFeatures, resolveStore, anchorTime, ids, startProcess, refuseCommit } = options;
   const onCommitted = options.onCommitted;
   const onConflicts = options.onConflicts;
   const onCancelled = options.onCancelled;
@@ -331,6 +333,8 @@ export function useMergeTool<S>(options: UseMergeToolOptions<S>): UseMergeTool {
   // 平坦化 / 混在) is decided inside buildMergeProposal. Re-validates again (教訓 5.26).
   const confirmWith = useCallback(
     (parentDecision: ParentDecision, propertyDecision: PropertyDecision): void => {
+      // 読み込みの間は局面を変えない（確定の手続きで断ると断りの画面へ移り、選んだ対象を捨てることになる）。
+      if (refuseCommit?.() === true) return;
       const features = resolveFeatures();
       const at = anchorTime();
       const verdict = validateMergePreconditions(features, targetIds, at.year);
@@ -382,6 +386,7 @@ export function useMergeTool<S>(options: UseMergeToolOptions<S>): UseMergeTool {
       onCommitted,
       onConflicts,
       reset,
+      refuseCommit,
     ],
   );
 
