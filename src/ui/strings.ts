@@ -25,6 +25,8 @@ export const RING_BREAK_PHRASE_TEXT = {
   holeLeavesOuter: '穴が外周からはみ出す',
   enclaveLeavesHole: '穴の中の飛び地が穴からはみ出す',
   other: '穴・飛び地が外周や別の穴・飛び地と交わる',
+  selfCross: '輪郭が自分自身と交わる',
+  zeroLengthEdge: '輪郭に長さ 0 の辺ができる',
 } as const;
 
 /** その時刻に見つからない地物を呼ぶ語（「名前のない地物」。`consistency-binding.ts`）。 */

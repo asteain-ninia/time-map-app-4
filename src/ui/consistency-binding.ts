@@ -110,7 +110,7 @@ import {
   createdAtOf,
   participantDisplayName,
 } from './conflict/participant-name';
-import { ringHierarchyViolationsIntroduced } from './ring-hierarchy-gate';
+import { ringHierarchyViolationsIntroduced, ringShapeViolationsIntroduced } from './ring-hierarchy-gate';
 import { CONSISTENCY_BINDING_TEXT } from './strings';
 
 /** The live domain truth root the binding threads through every port (U14). */
@@ -966,8 +966,13 @@ function editPorts(
     // 増分 8E（G-14）: 穴・飛び地の形を **この編集で新しく壊した** なら確定させない。
     // 頂点のドラッグ・辺からの頂点の追加・頂点の削除・面の移動は、どれもこの束ねを通る。
     // 以前は空を返していたので、穴の頂点を隣の穴の中へ入れた形がそのまま記録された。
-    checkConstraints: (resultState) =>
-      ringHierarchyViolationsIntroduced(access.getRoot(), resultState),
+    // 1 本の輪の自己交差と長さ 0 の辺も同じ（FR-32。集約地物の移動で、不動の頂点を挟んで動く頂点が
+    // 向こう側へ越えると自己交差する）。どちらも新しくできたものだけを止める。輪そのものの傷を先に
+    // 言う（輪が交わっていれば、穴がはみ出すのはその結果なので、直すべきことは輪のほう）。
+    checkConstraints: (resultState) => [
+      ...ringShapeViolationsIntroduced(access.getRoot(), resultState),
+      ...ringHierarchyViolationsIntroduced(access.getRoot(), resultState),
+    ],
     detectSpatial: () => [],
     applyResolution: () => undefined,
     // **確定経路ごとに違う label**（増分 2）。素性欄の保存は「その年の錨を上書き」と

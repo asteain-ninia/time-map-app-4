@@ -7,7 +7,9 @@ import {
   SEGMENT_RELATION,
   pointInPolygon,
   ringHasZeroLengthEdge,
+  ringSelfCrossingCount,
   ringSelfIntersects,
+  ringZeroLengthEdgeCount,
   ringStrictlyContains,
   segmentsIntersect,
 } from './predicates';
@@ -182,5 +184,34 @@ describe('ringStrictlyContains (boundary-robust nesting — U06 holes / U26 re-p
     ];
     const straddling = rect(10, 9, 6, 2); // crosses the notch mouth into empty space
     expect(ringStrictlyContains(notched, straddling)).toBe(false);
+  });
+});
+
+describe('傷の数（確定の関門が前後を比べるのに使う）', () => {
+  it('交差の数: 単純な輪は 0、蝶結びは 1、交差が 2 か所なら 2', () => {
+    expect(ringSelfCrossingCount(rect(0, 0, 10, 10))).toBe(0);
+    expect(ringSelfCrossingCount([c(0, 0), c(10, 10), c(10, 0), c(0, 10)])).toBe(1);
+    // ジグザグの帯を折り返して 2 か所で交わる。
+    expect(
+      ringSelfCrossingCount([c(0, 0), c(4, 2), c(8, 0), c(8, 4), c(4, 2.5), c(4.5, -1), c(3.5, -1), c(0, 4)]),
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  it('数と真偽は同じ判定（0 より大きいことと真が一致する）', () => {
+    const rings = [
+      rect(0, 0, 10, 10),
+      [c(0, 0), c(10, 10), c(10, 0), c(0, 10)],
+      [c(0, 0), c(10, 0), c(5, 10)],
+      [c(0, 0), c(10, 0), c(10, 10), c(10, 0), c(0, 10)],
+    ];
+    for (const ring of rings) {
+      expect(ringSelfCrossingCount(ring) > 0).toBe(ringSelfIntersects(ring));
+      expect(ringZeroLengthEdgeCount(ring) > 0).toBe(ringHasZeroLengthEdge(ring));
+    }
+  });
+
+  it('長さ 0 の辺の数: 閉じる辺も数える', () => {
+    expect(ringZeroLengthEdgeCount(rect(0, 0, 10, 10))).toBe(0);
+    expect(ringZeroLengthEdgeCount([c(0, 0), c(0, 0), c(10, 0), c(5, 10), c(5, 10), c(0, 0)])).toBe(3);
   });
 });

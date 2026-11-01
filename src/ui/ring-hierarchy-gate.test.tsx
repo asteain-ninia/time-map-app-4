@@ -17,6 +17,8 @@ import { createVertex, createVertexStore, type Vertex } from '../domain/vertex';
 
 import { RING_VIOLATION, type RingViolation } from '../domain/ring-hierarchy';
 
+import { RING_BREAK_PHRASE_TEXT } from './strings';
+
 import {
   EDIT_OPERATION,
   RING_BREAK,
@@ -26,6 +28,7 @@ import {
   isNewViolation,
   looseViolationKey,
   ringHierarchyViolationsIntroduced,
+  ringShapeViolationsIntroduced,
   tagRejectionOperation,
   violationKey,
 } from './ring-hierarchy-gate';
@@ -406,5 +409,148 @@ describe('editRejectionMessage', () => {
         message: '一般の文',
       }),
     ).toBe('一般の文');
+  });
+});
+
+describe('ringShapeViolationsIntroduced（FR-32。1 本の輪の自己交差と長さ 0 の辺）', () => {
+  /** 外周 1 本だけの面。輪が 1 本でも見る。 */
+  function faceOf(pts: readonly Pt[], ringId = 'r-o', prefix = 'o'): { feature: LeafFeature; vertices: Vertex[] } {
+    const vertices = ringVertices(prefix, pts);
+    const shape = createShape([createTerritoryRing(asRingId(ringId), vertices.map((v) => v.id))]);
+    return {
+      feature: createLeafFeature(asFeatureId('f-face'), createBasicAttributes('面', 0, 0), color, shape),
+      vertices,
+    };
+  }
+  const SQUARE: readonly Pt[] = [
+    [0, 0],
+    [10, 0],
+    [10, 10],
+    [0, 10],
+  ];
+  const rejected = (detail: unknown) => ({
+    status: PROCESS_STATUS.Rejected,
+    kind: REJECTION_KIND.ConstraintViolation,
+    message: '一般の文',
+    detail,
+  });
+  /** 右下の角を左上の向こうへ引いた蝶結び。 */
+  const BOWTIE: readonly Pt[] = [
+    [0, 0],
+    [10, 10],
+    [10, 0],
+    [0, 10],
+  ];
+
+  it('外周 1 本の面で、新しくできた自己交差を止め、面と年を言う', () => {
+    const found = ringShapeViolationsIntroduced(project(faceOf(SQUARE)), project(faceOf(BOWTIE), 'a-2'));
+    expect(found).toHaveLength(1);
+    expect(found[0]!.breaks).toBe(RING_BREAK.SelfCross);
+    expect(found[0]!.featureId).toBe(asFeatureId('f-face'));
+    expect(editRejectionMessage(rejected(found))).toBe(
+      RING_HIERARCHY_GATE_STRINGS.refusedMove(
+        RING_BREAK_PHRASE_TEXT.selfCross,
+        RING_HIERARCHY_GATE_STRINGS.where('面', '1200年'),
+      ),
+    );
+  });
+
+  it('新しくできた長さ 0 の辺を止める（自己交差より先に言う）', () => {
+    const collapsed: readonly Pt[] = [
+      [0, 0],
+      [10, 0],
+      [10, 0],
+      [0, 10],
+    ];
+    const found = ringShapeViolationsIntroduced(project(faceOf(SQUARE)), project(faceOf(collapsed), 'a-2'));
+    expect(found).toHaveLength(1);
+    expect(found[0]!.breaks).toBe(RING_BREAK.ZeroLengthEdge);
+    expect(editRejectionMessage(rejected(found))).toContain(RING_BREAK_PHRASE_TEXT.zeroLengthEdge);
+  });
+
+  it('形が変わらなければ、もとから交差していても止めない（名前の変更など）', () => {
+    const renamed = faceOf(BOWTIE);
+    const after = {
+      ...renamed,
+      feature: { ...renamed.feature, attributes: createBasicAttributes('改名', 0, 0) },
+    };
+    expect(ringShapeViolationsIntroduced(project(faceOf(BOWTIE)), project(after, 'a-2'))).toEqual([]);
+  });
+
+  it('もとから交差している輪の、交差の増えない移動は止めない', () => {
+    const moved: readonly Pt[] = [
+      [0, 0],
+      [10, 10],
+      [12, 1],
+      [0, 10],
+    ];
+    expect(ringShapeViolationsIntroduced(project(faceOf(BOWTIE)), project(faceOf(moved), 'a-2'))).toEqual([]);
+  });
+
+  it('もとから交差している輪でも、交差が増えれば止める（§5.97 の 1 ビットの例外にしない）', () => {
+    const flag: readonly Pt[] = [
+      [0, 0],
+      [4, 4],
+      [8, 0],
+      [12, 0],
+      [12, 8],
+      [8, 8],
+      [4, 4.5],
+      [0, 8],
+      [2, 5],
+      [-2, 3],
+    ];
+    const worse: readonly Pt[] = [
+      [0, 0],
+      [4, 4],
+      [8, 0],
+      [12, 0],
+      [12, 8],
+      [8, 8],
+      [4, 3],
+      [0, 8],
+      [2, 5],
+      [-2, 3],
+    ];
+    const found = ringShapeViolationsIntroduced(project(faceOf(flag)), project(faceOf(worse), 'a-2'));
+    expect(found.map((v) => v.breaks)).toEqual([RING_BREAK.SelfCross]);
+  });
+
+  it('重なりの解決で輪の id が変わっても、もとからある交差では止めない。増えれば止める', () => {
+    const rebuilt = faceOf(BOWTIE, 'r-new', 'n');
+    expect(ringShapeViolationsIntroduced(project(faceOf(BOWTIE)), project(rebuilt, 'a-2'))).toEqual([]);
+    const fromClean = ringShapeViolationsIntroduced(project(faceOf(SQUARE)), project(rebuilt, 'a-2'));
+    expect(fromClean.map((v) => v.breaks)).toEqual([RING_BREAK.SelfCross]);
+  });
+
+  it('経度 180 度の継ぎ目にかかる輪は、畳んだ座標のせいで交差と読まない。継ぎ目の向こうの本物の交差は止める', () => {
+    const across: readonly Pt[] = [
+      [170, 0],
+      [-170, 0],
+      [-170, 10],
+      [170, 10],
+    ];
+    const moved: readonly Pt[] = [
+      [170, 0],
+      [-170, 0],
+      [-169, 11],
+      [170, 10],
+    ];
+    expect(ringShapeViolationsIntroduced(project(faceOf(across)), project(faceOf(moved), 'a-2'))).toEqual([]);
+    const crossing: readonly Pt[] = [
+      [170, 0],
+      [-170, 10],
+      [-170, 0],
+      [170, 10],
+    ];
+    const found = ringShapeViolationsIntroduced(project(faceOf(across)), project(faceOf(crossing), 'a-2'));
+    expect(found.map((v) => v.breaks)).toEqual([RING_BREAK.SelfCross]);
+  });
+
+  it('頂点の削除の文でも理由を言う', () => {
+    const found = ringShapeViolationsIntroduced(project(faceOf(SQUARE)), project(faceOf(BOWTIE), 'a-2'));
+    const tagged = tagRejectionOperation(rejected(found), EDIT_OPERATION.DeleteVertex, 1);
+    expect(editRejectionMessage(tagged)).toContain(RING_BREAK_PHRASE_TEXT.selfCross);
+    expect(editRejectionMessage(tagged)).toContain('この頂点を消すと');
   });
 });

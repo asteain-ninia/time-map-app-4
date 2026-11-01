@@ -15,6 +15,7 @@ import {
   createDeleteFeatureCommandForRoot,
   createAnchorIntervalCommandForRoot,
   anchorIntervalRecolorTime,
+  setConsistencyProcessGate,
   type DomainRoot,
 } from './consistency-binding';
 import {
@@ -47,6 +48,15 @@ import type { AddSnapshot } from '../domain/add/index';
 import type { UiSettings } from '../domain/persistence/index';
 import { DEFAULT_APP_SETTINGS, DEFAULT_PROJECT_SETTINGS } from './state/settings';
 import { aggregate, anchorOf, fid, leafTile } from '../domain/deletion/fixtures';
+import { buildSnapshot } from '../domain/editing/edit-flow';
+import { moveVertexSet, planAggregateMove } from '../domain/editing/move';
+import { createAnchor } from '../domain/anchor';
+import { createAnchorEntry } from '../domain/anchor-series';
+import { createAggregateFeature } from '../domain/feature';
+import { asAnchorId } from '../domain/ids';
+import { createVertexStore, withVertexCoordinate } from '../domain/vertex';
+import { RING_BREAK_PHRASE_TEXT } from './strings';
+import { editRejectionMessage } from './ring-hierarchy-gate';
 
 const color = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
 
@@ -2584,5 +2594,159 @@ describe('createLiveShapeEditBinding — 形の変わった面の、増えた重
     expect(result.status).toBe(PROCESS_STATUS.ConflictsPending);
     if (result.status !== PROCESS_STATUS.ConflictsPending) return;
     expect(result.conflicts.map((x) => x.id)).toEqual(['f-b__f-d']);
+  });
+});
+
+describe('形を変える確定の関門（FR-32。自己交差と長さ 0 の辺）', () => {
+  const YEAR = timePointYear(1000);
+  const access = (root: DomainRoot) => ({
+    getRoot: () => root,
+    nextVertexId: () => asVertexId('unused-v'),
+    nextRingId: () => asRingId('unused-r'),
+  });
+  const body = (id: string, lon: number, lat: number): Vertex =>
+    createVertex(asVertexId(id), { lon, lat });
+  const leafOf = (id: string, vertices: readonly string[], parentId?: string): LeafFeature =>
+    createLeafFeature(
+      asFeatureId(id),
+      createBasicAttributes(`${id}の名`, 0, 9999),
+      color,
+      createShape([createTerritoryRing(asRingId(`r-${id}`), vertices.map((v) => asVertexId(v)))]),
+      parentId === undefined ? {} : { parentId: asFeatureId(parentId) },
+    );
+  const historyOf = (features: readonly (LeafFeature | ReturnType<typeof createAggregateFeature>)[], vertices: readonly Vertex[]) => ({
+    featureId: features[0]!.id,
+    series: {
+      entries: [
+        createAnchorEntry(
+          createAnchor(asAnchorId(`a-${String(features[0]!.id)}`), {
+            features,
+            vertices: createVertexStore(vertices),
+          }),
+          YEAR,
+        ),
+      ],
+    },
+  });
+
+  /** 前の担当が再現した形: 州の輪郭の凹みの点 s を隣の国と共有する。s は動かないので、引くと輪が裏返る。 */
+  function notchedCountry(): { root: DomainRoot; country: ReturnType<typeof createAggregateFeature> } {
+    const country = createAggregateFeature(asFeatureId('国'), createBasicAttributes('国', 0, 9999), color, [
+      asFeatureId('州'),
+    ]);
+    const state = leafOf('州', ['a', 'c', 'd', 's', 'e'], '国');
+    const neighbour = leafOf('隣', ['s', 'n1', 'n2']);
+    return {
+      country,
+      root: {
+        ...emptyProject(),
+        histories: [
+          historyOf(
+            [country, state],
+            [body('a', 0, 0), body('c', 10, 0), body('d', 10, 10), body('e', 0, 10), body('s', 2, 5)],
+          ),
+          historyOf([neighbour], [body('s', 2, 5), body('n1', -5, 4), body('n2', -5, 6)]),
+        ],
+      },
+    };
+  }
+
+  it.each([
+    ['国ごと', createLiveShapeEditBinding],
+    ['素性の保存と同じ束ね', createLiveEditBinding],
+  ] as const)('集約地物を不動の頂点の向こうへ引くと断り、理由を言う（%s）', (_name, create) => {
+    const { root, country } = notchedCountry();
+    const plan = planAggregateMove(country.id, featuresAt(root, YEAR));
+    const moved = moveVertexSet(plan.movingVertexIds, verticesAt(root, YEAR), { dLon: 20, dLat: 0 });
+    const result = create(access(root)).startProcess(
+      createEditProposal(country.id, YEAR, buildSnapshot({ feature: country, vertices: moved })),
+    );
+    expect(result.status).toBe(PROCESS_STATUS.Rejected);
+    if (result.status !== PROCESS_STATUS.Rejected) return;
+    expect(result.kind).toBe(REJECTION_KIND.ConstraintViolation);
+    expect(editRejectionMessage(result)).toContain(RING_BREAK_PHRASE_TEXT.selfCross);
+  });
+
+  it('動かせる量なら通る', () => {
+    const { root, country } = notchedCountry();
+    const plan = planAggregateMove(country.id, featuresAt(root, YEAR));
+    const moved = moveVertexSet(plan.movingVertexIds, verticesAt(root, YEAR), { dLon: 1, dLat: 0 });
+    const result = createLiveShapeEditBinding(access(root)).startProcess(
+      createEditProposal(country.id, YEAR, buildSnapshot({ feature: country, vertices: moved })),
+    );
+    expect(result.status).toBe(PROCESS_STATUS.Committed);
+  });
+
+  it('共有頂点を動かして隣の面の輪郭が交わるなら、提案の地物でない隣の名前で断る', () => {
+    const left = leafOf('左', ['p', 'q', 's']);
+    const right = leafOf('右', ['s', 'x', 'y', 'z']);
+    const root: DomainRoot = {
+      ...emptyProject(),
+      histories: [
+        historyOf([left], [body('p', -10, 0), body('q', 0, 0), body('s', 0, 10)]),
+        historyOf([right], [body('s', 0, 10), body('x', 1, 0), body('y', 10, 0), body('z', 10, 10)]),
+      ],
+    };
+    const dragged = withVertexCoordinate(body('s', 0, 10), { lon: 5, lat: -5 });
+    const result = createLiveShapeEditBinding(access(root)).startProcess(
+      createEditProposal(left.id, YEAR, buildSnapshot({ feature: left, vertices: [dragged] })),
+    );
+    expect(result.status).toBe(PROCESS_STATUS.Rejected);
+    if (result.status !== PROCESS_STATUS.Rejected) return;
+    expect(editRejectionMessage(result)).toContain('「右の名」');
+  });
+
+  it('頂点を隣の頂点の真上へ動かすと、長さ 0 の辺で断る', () => {
+    const face = leafOf('面', ['a', 'b', 'c', 'd']);
+    const root: DomainRoot = {
+      ...emptyProject(),
+      histories: [historyOf([face], [body('a', 0, 0), body('b', 10, 0), body('c', 10, 10), body('d', 0, 10)])],
+    };
+    const dragged = withVertexCoordinate(body('b', 10, 0), { lon: 10, lat: 10 });
+    const result = createLiveShapeEditBinding(access(root)).startProcess(
+      createEditProposal(face.id, YEAR, buildSnapshot({ feature: face, vertices: [dragged] })),
+    );
+    expect(result.status).toBe(PROCESS_STATUS.Rejected);
+    if (result.status !== PROCESS_STATUS.Rejected) return;
+    expect(editRejectionMessage(result)).toContain(RING_BREAK_PHRASE_TEXT.zeroLengthEdge);
+  });
+
+  it('もとから交差している面の名前を直すのは止めない', () => {
+    const face = leafOf('面', ['a', 'b', 'c', 'd']);
+    const root: DomainRoot = {
+      ...emptyProject(),
+      histories: [historyOf([face], [body('a', 0, 0), body('b', 10, 10), body('c', 10, 0), body('d', 0, 10)])],
+    };
+    const renamed = { ...face, attributes: createBasicAttributes('新しい名前', 0, 9999) };
+    const result = createLiveEditBinding(access(root)).startProcess(
+      createEditProposal(face.id, YEAR, buildSnapshot({ feature: renamed, vertices: [] })),
+    );
+    expect(result.status).toBe(PROCESS_STATUS.Committed);
+  });
+});
+
+describe('確定の手続きの入口の関門（読み込みの間。B120）', () => {
+  it('関門が理由を返す間は、どの束ねも手続きへ入らず断り、外せば通る', () => {
+    const { feature, vertices } = squareLeaf('face', 'v', 0, 0);
+    const root = emptyProject();
+    const access = {
+      getRoot: () => root,
+      nextVertexId: () => asVertexId('unused-v'),
+      nextRingId: () => asRingId('unused-r'),
+    };
+    const binding = createLiveAddBinding(access);
+    const proposal = createEditProposal(feature.id, timePointYear(1000), addSnapshot(feature, vertices));
+    const release = setConsistencyProcessGate(() => '読み込みの間です');
+    try {
+      const refused = binding.startProcess(proposal);
+      expect(refused.status).toBe(PROCESS_STATUS.Rejected);
+      if (refused.status === PROCESS_STATUS.Rejected) {
+        expect(refused.message).toBe('読み込みの間です');
+        expect(refused.kind).toBe(REJECTION_KIND.ConstraintViolation);
+      }
+    } finally {
+      release();
+    }
+    expect(binding.startProcess(proposal).status).toBe(PROCESS_STATUS.Committed);
   });
 });

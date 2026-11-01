@@ -305,6 +305,24 @@ function sortedRingEdges(ring: GeoRing): SweepEdge[] {
  * a touching pair.
  */
 export function ringSelfIntersects(ring: GeoRing): boolean {
+  return scanSelfCrossings(ring, () => true);
+}
+
+/**
+ * 輪の中で交わっている辺の組の数（{@link ringSelfIntersects} が真と読む組を全部数える。判定は同じ 1 本）。
+ * 「この編集で交差が増えたか」を比べるのに使う（もとから交差している輪の編集を止めない）。
+ */
+export function ringSelfCrossingCount(ring: GeoRing): number {
+  let count = 0;
+  scanSelfCrossings(ring, () => {
+    count += 1;
+    return false;
+  });
+  return count;
+}
+
+/** 交わる辺の組ごとに `found` を呼ぶ。`found` が真を返したらそこで止めて真を返す。 */
+function scanSelfCrossings(ring: GeoRing, found: () => boolean): boolean {
   const n = ring.length;
   if (n < 3) return false;
   const edges = sortedRingEdges(ring);
@@ -337,15 +355,16 @@ export function ringSelfIntersects(ring: GeoRing): boolean {
       if (adjacent) {
         // Adjacent edges legitimately meet at the shared vertex (endpoint). Only
         // a collinear overlap (edges fold back on each other) is a defect.
-        if (rel === SEGMENT_RELATION.Collinear) return true;
+        if (rel === SEGMENT_RELATION.Collinear && found()) return true;
         continue;
       }
       if (rel === SEGMENT_RELATION.Proper || rel === SEGMENT_RELATION.Collinear) {
-        return true;
+        if (found()) return true;
+        continue;
       }
       // Non-adjacent edges touching at an endpoint also breaks simplicity
       // (a pinch point where the ring revisits a vertex).
-      if (rel === SEGMENT_RELATION.Endpoint) return true;
+      if (rel === SEGMENT_RELATION.Endpoint && found()) return true;
     }
   }
   return false;
@@ -360,17 +379,23 @@ export function ringSelfIntersects(ring: GeoRing): boolean {
  * so "what the op snaps away" and "what this predicate flags" agree exactly.
  */
 export function ringHasZeroLengthEdge(ring: GeoRing): boolean {
+  return ringZeroLengthEdgeCount(ring) > 0;
+}
+
+/** 長さ 0 の辺の数（{@link ringHasZeroLengthEdge} と同じ判定。前後を比べるのに使う）。 */
+export function ringZeroLengthEdgeCount(ring: GeoRing): number {
   const n = ring.length;
-  if (n < 2) return false;
+  if (n < 2) return 0;
+  let count = 0;
   for (let i = 0; i < n; i += 1) {
     const a = ring[i];
     const b = ring[(i + 1) % n];
     if (a === undefined || b === undefined) continue;
     const qa = quantizeCoordinate(a);
     const qb = quantizeCoordinate(b);
-    if (coordinatesEqual(qa, qb)) return true;
+    if (coordinatesEqual(qa, qb)) count += 1;
   }
-  return false;
+  return count;
 }
 
 /**

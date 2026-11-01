@@ -33,7 +33,9 @@ export {
   type SegmentIntersection,
   segmentsIntersect,
   ringSelfIntersects,
+  ringSelfCrossingCount,
   ringHasZeroLengthEdge,
+  ringZeroLengthEdgeCount,
   ringStrictlyContains,
 } from './predicates';
 

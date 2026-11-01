@@ -30,16 +30,25 @@
 // 年（座標の引き継ぎ先）のことがあるので、それを言わないと利用者は何を直せばよいか分からない。
 // 呼び名と年の書き方は、関門が違反を見つけた時点の姿から作って記録に入れておく（文を組む
 // 側が地物を引き直さなくて済み、App の結線を変えずに済む）。
+//
+// **1 本の輪そのものの形**（自己交差と長さ 0 の辺。FR-32）も同じ断り方で止める
+// （{@link ringShapeViolationsIntroduced}）。穴と飛び地の判定は輪が 2 つ以上の面しか見ないので別の関数に
+// した。実データには元から自己交差している輪があるので、こちらも「この編集で増えたか」で比べる。
 
+import { resolveAt } from '../domain/anchor-series';
 import type { RejectedResult } from '../domain/consistency/index';
+import type { WorldCoordinate } from '../domain/coordinate';
 import { FEATURE_KIND, type LeafFeature } from '../domain/feature';
-import type { FeatureId, RingId } from '../domain/ids';
+import { unwrapRingClosed } from '../domain/geo/seam';
+import { quantizeRing, ringSelfCrossingCount, ringZeroLengthEdgeCount } from '../domain/geometry/index';
+import type { FeatureId, RingId, VertexId } from '../domain/ids';
 import type { DomainProject, FeatureHistory } from '../domain/persistence/index';
 import { RING_KIND, type Shape } from '../domain/ring';
 import { validateCandidate } from '../domain/ring-edit/index';
 import { RING_VIOLATION, type RingViolation } from '../domain/ring-hierarchy';
-import { getCalendar } from '../domain/time/calendar';
+import { getCalendar, type Calendar } from '../domain/time/calendar';
 import type { TimePoint } from '../domain/time/time-point';
+import { getVertex, type VertexStore } from '../domain/vertex';
 
 import { createdAtOf, participantDisplayName } from './conflict/participant-name';
 import { featuresAt, verticesAt } from './live-lookup';
@@ -64,6 +73,10 @@ export const RING_BREAK = {
   EnclaveLeavesHole: 'enclave-leaves-hole',
   /** それ以外（環の親子の組み方が崩れる）。 */
   Other: 'other',
+  /** 1 本の輪が自分自身と交わる（FR-32）。 */
+  SelfCross: 'self-cross',
+  /** 1 本の輪に長さ 0 の辺ができる（FR-32）。 */
+  ZeroLengthEdge: 'zero-length-edge',
 } as const;
 export type RingBreak = (typeof RING_BREAK)[keyof typeof RING_BREAK];
 
@@ -79,7 +92,10 @@ export interface RingHierarchyGateViolation {
   readonly kind: typeof RING_HIERARCHY_GATE_KIND;
   readonly featureId: FeatureId;
   readonly at: TimePoint;
-  /** **この編集で新しく生まれた** 違反だけ（もとからあったものは入れない）。 */
+  /**
+   * **この編集で新しく生まれた** 違反だけ（もとからあったものは入れない）。輪そのものの形の違反
+   * （{@link ringShapeViolationsIntroduced}）は U07 の違反ではないので空。
+   */
   readonly violations: readonly RingViolation[];
   /** 1 件目の違反の壊れ方（文の言い方）。 */
   readonly breaks: RingBreak;
@@ -100,6 +116,8 @@ const BREAK_PHRASE: Readonly<Record<RingBreak, string>> = {
   [RING_BREAK.HoleLeavesOuter]: RING_BREAK_PHRASE_TEXT.holeLeavesOuter,
   [RING_BREAK.EnclaveLeavesHole]: RING_BREAK_PHRASE_TEXT.enclaveLeavesHole,
   [RING_BREAK.Other]: RING_BREAK_PHRASE_TEXT.other,
+  [RING_BREAK.SelfCross]: RING_BREAK_PHRASE_TEXT.selfCross,
+  [RING_BREAK.ZeroLengthEdge]: RING_BREAK_PHRASE_TEXT.zeroLengthEdge,
 };
 
 /** 画面に出す文（何が起きたか → なぜか → 次に何をするか。設計書 §H.5）。 */
@@ -169,6 +187,180 @@ export function ringHierarchyViolationsIntroduced(
           featureName: participantDisplayName(
             leaf,
             createdAtOf(after.histories, candidate.id, getCalendar(after.settings.calendarId)),
+          ),
+          atLabel: formatTimePoint(at),
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/** 輪 1 本の形の傷の数。 */
+interface RingFlaws {
+  readonly zeroLength: number;
+  readonly crossings: number;
+}
+
+const NO_FLAWS: RingFlaws = { zeroLength: 0, crossings: 0 };
+
+/**
+ * 輪の座標（`store` から引く）。引けない頂点があれば undefined（壊れた参照は読み込みの検査の仕事）。
+ */
+function ringCoordinates(
+  vertexIds: readonly VertexId[],
+  store: VertexStore,
+): WorldCoordinate[] | undefined {
+  const out: WorldCoordinate[] = [];
+  for (const id of vertexIds) {
+    const vertex = getVertex(store, id);
+    if (vertex === undefined) return undefined;
+    out.push(vertex.coordinate);
+  }
+  return out;
+}
+
+/**
+ * 輪の傷を数える。保存の座標は経度 180 度で畳まれているので、**連続の座標へ戻してから** 測る（§5.107。
+ * 畳んだまま測ると、継ぎ目にかかる輪は元から交差していることになり、新しい交差が隠れる）。長さ 0 の辺は
+ * 量子化で消えるので先に数える。
+ */
+function ringFlaws(coordinates: readonly WorldCoordinate[]): RingFlaws {
+  const continuous = unwrapRingClosed(coordinates);
+  return {
+    zeroLength: ringZeroLengthEdgeCount(continuous),
+    crossings: ringSelfCrossingCount(quantizeRing(continuous)),
+  };
+}
+
+function sameCoordinates(a: readonly WorldCoordinate[], b: readonly WorldCoordinate[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i]!.lon !== b[i]!.lon || a[i]!.lat !== b[i]!.lat) return false;
+  }
+  return true;
+}
+
+/** `flaws` に、`prior` より増えた傷があるか。増えた傷の種類を返す（長さ 0 の辺を先に言う）。 */
+function grownFlaw(flaws: RingFlaws, prior: RingFlaws): RingBreak | undefined {
+  if (flaws.zeroLength > prior.zeroLength) return RING_BREAK.ZeroLengthEdge;
+  if (flaws.crossings > prior.crossings) return RING_BREAK.SelfCross;
+  return undefined;
+}
+
+/**
+ * 面の輪で、この編集で **自己交差か長さ 0 の辺が増えたもの** の種類（無ければ undefined）。
+ *
+ * 比べる単位は輪の id ごとの傷の数である（§5.97。「前に何か 1 つでも傷があったか」にしない）。もとから
+ * 交差している輪でも、交差がさらに増えれば止める。交差が移っただけ・減っただけなら止めない（直している
+ * 途中を断らない）。重なりの解決は輪を新しい id で組み直すので、id が前に無い輪は、前にしか無い輪の傷の
+ * 合計と比べる（もとから交差している面を削っても、削ったせいで断らない）。
+ *
+ * 形の変わらない輪は測らない（座標を比べるだけ）。名前の変更や錨の新設では費用がほぼ無い。
+ */
+function introducedRingFlaw(
+  leaf: LeafFeature,
+  store: VertexStore,
+  prior: { readonly leaf: LeafFeature; readonly store: VertexStore } | undefined,
+): RingBreak | undefined {
+  const priorRings = new Map<RingId, readonly VertexId[]>();
+  for (const ring of prior?.leaf.shape.rings ?? []) priorRings.set(ring.id, ring.vertexIds);
+  const flawsOfPrior = (vertexIds: readonly VertexId[]): RingFlaws => {
+    if (prior === undefined) return NO_FLAWS;
+    const coordinates = ringCoordinates(vertexIds, prior.store);
+    return coordinates === undefined ? NO_FLAWS : ringFlaws(coordinates);
+  };
+  const reborn = { zeroLength: 0, crossings: 0 };
+  const stillHere = new Set<RingId>();
+  for (const ring of leaf.shape.rings) {
+    const coordinates = ringCoordinates(ring.vertexIds, store);
+    if (coordinates === undefined) continue;
+    const priorIds = priorRings.get(ring.id);
+    if (priorIds === undefined) {
+      const flaws = ringFlaws(coordinates);
+      reborn.zeroLength += flaws.zeroLength;
+      reborn.crossings += flaws.crossings;
+      continue;
+    }
+    stillHere.add(ring.id);
+    const priorCoordinates = prior === undefined ? undefined : ringCoordinates(priorIds, prior.store);
+    if (priorCoordinates !== undefined && sameCoordinates(coordinates, priorCoordinates)) continue;
+    const flaws = ringFlaws(coordinates);
+    if (flaws.zeroLength === 0 && flaws.crossings === 0) continue;
+    const grown = grownFlaw(flaws, flawsOfPrior(priorIds));
+    if (grown !== undefined) return grown;
+  }
+  if (reborn.zeroLength === 0 && reborn.crossings === 0) return undefined;
+  const gone = { zeroLength: 0, crossings: 0 };
+  for (const [id, vertexIds] of priorRings) {
+    if (stillHere.has(id)) continue;
+    const flaws = flawsOfPrior(vertexIds);
+    gone.zeroLength += flaws.zeroLength;
+    gone.crossings += flaws.crossings;
+  }
+  return grownFlaw(reborn, gone);
+}
+
+/** 編集の前の、その年のその面と、それを引く頂点。同じ系列に無ければ（居候から系列へ起きた等）全体から引く。 */
+function priorLeafAt(
+  before: DomainProject,
+  history: FeatureHistory | undefined,
+  featureId: FeatureId,
+  at: TimePoint,
+  calendar: Calendar,
+): { readonly leaf: LeafFeature; readonly store: VertexStore } | undefined {
+  if (history !== undefined) {
+    const resolution = resolveAt(history.series, at, calendar);
+    if (resolution.kind === 'present') {
+      const snapshot = resolution.entry.anchor.snapshot;
+      const own = snapshot.features.find((f) => f.id === featureId);
+      if (own !== undefined) return isLeaf(own) ? { leaf: own, store: snapshot.vertices } : undefined;
+    }
+  }
+  const found = featuresAt(before, at).find((f) => f.id === featureId);
+  return found !== undefined && isLeaf(found) ? { leaf: found, store: verticesAt(before, at) } : undefined;
+}
+
+/**
+ * `before` から `after` で、**1 本の輪の自己交差か長さ 0 の辺が新しくできた面** を返す（FR-32）。
+ *
+ * 見る範囲は {@link ringHierarchyViolationsIntroduced} と同じ「参照が変わった系列の、参照が変わった錨」。
+ * 外周 1 本の面も見る。頂点はその錨の写しから引く（読み込みの検査が、同じ年の同じ頂点の体が写しごとに
+ * 違うことを断るので、地図と同じ座標になる）。年ごとに全部の頂点を集め直すと、後の年へ引き継いだ大きな
+ * 編集で確定が重くなる。
+ */
+export function ringShapeViolationsIntroduced(
+  before: DomainProject,
+  after: DomainProject,
+): RingHierarchyGateViolation[] {
+  if (before === after) return [];
+  const calendar = getCalendar(after.settings.calendarId);
+  const beforeById = new Map<FeatureId, FeatureHistory>();
+  for (const h of before.histories) beforeById.set(h.featureId, h);
+
+  const out: RingHierarchyGateViolation[] = [];
+  for (const history of after.histories) {
+    const priorHistory = beforeById.get(history.featureId);
+    if (priorHistory === history) continue;
+    const priorAnchors = new Set(priorHistory?.series.entries.map((e) => e.anchor) ?? []);
+    for (const entry of history.series.entries) {
+      if (priorAnchors.has(entry.anchor)) continue;
+      const at = entry.start;
+      const { features, vertices } = entry.anchor.snapshot;
+      for (const feature of features) {
+        if (!isLeaf(feature)) continue;
+        const prior = priorLeafAt(before, priorHistory, feature.id, at, calendar);
+        const breaks = introducedRingFlaw(feature, vertices, prior);
+        if (breaks === undefined) continue;
+        out.push({
+          kind: RING_HIERARCHY_GATE_KIND,
+          featureId: feature.id,
+          at,
+          violations: [],
+          breaks,
+          featureName: participantDisplayName(
+            feature,
+            createdAtOf(after.histories, feature.id, calendar),
           ),
           atLabel: formatTimePoint(at),
         });
