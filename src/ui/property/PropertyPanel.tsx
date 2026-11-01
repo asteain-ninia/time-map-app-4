@@ -1165,7 +1165,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
             {displaySeries !== null && (
               <AnchorSection
                 // Feature-scoped key so React REMOUNTS the section on a target change,
-                // resetting its transient view-mode (List/TimeBar) state (教訓 5.2).
+                // resetting its transient state (教訓 5.2).
                 key={targetFeatureId ?? 'none'}
                 rows={anchorRows}
                 featureIdForDiff={feature.id}
