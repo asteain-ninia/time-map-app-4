@@ -2324,6 +2324,26 @@ const TOOL_MODE_OPERATIONS: Readonly<Record<string, OperationEntry>> = {
     why: '時刻の変更を止める関門を足すだけ。道具・鍵には触らない。',
     run: (s) => s.getState().addTimeChangeGate(() => false)(),
   },
+  setDocumentLoadActive: {
+    group: 'invariant',
+    why: '読み込みの始まりと終わりの印だけ。道具・鍵には触らない。',
+    run: (s) => {
+      s.getState().setDocumentLoadActive(true);
+      s.getState().setDocumentLoadActive(false);
+    },
+  },
+  refuseEditDuringLoad: {
+    group: 'invariant',
+    why: '断るかどうかを答えて知らせるだけ。道具・鍵には触らない。',
+    run: (s) => {
+      s.getState().refuseEditDuringLoad();
+    },
+  },
+  addLoadRefusalListener: {
+    group: 'invariant',
+    why: '断ったことを聞く口を足すだけ。道具・鍵には触らない。',
+    run: (s) => s.getState().addLoadRefusalListener(() => undefined)(),
+  },
   setCurrentTime: {
     group: 'invariant',
     why: '年は別の軸。動かしても道具・鍵は変わらない。',

@@ -12,6 +12,7 @@ import { join } from 'node:path';
 
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 
+import { PROPERTY_STRINGS } from '../src/ui/property/messages';
 import { APP_STRINGS } from '../src/ui/shell/strings';
 
 import {
@@ -169,7 +170,7 @@ test.describe('読み込みの間の編集', () => {
       const undo = await page.getByTestId(CAN_UNDO).textContent();
       await startHeldLoad(app, page);
 
-      await page.getByTestId('basic-info').getByLabel('名前').fill('読み込みの間の名前');
+      await page.getByTestId('basic-info').getByLabel(PROPERTY_STRINGS.nameLabel).fill('読み込みの間の名前');
       await page.getByTestId('save-button').click();
       await expect(page.getByTestId(STATUS)).toContainText(REFUSED);
       await expect(page.getByTestId('property-title-name')).toHaveText(title ?? '');
