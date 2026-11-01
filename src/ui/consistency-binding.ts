@@ -69,6 +69,7 @@ import {
   type AnchorSeries,
   type RejectReason,
   type SeriesResult,
+  resolveAt,
 } from '../domain/anchor-series';
 import type { AnchorIntervalEditIntent } from './property/index';
 import { ANCHOR_INTERVAL_OP } from './property/index';
@@ -107,7 +108,9 @@ import {
 import { createShape } from '../domain/ring';
 import { createVertexStore, getVertex, type Vertex, type VertexStore } from '../domain/vertex';
 import { buildWeldIndex, weldRingVertices, type WeldIndex } from '../domain/vertex-weld';
-import { compare as compareTime } from '../domain/time/normalized';
+import { compare as compareTime, normalize as normalizeTime } from '../domain/time/normalized';
+import { multiPolygonBBox, type BBox } from '../domain/spatial/bbox';
+import { coordinatesEqual } from '../domain/coordinate';
 import type { TimePoint } from '../domain/time/time-point';
 import { distinctAnchorTimes } from '../domain/persistence/consistency';
 import {
@@ -445,7 +448,18 @@ function introducedOverlapsDetector(committedCache: TerminalShapeCache): Spatial
     // 前の切れ目の形と重なり。どちらの形も変わっていない組は調べ直さない（実データの切れ目はほとんどが
     // 遠くの地物の改名なので、切れ目ごとに全部の組を調べると確定が固まる）。
     let previous: SliceOverlaps | undefined;
-    for (const time of [anchor, ...laterSliceTimes(committed, resultState, anchor)]) {
+    let previousTime = anchor;
+    let lastIntroduced: readonly string[] = [];
+    const later = laterSliceTimes(committed, resultState, anchor);
+    const quiet = later.length === 0 ? undefined : quietSliceTest(committed, resultState);
+    for (const time of [anchor, ...later]) {
+      // 重なりが変わりえない切れ目は、全部の地物を組み立てない。前の切れ目の重なりが続いている。
+      if (previous !== undefined && quiet?.(time, previousTime, previous) === true) {
+        for (const id of lastIntroduced) found.get(id)!.to = time;
+        previousTime = time;
+        continue;
+      }
+      previousTime = time;
       const involved = changedFeatureIdsAt(committed, resultState, time);
       const terminals = extractTerminalShapes(
         buildForest(featuresAt(resultState, time)),
@@ -454,6 +468,7 @@ function introducedOverlapsDetector(committedCache: TerminalShapeCache): Spatial
       );
       const slice = overlapsAtSlice(terminals, involved, previous);
       previous = slice;
+      lastIntroduced = [];
       // ふつうは重なりが無い。そのときは確定済みの形を調べない。
       if (slice.pairs.length === 0) continue;
       const before = detectTerminalOverlaps(
@@ -467,6 +482,7 @@ function introducedOverlapsDetector(committedCache: TerminalShapeCache): Spatial
         // 比べられないなら止める側へ倒す（重なりを黙って通さない）。
         return !isOk(grown) || !isMultiPolygonEmpty(grown.result);
       });
+      lastIntroduced = introduced.map((pair) => conflictIdFor(pair.a, pair.b));
       for (const pair of introduced) {
         const id = conflictIdFor(pair.a, pair.b);
         const known = found.get(id);
@@ -500,6 +516,8 @@ interface FoundOverlap {
 interface SliceOverlaps {
   readonly shapes: ReadonlyMap<FeatureId, GeoMultiPolygon>;
   readonly involved: ReadonlySet<FeatureId>;
+  /** 形の変わった面の全部を囲む矩形。 */
+  readonly involvedBox: BBox | undefined;
   readonly pairs: readonly OverlapPair[];
   /** この切れ目で調べ直した組（前の切れ目からそのまま続く組は入らない）。 */
   readonly fresh: ReadonlySet<string>;
@@ -526,7 +544,22 @@ function overlapsAtSlice(
     for (const [id, shape] of shapes) if (previous.shapes.get(id) !== shape) changed.add(id);
     for (const id of previous.shapes.keys()) if (!shapes.has(id)) changed.add(id);
   }
-  if (involved.size === 0) return { shapes, involved, pairs: [], fresh: new Set() };
+  if (involved.size === 0) return { shapes, involved, involvedBox: undefined, pairs: [], fresh: new Set() };
+  let involvedBox: BBox | undefined;
+  for (const id of involved) {
+    const shape = shapes.get(id);
+    const box = shape === undefined ? undefined : multiPolygonBBox(shape);
+    if (box === undefined) continue;
+    involvedBox =
+      involvedBox === undefined
+        ? box
+        : {
+            minX: Math.min(involvedBox.minX, box.minX),
+            minY: Math.min(involvedBox.minY, box.minY),
+            maxX: Math.max(involvedBox.maxX, box.maxX),
+            maxY: Math.max(involvedBox.maxY, box.maxY),
+          };
+  }
   const movedShapeChanged = [...involved].some((id) => changed.has(id));
   const reusable =
     previous !== undefined && !movedShapeChanged && sameIds(involved, previous.involved);
@@ -540,7 +573,112 @@ function overlapsAtSlice(
         (p) => !changed.has(p.a) && !changed.has(p.b) && !fresh.has(conflictIdFor(p.a, p.b)),
       )
     : [];
-  return { shapes, involved, pairs: [...kept, ...checked], fresh };
+  return { shapes, involved, involvedBox, pairs: [...kept, ...checked], fresh };
+}
+
+/** 経度は周回するので、±1 周の写しでも見る。 */
+function boxesMayTouch(a: BBox, b: BBox): boolean {
+  if (a.maxY < b.minY || b.maxY < a.minY) return false;
+  return [-360, 0, 360].some((turn) => a.maxX + turn >= b.minX && b.maxX >= a.minX + turn);
+}
+
+/** 面の参照する頂点の座標を囲む矩形（無ければ undefined）。 */
+function leafBox(leaf: LeafFeature, store: VertexStore): BBox | undefined {
+  let box: BBox | undefined;
+  for (const id of referencedVertexIds(leaf)) {
+    const c = getVertex(store, id)?.coordinate;
+    if (c === undefined) continue;
+    box =
+      box === undefined
+        ? { minX: c.lon, minY: c.lat, maxX: c.lon, maxY: c.lat }
+        : {
+            minX: Math.min(box.minX, c.lon),
+            minY: Math.min(box.minY, c.lat),
+            maxX: Math.max(box.maxX, c.lon),
+            maxY: Math.max(box.maxY, c.lat),
+          };
+  }
+  return box;
+}
+
+/** 2 つの錨の同じ面が、同じ形で親も同じか。 */
+function sameLeafGeometry(a: LeafFeature, b: LeafFeature, aStore: VertexStore, bStore: VertexStore): boolean {
+  if (a.parentId !== b.parentId || a.shape !== b.shape) return false;
+  for (const id of referencedVertexIds(a)) {
+    const av = getVertex(aStore, id);
+    const bv = getVertex(bStore, id);
+    if (av !== bv && (av === undefined || bv === undefined || !coordinatesEqual(av.coordinate, bv.coordinate))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * 切れ目が、形の変わった面の重なりを変えないかを、全部の地物を組み立てずに決める口を作る。実データで
+ * 切れ目を増やすのはほとんどが遠くの地物の改名なので、切れ目ごとに全部を組み立てると、後の年が 50 あれば
+ * 確定 1 回が約 3.5 秒になる（実測）。真を返してよいのは、その切れ目で錨の変わる履歴がどれも
+ *   - この編集で書き換えた履歴ではなく（書き換えたなら形の変わった面そのものが変わりうる）、
+ *   - 面の形が同じか、変わった面が形の変わった面を囲む矩形に届かず、形の変わった面の子でもない
+ * ときだけ。迷ったら偽（全部を組み立てて調べる）。
+ */
+function quietSliceTest(
+  committed: DomainRoot,
+  result: DomainRoot,
+): (time: TimePoint, previousTime: TimePoint, previous: SliceOverlaps) => boolean {
+  const priorById = new Map(committed.histories.map((h) => [h.featureId, h]));
+  const byBoundary = new Map<number, FeatureHistory[]>();
+  const add = (time: TimePoint, history: FeatureHistory): void => {
+    const key = normalizeTime(time, calendar) as unknown as number;
+    const list = byBoundary.get(key);
+    if (list === undefined) byBoundary.set(key, [history]);
+    else if (list[list.length - 1] !== history) list.push(history);
+  };
+  for (const history of result.histories) {
+    for (const entry of history.series.entries) {
+      add(entry.start, history);
+      if (entry.end !== null) add(entry.end, history);
+    }
+  }
+  return (time, previousTime, previous) => {
+    const box = previous.involvedBox;
+    const key = normalizeTime(time, calendar) as unknown as number;
+    for (const history of byBoundary.get(key) ?? []) {
+      if (priorById.get(history.featureId) !== history) return false;
+      const before = resolveAt(history.series, previousTime, calendar);
+      const now = resolveAt(history.series, time, calendar);
+      const beforeSnap = before.kind === 'present' ? before.entry.anchor.snapshot : undefined;
+      const nowSnap = now.kind === 'present' ? now.entry.anchor.snapshot : undefined;
+      if (beforeSnap === nowSnap) continue;
+      const beforeFeatures = beforeSnap?.features ?? [];
+      const nowFeatures = nowSnap?.features ?? [];
+      const beforeById = new Map<FeatureId, Feature>(beforeFeatures.map((f) => [f.id, f]));
+      const nowById = new Map<FeatureId, Feature>(nowFeatures.map((f) => [f.id, f]));
+      const emptyStore = createVertexStore([]);
+      const beforeStore = beforeSnap?.vertices ?? emptyStore;
+      const nowStore = nowSnap?.vertices ?? emptyStore;
+      for (const feature of [...beforeFeatures, ...nowFeatures]) {
+        if (previous.involved.has(feature.id)) return false;
+        if (feature.parentId !== undefined && previous.involved.has(feature.parentId)) return false;
+        const a = beforeById.get(feature.id);
+        const b = nowById.get(feature.id);
+        // 面でないものは面積を持たない。親が変わると末端かどうかが変わるので調べる。
+        if (a?.kind !== 'leaf' && b?.kind !== 'leaf') {
+          if (a !== undefined && b !== undefined && a.parentId === b.parentId) continue;
+          if (feature.kind !== 'aggregate') continue;
+          return false;
+        }
+        if (a?.kind === 'leaf' && b?.kind === 'leaf' && sameLeafGeometry(a, b, beforeStore, nowStore)) continue;
+        if (box === undefined) continue;
+        const aBox = a?.kind === 'leaf' ? leafBox(a, beforeStore) : undefined;
+        const bBox = b?.kind === 'leaf' ? leafBox(b, nowStore) : undefined;
+        if ((aBox !== undefined && boxesMayTouch(aBox, box)) || (bBox !== undefined && boxesMayTouch(bBox, box))) {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
 }
 
 /**

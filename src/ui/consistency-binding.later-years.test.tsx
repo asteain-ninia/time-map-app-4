@@ -225,6 +225,39 @@ describe('後の年にだけ生じる重なり', () => {
     expect(first.conflicts[0]!.slices).toEqual([T]);
   });
 
+  it('遠くの面の切れ目を飛ばしても、その後に近くへ現れる面を見逃さない。続く重なりは遠くの切れ目まで伸びる', () => {
+    const root = project([
+      history('A', [{ year: 1000, features: [leaf('A')], vertices: square('a', 0) }]),
+      history('Z', [{ year: 1200, features: [leaf('Z')], vertices: square('z', 100) }]),
+      history('X', [{ year: 1500, features: [leaf('X')], vertices: square('x', 10) }]),
+      history('W', [{ year: 1800, features: [leaf('W')], vertices: square('w', -100) }]),
+    ]);
+    const first = paused(bindingOf(root).startProcess(moveFace(root, 'A', 8)));
+    expect(first.conflicts).toHaveLength(1);
+    expect(first.conflicts[0]!.time).toEqual({ kind: 'range', from: timePointYear(1500), to: timePointYear(1800) });
+    expect(first.conflicts[0]!.slices).toEqual([timePointYear(1500)]);
+  });
+
+  it('世界の継ぎ目の向こうに後の年に現れる面も見逃さない', () => {
+    const root = project([
+      history('A', [{ year: 1000, features: [leaf('A')], vertices: square('a', -170) }]),
+      history('X', [{ year: 1500, features: [leaf('X')], vertices: square('x', 174) }]),
+    ]);
+    const result = paused(bindingOf(root).startProcess(moveFace(root, 'A', -13)));
+    expect(result.conflicts[0]!.time).toEqual({ kind: 'point', at: timePointYear(1500) });
+  });
+
+  it('形の変わった面の子が後の年に現れたら、遠くても切れ目を飛ばさない', () => {
+    const root = project([
+      history('A', [{ year: 1000, features: [leaf('A')], vertices: square('a', 0) }]),
+      history('C', [{ year: 1500, features: [leaf('C', 'A')], vertices: square('c', 100) }]),
+      history('X', [{ year: 1000, features: [leaf('X')], vertices: square('x', 10) }]),
+    ]);
+    // 1500 年から A は親になり末端でなくなるので、A と X の重なりは 1000〜1499 年だけ。
+    const first = paused(bindingOf(root).startProcess(moveFace(root, 'A', 8)));
+    expect(first.conflicts[0]!.time).toEqual({ kind: 'point', at: T });
+  });
+
   it('引き継ぎが止まった年から先（その年に本当に動いた記録）は重なりと言わない', () => {
     const root = project([
       history('A', [
