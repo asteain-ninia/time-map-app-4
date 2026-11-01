@@ -40,11 +40,11 @@ export const PERSISTENCE_MESSAGES = {
     `「${name}」の下位領域の一覧が、${year}の実際の所属と食い違っています（${related}）`,
   preSaveChildListMismatchRepair: ' → 次に開くと、一覧を各年の実際の所属に合わせます',
   preSaveEmptyAggregate: (name: string, year: string): string =>
-    `まとめ役「${name}」には、${year}に下位領域が 1 件もありません`,
+    `集約地物「${name}」には、${year}に下位領域が 1 件もありません`,
   preSaveEmptyAggregateRepairable: (name: string): string =>
     ` → 次に開くと、下位領域の居ない年の間だけ「${name}」を無くします（ほかの年の記録は残ります）`,
   preSaveEmptyAggregateAsk:
-    ' → 次に開くと、どうするかを聞かれます（このまとめ役には下位領域の居る年が無いため、読み込みから外すことになります）',
+    ' → 次に開くと、どうするかを聞かれます（この集約地物には下位領域の居る年が無いため、読み込みから外すことになります）',
   preSaveTopologyOther: (name: string, year: string): string =>
     `「${name}」の上位領域のつながりが、${year}に食い違っています → 次に開くと直し方を聞かれます`,
 
@@ -54,7 +54,7 @@ export const PERSISTENCE_MESSAGES = {
   repairDetachToTopLevelWithin:
     '上位領域が居ない年の間だけ、この地物を最上位にします（ほかの年の所属と記録はそのまま残ります）。',
   repairRemoveEmptyAggregateIntervals:
-    '下位領域が 1 件も居ない年の間だけ、このまとめ役を無くします（下位領域の居る年の記録はそのまま残ります）。',
+    '下位領域が 1 件も居ない年の間だけ、この集約地物を無くします（下位領域の居る年の記録はそのまま残ります）。',
   repairDropTopologyFeature: '階層が壊れている地物を読み込みから除外します。',
   repairReconcileChildIds:
     '集約地物の下位領域一覧（childIds）を、各地物の親参照（parentId）に合わせて再構築します。',

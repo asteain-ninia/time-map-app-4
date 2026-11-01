@@ -246,7 +246,7 @@ export const INCONSISTENCY_LABEL_TEXT = {
 
 /** 修復方法の文の言い換え（`repair-flow.ts` の `REPAIR_OPTION_TEXT_OVERRIDES`）。 */
 export const REPAIR_OPTION_OVERRIDE_TEXT = {
-  reconcileChildIds: 'まとめ役の下位領域の一覧を、各地物が指している親に合わせて作り直します。',
+  reconcileChildIds: '集約地物の下位領域の一覧を、各地物が指している親に合わせて作り直します。',
 } as const;
 
 /** 画面に出す言葉（教訓 5.19）。設計書 §F の G-10 の文に合わせる。 */

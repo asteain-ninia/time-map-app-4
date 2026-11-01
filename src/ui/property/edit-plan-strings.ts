@@ -37,7 +37,7 @@ export const EDIT_PLAN_STRINGS = {
   /** 対象の地物が決まっていない（鍵盤から押したときに起きる）。 */
   createAnchorHereNoTarget: '記録を作る地物が選ばれていません。地図か一覧で 1 つ選んでください。',
   /**
-   * 自分の年表を持たないまとめ役の子で「この年に錨を作る」を押したとき（バグ狩り 2-4）。
+   * 自分の年表を持たない集約地物の下位領域で「この年に錨を作る」を押したとき（バグ狩り 2-4）。
    * 記録は上位領域の年表に増えるので、どこに増えたかを言う（子のレーンには印が増えない）。
    */
   createAnchorHereInOwner: (ownerName: string, year: string): string =>

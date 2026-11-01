@@ -81,7 +81,7 @@ export const REPARENT_STRINGS = {
   parentNone: '最上位へ（独立）',
   /** 用語集の 7 つ目（解体）の行き先を書いておく。3 択には入らない操作である。 */
   parentDismantleNote:
-    '解体（まとめ役をやめて下位を全部ばらす）は、まとめ役の素性欄から行います。',
+    '解体（集約地物をやめて下位を全部ばらす）は、集約地物の素性欄から行います。',
   /** 既存から選ぶときの木の読み上げ名。 */
   parentExistingPickLabel: '上位領域にする地物',
   /** 木の絞り込み欄。 */
@@ -143,29 +143,29 @@ export const REPARENT_STRINGS = {
     withOrigin
       ? `${year}の記録が、移す地物・元の上位領域に増えます。`
       : `${year}の記録が、移す地物に増えます。`,
-  /** 決定 (1): まとめ役の錨に居候している地物は、ここで自分の系列を持つ。 */
+  /** 決定 (1): 集約地物の錨に居候している地物は、ここで自分の系列を持つ。 */
   previewMaterialize: (count: number): string =>
     `${String(count)} 件は上位領域の記録の中に居るので、この操作で自分の歴史を持つようになります（全部の年の記録を写します）。`,
   /** 取り消しの一言（どの枝でも最後に出す）。 */
   previewUndo: '取り消しは Ctrl+Z 1 回です。',
-  /** 子を全部失って自動で消えるまとめ役（解体の主経路。反証 2-4）。 */
+  /** 子を全部失って自動で消える集約地物（解体の主経路。反証 2-4）。 */
   previewAutoRemoved: (names: string): string =>
     `「${names}」は下位領域を全て失うので、この年から自動で消えます。`,
   /** 分け残しが生まれる枝の予告（反証 2-5）。 */
   previewDirectDomain: (ownerName: string, directDomainName: string): string =>
-    `「${ownerName}」は形を持たないまとめ役に変わり、いまの形は新しい末端「${directDomainName}」へ移ります。`,
+    `「${ownerName}」は形を持たない集約地物に変わり、いまの形は新しい末端「${directDomainName}」へ移ります。`,
   /** 断られた理由を板の本文に出す（Fable #6）。 */
   previewIneligible: (parentName: string, reason: string): string =>
     `「${parentName}」は行き先にできません: ${reason}`,
-  /** まとめ役を対象にしたとき、下位領域へ広げたことを言う（FR-48 後半）。 */
+  /** 集約地物を対象にしたとき、下位領域へ広げたことを言う（FR-48 後半）。 */
   previewExpanded: (aggregateName: string, count: number): string =>
-    `「${aggregateName}」はまとめ役なので、その下位領域 ${String(count)} 件を対象にしました。`,
+    `「${aggregateName}」は集約地物なので、その下位領域 ${String(count)} 件を対象にしました。`,
   /** 洗い直しで外したもの（その年に居ない）。 */
   previewDroppedMissing: (count: number): string =>
     `${String(count)} 件は、いまの年に存在しないので対象から外しました。`,
-  /** 洗い直しで外したもの（空のまとめ役）。 */
+  /** 洗い直しで外したもの（空の集約地物）。 */
   previewDroppedEmpty: (count: number): string =>
-    `${String(count)} 件は、下位領域を 1 つも持たないまとめ役なので対象から外しました。`,
+    `${String(count)} 件は、下位領域を 1 つも持たない集約地物なので対象から外しました。`,
   /** 板の見出しに件数を出す（Fable #16: 何件を相手にしているのかが題で読める）。 */
   /** 帯の対象欄で複数を名乗る（反証 2-2）。 */
   targetWithRest: (head: string, rest: number): string => `${head} ほか ${String(rest)} 件`,

@@ -210,9 +210,9 @@ export const PROPERTY_STRINGS = {
   /** 打ちかけの発生場所の言い方（地物名＋年）。 */
   draftOrigin: (featureName: string, year: string): string => `${featureName}（${year}）`,
 
-  // -- まとめ役の子の錨 (設計書 §C.6 / 裁定 §N-15) ---------------------------
+  // -- 集約地物の下位領域の錨 (設計書 §C.6 / 裁定 §N-15) ---------------------------
   /**
-   * 自分の履歴を持たない地物（実データで 86 件 = 3 つのまとめ役の子ぜんぶ）を選んだ
+   * 自分の履歴を持たない地物（実データで 86 件 = 3 つの集約地物の下位領域ぜんぶ）を選んだ
    * ときの断り書き。**錨の欄ごと消す**のをやめ、親の系列のうちその地物に関わる錨だけを
    * その場に出す。
    */
@@ -249,7 +249,7 @@ export const PROPERTY_STRINGS = {
   /** 入口 A が通ったときの結果の文。 */
   endHereDone: (name: string, year: string): string => `「${name}」は${year}で終わったことにしました。`,
   /**
-   * **まとめ役を終わらせる前の影響の板**（司令塔の決定 (2)）。子を黙って道連れにしない
+   * **集約地物を終わらせる前の影響の板**（司令塔の決定 (2)）。子を黙って道連れにしない
    * ことを、押す前に削除と同じ器で見せる。
    */
   endHereImpactTitle: (name: string, year: string): string => `「${name}」を${year}で終わらせます`,
@@ -271,15 +271,15 @@ export const PROPERTY_STRINGS = {
    */
   endHereImpactTrimmed: (year: string, count: number): string =>
     `${year}より後の、途切れずに続いていた記録（中身の変わる記録 ${String(count)} 件）も一緒に終わります`,
-  /** 下位領域を全て失って一緒に終わるまとめ役（手直し 3 回目 1-1）。 */
+  /** 下位領域を全て失って一緒に終わる集約地物（手直し 3 回目 1-1）。 */
   endHereImpactCascaded: (name: string, year: string): string =>
-    `まとめ役「${name}」は下位領域を全て失うので、${year}から終わります`,
+    `集約地物「${name}」は下位領域を全て失うので、${year}から終わります`,
   /**
-   * どの年にも下位領域が居なくなるまとめ役（4 回目 #1）。所属変更で下位領域を全て失ったまとめ役と
+   * どの年にも下位領域が居なくなる集約地物（4 回目 #1）。所属変更で下位領域を全て失った集約地物と
    * 同じく、記録ごと無くなる。
    */
   endHereImpactCascadedWhole: (name: string): string =>
-    `まとめ役「${name}」はどの年にも下位領域が居なくなるので、記録ごと無くなります（所属を変えて下位領域を全て失ったときと同じ）`,
+    `集約地物「${name}」はどの年にも下位領域が居なくなるので、記録ごと無くなります（所属を変えて下位領域を全て失ったときと同じ）`,
   /** 一緒に終わる後ろの記録の中の、別の上位領域への所属（4 回目 #2）。 */
   endHereImpactLaterAffiliation: (name: string, year: string): string =>
     `${year}からの「${name}」への所属も一緒に終わります（「${name}」の下位領域から外れます）`,
@@ -287,15 +287,15 @@ export const PROPERTY_STRINGS = {
   /** 状態行: 一緒に終わった後ろの記録の件数。 */
   endHereDoneTrimmed: (count: number): string =>
     `その後の記録 ${String(count)} 件も一緒に終わりました。`,
-  /** 状態行: 存続期間の欄の編集で、下位領域を全て失ったまとめ役が一緒に終わった（手直し 3 回目）。 */
+  /** 状態行: 存続期間の欄の編集で、下位領域を全て失った集約地物が一緒に終わった（手直し 3 回目）。 */
   /** 状態行: 存続期間を変えた（続く文の頭）。 */
   intervalChanged: '存続期間を変えました。',
   intervalCascaded: (names: string): string =>
     `存続期間を変えました。下位領域を全て失った「${names}」は、その年から終わりました。`,
-  /** 状態行: 一緒に終わったまとめ役。 */
+  /** 状態行: 一緒に終わった集約地物。 */
   endHereDoneCascaded: (names: string): string =>
     `下位領域を全て失った「${names}」も、その年から終わりました。`,
-  /** 状態行: どの年にも下位領域が居なくなって記録ごと無くなったまとめ役（4 回目 #1）。 */
+  /** 状態行: どの年にも下位領域が居なくなって記録ごと無くなった集約地物（4 回目 #1）。 */
   endHereDoneCascadedWhole: (names: string): string =>
     `どの年にも下位領域が居なくなった「${names}」は、記録ごと無くなりました。`,
   /** 状態行: 一緒に終わった別の上位領域への所属（4 回目 #2）。 */
@@ -337,7 +337,7 @@ export const PROPERTY_STRINGS = {
   impactAutoRemoved: (count: number, names: string): string =>
     `${String(count)} 件（${names}）が、下位領域を全て失うため一緒に消えます`,
   impactAutoRemovedNone: 'なし（下位領域を全て失った集約は自動で消えます）',
-  /** 下位領域を失う年からだけ消え、ほかの年の記録は残るまとめ役（手直し 3 回目）。 */
+  /** 下位領域を失う年からだけ消え、ほかの年の記録は残る集約地物（手直し 3 回目）。 */
   impactPartlyRemoved: (count: number, names: string): string =>
     `${String(count)} 件（${names}）は、下位領域を全て失う年から消えます（それより前の年の記録は残ります）`,
   impactNamesWithRest: (names: string, rest: number): string =>

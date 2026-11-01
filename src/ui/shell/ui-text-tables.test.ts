@@ -41,11 +41,16 @@ const ATTRS = new Set(UI_TEXT_ATTRIBUTES);
 const DISABLE = /eslint-disable-next-line\s+no-restricted-syntax/;
 
 /**
- * 「出さない」と決めた語（用語集 §H.1 で旧称になった語など）。**語はまだ決まっていない**
- * （UI 文言の総点検は所有者が語を選ぶ。案/文言総点検-やり方の提案.md §6 の手順 5・6）ので、
- * いまは空。決まったら 1 行ずつ足す ―― 表の中にその語が残っていたら下の検査が赤くなる。
+ * 「出さない」と決めた語（用語集で定義された語に置き換えた旧称など）。所有者が語を決めたら
+ * 1 行ずつ足す（総点検の手順は 案/文言総点検-やり方の提案.md §6）。
+ * 表の中にその語が残っていたら下の検査が赤くなる。
  */
-const FORBIDDEN_TERMS: readonly { readonly term: string; readonly reason: string }[] = [];
+const FORBIDDEN_TERMS: readonly { readonly term: string; readonly reason: string }[] = [
+  {
+    term: 'まとめ役',
+    reason: '用語集の語は「集約地物」（要件定義書 §6）。「まとめ役」は定義された語ではない',
+  },
+];
 
 /** リポジトリ直下からの相対パス（`/` 区切り）で、`src` の下の .ts / .tsx を全部。 */
 function sourceFiles(dir: string): string[] {
@@ -195,7 +200,7 @@ describe('文言の表の外に、利用者に見える文字列を直書きし�
 });
 
 describe('用語集で「出さない」と決めた語が、文言の表に残っていない', () => {
-  it('表の文を全部集めて、出さない語の一覧と突き合わせる（一覧はいま空。語は総点検で決める）', () => {
+  it('表の文を全部集めて、出さない語の一覧と突き合わせる', () => {
     const tableStrings: string[] = [];
     for (const file of ALL_FILES.filter((f) => isUiTextTableFile(f))) {
       tableStrings.push(...scanSource(file, readSourceText(join(repoRoot, file))).strings);
