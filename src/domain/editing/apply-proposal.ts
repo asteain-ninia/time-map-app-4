@@ -2253,7 +2253,10 @@ const NO_VERTEX_CARRY_FORWARD: VertexCarryForwardReport = { anchorCount: 0, firs
  *
  * For each such history a past-edit at `anchorTime` overlays the moved bodies onto the
  * effective snapshot's vertex store (id → new coordinate) while leaving its features and
- * every untouched vertex unchanged. Histories that cite no moved id are returned untouched
+ * every untouched vertex unchanged. 配るのはその写しが引いているか既に持っている頂点だけで、頂点を
+ * 1 つ共有しているだけの隣へ、引いていない体を置いていかない（置くと、あとでその頂点を動かしても
+ * 古い体が残り、読み込みが同じ頂点の座標の食い違いと言う。`pruneVertexStore` の注記）。
+ * Histories that cite no moved id are returned untouched
  * (referential identity preserved), so a plain non-shared move costs nothing. Pure.
  *
  * **これは「T の時点」だけの話である**（増分 3 の手直し A1）。T より後ろの錨が持つ古い座標は
@@ -2281,10 +2284,18 @@ function applyMovedVerticesToHistories(
     // feature and scanning it with a per-id featureReferences (O(V)) walk. A single-vertex
     // drag is unaffected (movedIds=1); a multi-vertex drag no longer pays O(moved × V) per
     // feature × every history. Behaviour-identical.
-    const citesMoved = base.features.some((f) =>
-      referencedVertexIds(f).some((id) => movedIds.has(id)),
-    );
+    const cited = new Set<VertexId>();
+    let citesMoved = false;
+    for (const f of base.features) {
+      for (const id of referencedVertexIds(f)) {
+        cited.add(id);
+        if (movedIds.has(id)) citesMoved = true;
+      }
+    }
     if (!citesMoved) return history;
+    const applicable = movedVertices.filter(
+      (v) => cited.has(v.id) || getVertex(base.vertices, v.id) !== undefined,
+    );
 
     const updatedSeries = applyPastEdit(
       history.series,
@@ -2296,10 +2307,7 @@ function applyMovedVerticesToHistories(
             : createAnchorSnapshot([], createVertexStore([]));
         // Overlay the moved bodies last so they win the merge for shared ids; every
         // other vertex body rides along unchanged.
-        const store = createVertexStore([
-          ...effBase.vertices.byId.values(),
-          ...movedVertices,
-        ]);
+        const store = createVertexStore([...effBase.vertices.byId.values(), ...applicable]);
         return anchorFor(effBase.features, store, history.featureId, anchorTime);
       },
       calendar,
