@@ -17,6 +17,7 @@ import {
   jumpToYear,
   launchApp,
   loadProject,
+  selectedVertexIds,
   squareCorners,
   worldToClient,
 } from './helpers';
@@ -105,6 +106,15 @@ test.describe('B42 — 隠れた持ち主の共有頂点も、見えている地
       await expect(page.getByTestId('ledger-row-A')).toHaveAttribute('data-hidden', 'true');
       // B を見える状態へ戻して先へ進む（A は隠したまま）。
       await page.getByTestId('ledger-eye-B').click();
+      // 左クリックで掴むと B の頂点が選ばれ、年を動かして戻っても持ち主は B のまま（選択の見直しが
+      // 隠れた A へ付け替えない）。
+      await page.mouse.click(cornerForMenu.x, cornerForMenu.y);
+      await expect(page.getByTestId('app-active-feature')).toHaveText('B');
+      await expect.poll(async () => selectedVertexIds(page)).toEqual(['s1']);
+      await jumpToYear(page, 1200);
+      await jumpToYear(page, 1000);
+      await expect(page.getByTestId('app-active-feature')).toHaveText('B');
+      await expect.poll(async () => selectedVertexIds(page)).toEqual(['s1']);
       await page.getByTestId('tool-edit.select').click();
       await page.mouse.click(empty.x, empty.y);
       await expect(page.getByTestId('app-active-feature')).toHaveText('');
