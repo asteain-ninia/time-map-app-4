@@ -852,8 +852,26 @@ export function App(): JSX.Element {
     },
     [statusMessageStore],
   );
-  // 設定の補正で出した文（手放したことを同じ文の後ろへ続けるために覚える）。
-  const rangeClampNoticeRef = useRef<string | null>(null);
+  // 設定の補正で出した文とその年（同じ補正で起きたことを、同じ文の後ろへ続けるために覚える）。
+  const rangeClampNoticeRef = useRef<{ readonly text: string; readonly timeKey: string } | null>(null);
+  /**
+   * 補正と同時に起きたこと（印が外れた・掴んでいた面を手放した）を言う。補正の文の直後で、まだ同じ年に
+   * 居るなら後ろへ続ける（B118）。別々に出すと、あとの文が補正の文を上書きして捨てたことが読めない。
+   */
+  const noticeAfterRangeClamp = useCallback(
+    (text: string, time: TimePoint): void => {
+      const clamp = rangeClampNoticeRef.current;
+      const timeKey = moveTrailerKey(time);
+      if (clamp === null || clamp.timeKey !== timeKey || statusMessageStore.get()?.text !== clamp.text) {
+        statusMessageStore.notice(text);
+        return;
+      }
+      const joined = `${clamp.text}${text}`;
+      rangeClampNoticeRef.current = { text: joined, timeKey };
+      statusMessageStore.notice(joined);
+    },
+    [statusMessageStore],
+  );
   // 年の移動・設定の補正・読み込みで捨てたものを言う（B112）。年の移動は、移動の知らせに上書き
   // されないよう後ろへ続ける文としても控える。ほかの 2 つに移動の知らせは来ないので、1 文で言い切る。
   const onToolDraftLost = useCallback(
@@ -865,7 +883,7 @@ export function App(): JSX.Element {
           return;
         case DRAFT_LOSS_CAUSE.RangeClamped: {
           const text = DRAFT_DISCARD_STRINGS.rangeClampedDiscarded(formatTimePoint(time), what);
-          rangeClampNoticeRef.current = text;
+          rangeClampNoticeRef.current = { text, timeKey: moveTrailerKey(time) };
           statusMessageStore.notice(text);
           return;
         }
@@ -880,15 +898,10 @@ export function App(): JSX.Element {
   // されないよう、印を外したときと同じく移動の知らせの後ろへ続ける文としても控える。
   const onToolTargetGone = useCallback(() => {
     const text = APP_STRINGS.toolTargetGoneByTime;
-    // 設定の補正で捨てたことの直後なら、読めるように同じ文の後ろへ続ける。
-    const clampNotice = rangeClampNoticeRef.current;
-    statusMessageStore.notice(
-      clampNotice !== null && statusMessageStore.get()?.text === clampNotice
-        ? `${clampNotice}${text}`
-        : text,
-    );
-    statusMessageStore.stageMoveTrailer(moveTrailerKey(store.getState().currentTime), text);
-  }, [statusMessageStore, store]);
+    const time = store.getState().currentTime;
+    noticeAfterRangeClamp(text, time);
+    statusMessageStore.stageMoveTrailer(moveTrailerKey(time), text);
+  }, [noticeAfterRangeClamp, statusMessageStore, store]);
 
   /**
    * **直前に消した測量の線を戻す**（増分 8C の手直し / 反証 #2）。状態行の［戻す］と、
@@ -1425,14 +1438,14 @@ export function App(): JSX.Element {
         if (dropped > 0) {
           s.setFeatureMarks(kept);
           const text = APP_STRINGS.markDroppedByTime(dropped);
-          statusMessageStore.notice(text);
+          noticeAfterRangeClamp(text, s.currentTime);
           statusMessageStore.stageMoveTrailer(moveTrailerKey(s.currentTime), text);
         }
       }
       paint();
     });
     // 印が動いたときは React 側から、ドメイン・時刻が動いたときは購読から引き直す。
-  }, [store, markedFeatures, statusMessageStore]);
+  }, [store, markedFeatures, statusMessageStore, noticeAfterRangeClamp]);
 
   // The stable camera-input port handed to BOTH tool controllers (bughunt: 追加/ナイフ
   // 描画中のパン/ズーム). Each method reads the live dispatcher-backed port through the
