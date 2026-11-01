@@ -2211,9 +2211,11 @@ function resolveShareLanding(
  * {@link carryIntoLaterAnchors}）。座標はすでに `applyVertexCarryForward` が配ってあるので、
  * ここでは id だけを付け替える。残すと、見かけは重なったまま後の年で共有が切れている。
  *
- * 打ち切る錨（記録された歴史を壊さない）: 掴んだ頂点を引いていない／座標が吸着先と違う
- * （その年に本当に動いた）／同じ輪が吸着先も引いている（FR-32）。吸着先そのものが後の年に動く
- * なら、その年から先は同じ id の体が食い違うので持ち込まない（`until`）。
+ * 歩き方は座標の引き継ぎ（`vertex-carry-forward.ts`）と揃える: 掴んだ頂点を持たない錨は「動いた」では
+ * ないので触らず先へ進む。ここで打ち切ると、後の錨で引き直した面だけ同じ座標の別 id になり、見えないまま
+ * 共有が切れる。打ち切る錨（記録された歴史を壊さない）: 座標が吸着先と違う（その年に本当に動いた）／
+ * 同じ輪が吸着先も引いている（FR-32）。吸着先そのものが後の年に動くなら、その年から先は同じ id の体が
+ * 食い違うので持ち込まない（`until`）。
  *
  * 純関数。変化の無い履歴は同じ値を返す。
  */
@@ -2235,11 +2237,10 @@ function carryShareIntoLaterAnchors(
       if (until === null || compareTime(entry.start, until, calendar) < 0) until = entry.start;
     }
   }
-  const rewrite = (snap: AnchorSnapshot): AnchorSnapshot | typeof STOP_CARRYING => {
+  const rewrite = (snap: AnchorSnapshot): AnchorSnapshot | null | typeof STOP_CARRYING => {
     const body = getVertex(snap.vertices, dragged);
-    if (body === undefined || !quantizedEqual(body.coordinate, targetBody.coordinate)) {
-      return STOP_CARRYING;
-    }
+    if (body === undefined) return null;
+    if (!quantizedEqual(body.coordinate, targetBody.coordinate)) return STOP_CARRYING;
     const collapses = snap.features.some((f) =>
       vertexIdLists(f).some(({ ids }) => ids.includes(dragged) && ids.includes(target)),
     );
