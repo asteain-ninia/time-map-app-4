@@ -29,7 +29,7 @@ import type { WorldCoordinate } from '../coordinate';
 import { coordinatesEqual } from '../coordinate';
 import { isWorldLatitude } from '../geo/latitude';
 import { longEdgeStartIndexes, MAX_EDGE_LON_SPAN_DEG } from '../geo/long-edge';
-import { dragDelta, isNoOp, type DragSession } from './drag-session';
+import { dragDelta, EDIT_TOOL, isNoOp, type DragSession } from './drag-session';
 import type { SnapDecision } from './snap';
 
 /**
@@ -223,8 +223,15 @@ function longEdgeAfterMove(
   movingRings: readonly MovingRing[] | undefined,
 ): boolean {
   const { dLon, dLat } = dragDelta(session);
-  if (movingRings === undefined || movingRings.length === 0) {
-    return Math.abs(dLon) >= MAX_EDGE_LON_SPAN_DEG;
+  // 面を動かす 1 回の移動は、輪が渡されていても量を見る。集約地物では形の変わる輪だけが渡るので、
+  // 辺が短く収まっていても、形の変わらない下位領域は半周以上動いている。
+  if (
+    movingRings === undefined ||
+    movingRings.length === 0 ||
+    session.target.tool === EDIT_TOOL.FeatureMove
+  ) {
+    if (Math.abs(dLon) >= MAX_EDGE_LON_SPAN_DEG) return true;
+    if (movingRings === undefined || movingRings.length === 0) return false;
   }
   for (const ring of movingRings) {
     if (ring.movingIndexes.length === 0) continue;

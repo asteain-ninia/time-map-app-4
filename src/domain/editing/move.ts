@@ -9,11 +9,13 @@
 import { withVertexCoordinate, type Vertex, type VertexStore, getVertex } from '../vertex';
 import {
   FEATURE_KIND,
+  referencedVertexIds,
   type Feature,
   type LeafFeature,
   type LineFeature,
   type PointFeature,
 } from '../feature';
+import { buildForest, descendantIds } from '../hierarchy/forest';
 import type { VertexId } from '../ids';
 import { createCoordinate, type WorldCoordinate } from '../coordinate';
 import { rigidMoveDelta } from './rigid-delta';
@@ -96,6 +98,66 @@ export function moveVertexSet(
     out.push(withVertexCoordinate(v, shift(v.coordinate, delta)));
   }
   return out;
+}
+
+/**
+ * ［動かす］で集約地物を引いたときに、どの末端地物のどの頂点を動かすか（所有者の裁定 2026-11-01）。
+ * 集約地物は自分の頂点を持たない（FR-35）ので、動くのは下位の末端地物の頂点である。
+ */
+export interface AggregateMovePlan {
+  /** 引いた集約地物の下にある、その年に居る末端地物の全部（途中の集約地物をたどる）。 */
+  readonly leaves: readonly LeafFeature[];
+  /** 動かす頂点。下位領域どうしだけで共有している頂点もここに入る。 */
+  readonly movingVertexIds: readonly VertexId[];
+  /** 動かさない頂点。{@link leaves} が引く頂点のうち、外の地物もその年に引いているもの。 */
+  readonly fixedVertexIds: readonly VertexId[];
+  /** 動く頂点を 1 つ以上持つ末端地物の数（状態行が言う「動かした下位領域の数」）。 */
+  readonly movedLeafCount: number;
+}
+
+/**
+ * 集約地物を動かす計画を立てる。`features` は **その年に居る地物の全部** を渡す（表示の絞り込みを
+ * 通さない。隠している下位領域も下位領域なので動かす）。
+ *
+ * 「外」は下位の末端地物以外の、頂点を引くものの全部（面・線・点）。判定はその年の参照だけで見る。
+ * 他の年の参照は見ない（後の年への座標の引き継ぎは `applyVertexCarryForward` の役目）。
+ * 引いた地物が居ない・集約地物でないときは、中身が空の計画を返す。純粋。
+ */
+export function planAggregateMove(
+  aggregateId: Feature['id'],
+  features: readonly Feature[],
+): AggregateMovePlan {
+  const forest = buildForest(features);
+  const leaves: LeafFeature[] = [];
+  const leafIds = new Set<Feature['id']>();
+  if (forest.byId.get(aggregateId)?.kind === FEATURE_KIND.Aggregate) {
+    for (const id of descendantIds(forest, aggregateId)) {
+      const feature = forest.byId.get(id);
+      if (feature?.kind !== FEATURE_KIND.Leaf) continue;
+      leaves.push(feature);
+      leafIds.add(id);
+    }
+  }
+  const outside = new Set<VertexId>();
+  for (const feature of features) {
+    if (leafIds.has(feature.id)) continue;
+    for (const id of referencedVertexIds(feature)) outside.add(id);
+  }
+  const moving: VertexId[] = [];
+  const fixed: VertexId[] = [];
+  const seen = new Set<VertexId>();
+  let movedLeafCount = 0;
+  for (const leaf of leaves) {
+    let moves = false;
+    for (const id of referencedVertexIds(leaf)) {
+      if (!outside.has(id)) moves = true;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      (outside.has(id) ? fixed : moving).push(id);
+    }
+    if (moves) movedLeafCount += 1;
+  }
+  return { leaves, movingVertexIds: moving, fixedVertexIds: fixed, movedLeafCount };
 }
 
 /**

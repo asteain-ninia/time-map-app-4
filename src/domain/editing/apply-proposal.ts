@@ -1701,6 +1701,10 @@ export function applyEditProposal(
 ): DomainProject {
   const { snapshot, featureId, anchorTime } = proposal;
 
+  if (isAggregateMove(snapshot)) {
+    return applyAggregateMove(root, snapshot.vertices, anchorTime, calendar);
+  }
+
   const found = findHistoryContaining(root, featureId, anchorTime, calendar);
   if (found === undefined) {
     // No history carries the feature at this time (stale/repaired data). The
@@ -1863,6 +1867,69 @@ export function applyEditProposal(
     );
   }
   return withHistories(root, histories);
+}
+
+/**
+ * 集約地物を［動かす］で引いた確定か（提案の地物が集約地物で、頂点の体を運んでいる）。集約地物は
+ * 自分の頂点を持たない（FR-35）ので、この形はほかの確定からは来ない。
+ */
+function isAggregateMove(snapshot: FeatureSnapshot): boolean {
+  return snapshot.feature?.kind === FEATURE_KIND.Aggregate && snapshot.vertices.length > 0;
+}
+
+/** {@link applyMovedVerticesToHistories} の、飛ばす系列が無いときの添字。 */
+const NO_HISTORY_INDEX = -1;
+
+/**
+ * 集約地物を動かす確定（所有者の裁定 2026-11-01）。`movedVertices` は下位の末端地物の頂点である。
+ *
+ * **記録の置き場**（`ui-redesign/README.md` の原則）: 記録は、頂点を引いている地物が居る系列に入る。
+ * 自分の系列を持たない下位領域なら親の錨に、自分の系列を持つ下位領域なら自分の錨に入る。集約地物の
+ * 系列は、その中に動いた下位領域が居るときだけ増える（`T` の時点で引いている系列だけを書き換える
+ * {@link applyMovedVerticesToHistories} の 1 本を、飛ばす系列なしで通す）。
+ *
+ * 後の年の座標の引き継ぎも面の移動と同じ {@link carryVertexForwardIn}。旧値は下位領域ごとに別の系列に
+ * あるので、`T` に居る全部の系列から引く（{@link beforeBodiesAcrossHistories}）。
+ */
+function applyAggregateMove(
+  root: DomainProject,
+  movedVertices: readonly Vertex[],
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): DomainProject {
+  const carries = movedVertexCarries(
+    movedVertices,
+    beforeBodiesAcrossHistories(root.histories, movedVertices, anchorTime, calendar),
+  );
+  const histories = applyMovedVerticesToHistories(
+    root.histories,
+    movedVertices,
+    NO_HISTORY_INDEX,
+    anchorTime,
+    calendar,
+  ).map((h) => carryVertexForwardIn(h, anchorTime, carries, calendar));
+  return withHistories(root, histories);
+}
+
+/** `T` に効いている全部の系列から、動かす前の体を引く（同じ id の体はどの系列でも同じ）。 */
+function beforeBodiesAcrossHistories(
+  histories: readonly FeatureHistory[],
+  movedVertices: readonly Vertex[],
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): ReadonlyMap<VertexId, WorldCoordinate> {
+  const out = new Map<VertexId, WorldCoordinate>();
+  for (const history of histories) {
+    const resolution = resolveAt(history.series, anchorTime, calendar);
+    if (resolution.kind !== 'present') continue;
+    for (const [id, coordinate] of beforeBodiesOf(
+      resolution.entry.anchor.snapshot.vertices,
+      movedVertices,
+    )) {
+      out.set(id, coordinate);
+    }
+  }
+  return out;
 }
 
 /**
@@ -2211,10 +2278,12 @@ export function reportVertexCarryForward(
   const effectiveBefore = resolveAt(found.history.series, anchorTime, calendar);
   const carries = movedVertexCarries(
     snapshot.vertices,
-    beforeBodiesOf(
-      effectiveBefore.kind === 'present' ? effectiveBefore.entry.anchor.snapshot.vertices : null,
-      snapshot.vertices,
-    ),
+    isAggregateMove(snapshot)
+      ? beforeBodiesAcrossHistories(root.histories, snapshot.vertices, anchorTime, calendar)
+      : beforeBodiesOf(
+          effectiveBefore.kind === 'present' ? effectiveBefore.entry.anchor.snapshot.vertices : null,
+          snapshot.vertices,
+        ),
   );
   if (carries.length === 0) return NO_VERTEX_CARRY_FORWARD;
   let anchorCount = 0;

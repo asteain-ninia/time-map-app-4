@@ -79,6 +79,8 @@ export {
   moveVertexSet,
   moveDraggedVertexSet,
   moveVertexTo,
+  planAggregateMove,
+  type AggregateMovePlan,
 } from './move';
 
 export {
