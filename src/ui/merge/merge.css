@@ -74,7 +74,7 @@
   max-height: 85vh;
   overflow: auto;
   padding: 20px;
-  background: #fff;
+  background: var(--c-surface);
   border-radius: 12px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
 }
@@ -83,12 +83,12 @@
 }
 .merge-options-dialog__hint {
   margin: 0 0 12px;
-  color: #555;
+  color: var(--c-text-muted);
   font-size: 13px;
 }
 .merge-options-dialog__section {
   margin: 0 0 16px;
-  border: 1px solid #cfd8dc;
+  border: 1px solid var(--c-border);
   border-radius: 8px;
   padding: 12px;
 }
@@ -110,7 +110,7 @@
   margin: 4px 0 8px 24px;
   max-width: calc(100% - 24px);
   padding: 6px 8px;
-  border: 1px solid #cfd8dc;
+  border: 1px solid var(--c-border);
   border-radius: 6px;
   font-size: 13px;
 }

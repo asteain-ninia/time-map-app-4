@@ -718,6 +718,6 @@
 }
 .basic-info__end-here-reason {
   margin: 2px 0 0;
-  color: #666;
+  color: var(--c-text-muted);
   font-size: var(--font-size-small);
 }

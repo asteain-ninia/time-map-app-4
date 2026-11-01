@@ -2764,8 +2764,8 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 }
 
 .draggable-panel {
-  background: #fff;
-  border: 1px solid #888;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-strong);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
   min-width: 160px;
 }
@@ -2776,7 +2776,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   justify-content: space-between;
   align-items: center;
   padding: 4px 8px;
-  background: #eee;
+  background: var(--c-panel);
   user-select: none;
 }
 
@@ -3230,8 +3230,8 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   left: 0;
   top: 0;
   max-width: calc(100vw - 8px);
-  background: #333;
-  color: #fff;
+  background: var(--c-chrome);
+  color: var(--c-chrome-text);
   padding: 2px 6px;
   font-size: 12px;
   white-space: nowrap;
@@ -3372,8 +3372,8 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   left: 50%;
   transform: translate(-50%, -50%);
   pointer-events: auto;
-  background: #fff;
-  border: 1px solid #888;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-strong);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
   padding: 12px;
 }
@@ -3412,7 +3412,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   min-width: 320px;
   max-width: 90vw;
   padding: 20px;
-  background: #fff;
+  background: var(--c-surface);
   border-radius: 12px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
 }
@@ -3424,7 +3424,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 
 .draft-discard-dialog__body {
   margin: 0 0 16px;
-  color: #333;
+  color: var(--c-text);
   font-size: 13px;
 }
 
@@ -3609,7 +3609,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   max-height: 80vh;
   overflow-y: auto;
   padding: 16px 20px;
-  background: #fff;
+  background: var(--c-surface);
   border-radius: 12px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
 }
@@ -3622,14 +3622,14 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 }
 .impact-confirm-dialog__heading {
   margin: 0 0 2px;
-  color: #444;
+  color: var(--c-text-muted);
   font-size: var(--font-size-body);
   font-weight: 600;
 }
 .impact-confirm-dialog__lines {
   margin: 0;
   padding-left: 18px;
-  color: #333;
+  color: var(--c-text);
   font-size: 12px;
 }
 .impact-confirm-dialog__blocked {
@@ -3650,7 +3650,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 }
 .impact-confirm-dialog__note {
   margin: 6px 0 0;
-  color: #555;
+  color: var(--c-text-muted);
   font-size: var(--font-size-small);
   text-align: right;
 }

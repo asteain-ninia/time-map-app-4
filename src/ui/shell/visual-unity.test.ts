@@ -224,6 +224,28 @@ describe('押せる高さ', () => {
   });
 });
 
+describe('灰色の直値（B103）', () => {
+  // 地図の下にある `map/zoom-limit-note.css` は別の担当の範囲なので、まだ代わりの値を持つ（docs/現状.md の B103）。
+  const GREYS = /#(?:555|666|777|444|333|1a1a1a|222|888|999|ddd|eee|ccc|e3e3e3|cfd8dc|fafafa|f7f7f7|5b6573)/i;
+
+  it('文字・枠・地の灰色は変数から引く', () => {
+    const offenders = allRules()
+      .filter(({ selector }) => selector !== ':root')
+      .filter(({ path }) => !path.endsWith('zoom-limit-note.css'))
+      .filter(({ body }) => GREYS.test(body))
+      .map(({ path, selector }) => `${path}: ${selector}`);
+    expect(offenders).toEqual([]);
+  });
+
+  it('板の地は白の直値で書かない', () => {
+    const offenders = allRules()
+      .filter(({ selector }) => /-dialog$/.test(selector) || selector === '.draggable-panel')
+      .filter(({ body }) => /background:\s*#/i.test(body))
+      .map(({ path, selector }) => `${path}: ${selector}`);
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe('文字の大きさの直値', () => {
   it('補助の文字は変数から引く（11px を直に書かない）', () => {
     const offenders = allCss.filter(({ css }) => /font-size:\s*11px/.test(css)).map(({ path }) => path);
