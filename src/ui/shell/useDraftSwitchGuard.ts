@@ -115,6 +115,11 @@ export interface DraftSwitchGuard {
   readonly armed: boolean;
   /** 板を出している理由（出していなければ null）。 */
   readonly pending: DiscardReason | null;
+  /**
+   * いま板が出ているか、出すと決めたところか。選択の見張りが板を開くと決めた effect と同じ回に走る
+   * 後ろの effect は、`pending` がまだ古いのでこちらを読む。
+   */
+  readonly isBoardOpen: () => boolean;
   /** 板に出す頂点の数。 */
   readonly vertexCount: number;
   /**
@@ -226,6 +231,7 @@ export function useDraftSwitchGuard<S>(
     if (pendingRef.current !== null) return;
     if (armed && activeFeature !== null && asksRef.current) {
       intentRef.current = { restoreSelection: prev };
+      pendingRef.current = DISCARD_REASON.Select;
       setPending(DISCARD_REASON.Select);
       return;
     }
@@ -337,5 +343,7 @@ export function useDraftSwitchGuard<S>(
     st.setActiveTool(intent.tool);
   }, [store]);
 
-  return { armed, pending, vertexCount, askOnEscape, keep, discard };
+  const isBoardOpen = useCallback(() => pendingRef.current !== null, []);
+
+  return { armed, pending, isBoardOpen, vertexCount, askOnEscape, keep, discard };
 }

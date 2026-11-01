@@ -156,7 +156,7 @@ export interface DrillToolControllerProps<S> {
    */
   readonly onUndoPointChange?: ((hasPoint: boolean) => void) | undefined;
   /** 掴んでいた面がいまの年に居なくなり、手放したことを伝える口（B112）。 */
-  readonly onTargetGone?: (() => void) | undefined;
+  readonly onTargetGone?: ((targetId: FeatureId) => void) | undefined;
   /**
    * 新しい地物の素性入力を **右パネルの「新規の姿」**へ渡す口（司令塔の決定 (5) /
    * 設計書 §B.5 の台帳 #9 / §C.2 の 27）。追加の道具・分ける道具と同じ 1 本の橋である。
@@ -340,20 +340,33 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
     onDraftHeldChange: props.onDraftHeldChange,
   });
 
-  // **掴んでいる面がいまの年に居なくなったら手放す**（B112）。残しておくと、居ない面に点を打ち、
-  // 確定を押すと素性入力まで進んでしまう（実機で確認）。
+  // **掴んでいる面がいまの年に居なくなった・隠れて描かれなくなったら手放す**（B112・B134）。残しておくと、
+  // 見えない面に点を打ち、確定を押すと素性入力まで進んでしまう（実機で確認）。
+  // 板のあいだは待つ（［続ける］で選択が戻り、また描かれる）。見張りの後ろに置くので、捨てた知らせが先に出る。
   const onTargetGone = props.onTargetGone;
   const drillTargetPresent = useTargetStillThere(store, drill.targetId, resolveFeature);
   const releaseDrillTarget = drill.releaseTarget;
   // 道具を降りるコミットでは見ない（読み込みで対象が消えても、手放したとは言わない）。
   const drillWatchesTarget =
     drillGuard.armed && drill.flow !== DRILL_FLOW.Idle && drill.flow !== DRILL_FLOW.ConflictPaused;
+  const drillTargetId = drill.targetId;
+  const drillIsBoardOpen = drillGuard.isBoardOpen;
+  const drillBoard = drillGuard.pending;
   useEffect(() => {
-    if (!drillWatchesTarget || drillTargetPresent) return;
+    if (!drillWatchesTarget || drillTargetPresent || drillTargetId === null || drillIsBoardOpen()) return;
     releaseDrillTarget();
     unpromoteOwnTarget();
-    onTargetGone?.();
-  }, [drillWatchesTarget, drillTargetPresent, releaseDrillTarget, unpromoteOwnTarget, onTargetGone]);
+    onTargetGone?.(drillTargetId);
+  }, [
+    drillWatchesTarget,
+    drillTargetPresent,
+    drillTargetId,
+    drillIsBoardOpen,
+    drillBoard,
+    releaseDrillTarget,
+    unpromoteOwnTarget,
+    onTargetGone,
+  ]);
 
   // --- Feed the provisional drill primitives to the render sink on every draft change
   // (FR-45). An empty region yields [] so the overlay vanishes on reset (教訓 5.2).

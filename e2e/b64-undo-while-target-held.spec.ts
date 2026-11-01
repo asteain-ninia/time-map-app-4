@@ -3,6 +3,8 @@
 
 import { expect, test, type Page } from '@playwright/test';
 
+import { STATUS_STRINGS } from '../src/ui/shell/strings';
+
 import {
   besideSquareX,
   commitOneFace,
@@ -38,6 +40,39 @@ const TOOLS = [
 ] as const;
 
 test.describe('B64 — 対象だけを掴んでいるあいだの Ctrl+Z / Ctrl+Y', () => {
+  // B10 との重なり: 枠が履歴の名前を言うのは、次の Ctrl+Z が本当にそれを戻すときだけ。
+  for (const { label, tool, count } of [
+    { label: '分ける', tool: 'tool-edit.knife', count: 'knife-point-count' },
+    { label: '輪郭', tool: 'tool-edit.ring', count: 'ring-edit-vertex-count' },
+    { label: '穴あけ', tool: 'tool-edit.drill', count: 'drill-vertex-count' },
+  ] as const) {
+    test(`${label}: 点を打っているあいだ、元に戻す枠は履歴の名前を言わない`, async () => {
+      const { app, page } = await launchApp();
+      try {
+        const { a } = await twoFaces(page);
+        const frame = page.getByTestId('statusbar-undo');
+        const named = (await frame.textContent()) ?? '';
+        expect(named.startsWith(STATUS_STRINGS.undoAvailablePrefix)).toBe(true);
+
+        await page.getByTestId(tool).click();
+        await page.mouse.click(a.x, a.y);
+        await expect(frame).toHaveText(named);
+
+        await page.mouse.click(a.x - 20, a.y - 20);
+        await expect(page.getByTestId(count)).toHaveText('1');
+        await expect(frame).toHaveText(STATUS_STRINGS.undoAvailable);
+
+        // 点を戻し切ると、次の Ctrl+Z は履歴へ届くので名前が戻る。
+        await page.keyboard.press('Control+z');
+        await expect(page.getByTestId(count)).toHaveText('0');
+        await expect(page.getByTestId('app-can-redo')).toHaveText('0');
+        await expect(frame).toHaveText(named);
+      } finally {
+        await app.close();
+      }
+    });
+  }
+
   for (const { label, tool, promotes } of TOOLS) {
     test(`${label}: 別の面の追加を取り消してやり直せる。掴んだ対象はそのまま`, async () => {
       const { app, page } = await launchApp();

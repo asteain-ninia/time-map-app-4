@@ -197,7 +197,7 @@ export interface KnifeToolControllerProps<S> {
    */
   readonly onUndoPointChange?: ((hasPoint: boolean) => void) | undefined;
   /** 掴んでいた面がいまの年に居なくなり、手放したことを伝える口（B112）。 */
-  readonly onTargetGone?: (() => void) | undefined;
+  readonly onTargetGone?: ((targetId: FeatureId) => void) | undefined;
   /**
    * 非継承側の素性入力を **右パネルの「新規の姿」**へ渡す口（司令塔の決定 (5) /
    * 設計書 §B.5 の台帳 #9 / §C.2 の 27）。追加の道具（`AddToolController`）と同じ橋で、
@@ -383,6 +383,8 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   const liveDomain = useStore(store, (s) => s.domain);
   const liveFilter = useStore(store, (s) => s.filter);
   const liveDisplayControl = useStore(store, (s) => s.displayControl);
+  // 隠した面は選んでいるあいだだけ描くので、引く関数は選択も読む（B134）。
+  const liveActiveFeature = useStore(store, (s) => s.activeFeature);
   const knifeState = knife.state;
   const targetShape = useMemo((): GeoMultiPolygon | undefined => {
     if (
@@ -400,6 +402,7 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     liveDomain,
     liveFilter,
     liveDisplayControl,
+    liveActiveFeature,
   ]);
 
   // --- V10 ④（現状分析 §11-14）: 飛び地のある面（と外周が自分に接する面）は、分断線が
@@ -459,22 +462,6 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     store,
     (s) => s.mode === EDIT_MODE.Edit && s.activeTool === TOOL_ID.EditKnife,
   );
-  useEffect(() => {
-    if (resolveLeafShape === undefined) return;
-    if (!knifeArmedNow) return;
-    if (knifeFlow === KNIFE_FLOW.Idle || knifeFlow === KNIFE_FLOW.ConflictPaused) return;
-    if (
-      knifeState.phase === KNIFE_PHASE.Inactive ||
-      knifeState.phase === KNIFE_PHASE.SelectingTarget
-    ) {
-      return;
-    }
-    if (targetShape !== undefined) return;
-    dropTarget();
-    // 手放した理由を言う（B112）。隠しただけなら面は居るので言わない（§D.6 の状態行が別に言う）。
-    if (resolveFeature(knifeState.targetId) === undefined) onTargetGone?.();
-  }, [knifeArmedNow, knifeState, knifeFlow, targetShape, resolveLeafShape, dropTarget, resolveFeature, onTargetGone]);
-
   // --- 教訓 5.2 全経路で破棄 ＋ 設計書 §D.4.1 の 3「確定できる点数まで来ている下書きは
   // 捨てる前に確認」。道具・鍵の出入りは共有の見張り（`shell/useDraftSwitchGuard`）が
   // 1 本で受ける ―― **確定できる分断線（2 点以上）を持っているあいだは、切替先を構えずに
@@ -529,6 +516,37 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     onFocusSelection: props.onFocusSelection,
     onDraftHeldChange: props.onDraftHeldChange,
   });
+
+  // 板のあいだは待つ（［続ける］で選択が戻り、また描かれる）。見張りの後ろに置くので、捨てた知らせが先に出る。
+  const knifeIsBoardOpen = knifeGuard.isBoardOpen;
+  const knifeBoard = knifeGuard.pending;
+  useEffect(() => {
+    if (resolveLeafShape === undefined) return;
+    if (!knifeArmedNow) return;
+    if (knifeFlow === KNIFE_FLOW.Idle || knifeFlow === KNIFE_FLOW.ConflictPaused) return;
+    if (
+      knifeState.phase === KNIFE_PHASE.Inactive ||
+      knifeState.phase === KNIFE_PHASE.SelectingTarget
+    ) {
+      return;
+    }
+    if (targetShape !== undefined) return;
+    if (knifeIsBoardOpen()) return;
+    dropTarget();
+    // 手放した理由を言う（B112・B134）。居ないのか隠れたのかは宿主が見分ける。
+    if (resolveFeature(knifeState.targetId) === undefined) onTargetGone?.(knifeState.targetId);
+  }, [
+    knifeArmedNow,
+    knifeState,
+    knifeFlow,
+    targetShape,
+    resolveLeafShape,
+    dropTarget,
+    resolveFeature,
+    onTargetGone,
+    knifeIsBoardOpen,
+    knifeBoard,
+  ]);
 
   // --- Feed the provisional knife primitives to the render sink on every state
   // change (FR-90 / FR-92). An idle state yields [] so the overlay / circle vanish

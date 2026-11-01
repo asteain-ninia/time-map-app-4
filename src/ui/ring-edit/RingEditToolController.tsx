@@ -158,7 +158,7 @@ export interface RingEditToolControllerProps<S> {
    */
   readonly onUndoPointChange?: ((hasPoint: boolean) => void) | undefined;
   /** 掴んでいた面がいまの年に居なくなり、手放したことを伝える口（B112）。 */
-  readonly onTargetGone?: (() => void) | undefined;
+  readonly onTargetGone?: ((targetId: FeatureId) => void) | undefined;
   /** Provisional draw style override. */
   readonly style?: RingEditStyle | undefined;
 }
@@ -303,8 +303,9 @@ export function RingEditToolController<S>(
     onDraftHeldChange: props.onDraftHeldChange,
   });
 
-  // **掴んでいる面がいまの年に居なくなったら手放す**（B112）。残しておくと、居ない面に点を打ち、
-  // 確定を押しても何も記録されず、状態行にも何も出ない（実機で確認）。
+  // **掴んでいる面がいまの年に居なくなった・隠れて描かれなくなったら手放す**（B112・B134）。残しておくと、
+  // 見えない面に点を打ち、確定を押しても何も記録されず、状態行にも何も出ない（実機で確認）。
+  // 板のあいだは待つ（［続ける］で選択が戻り、また描かれる）。見張りの後ろに置くので、捨てた知らせが先に出る。
   const onTargetGone = props.onTargetGone;
   const ringTargetPresent = useTargetStillThere(store, ring.targetId, resolveFeature);
   const releaseRingTarget = ring.releaseTarget;
@@ -313,12 +314,24 @@ export function RingEditToolController<S>(
     ringGuard.armed &&
     ring.flow !== RING_EDIT_FLOW.Idle &&
     ring.flow !== RING_EDIT_FLOW.ConflictPaused;
+  const ringTargetId = ring.targetId;
+  const ringIsBoardOpen = ringGuard.isBoardOpen;
+  const ringBoard = ringGuard.pending;
   useEffect(() => {
-    if (!ringWatchesTarget || ringTargetPresent) return;
+    if (!ringWatchesTarget || ringTargetPresent || ringTargetId === null || ringIsBoardOpen()) return;
     releaseRingTarget();
     unpromoteOwnTarget();
-    onTargetGone?.();
-  }, [ringWatchesTarget, ringTargetPresent, releaseRingTarget, unpromoteOwnTarget, onTargetGone]);
+    onTargetGone?.(ringTargetId);
+  }, [
+    ringWatchesTarget,
+    ringTargetPresent,
+    ringTargetId,
+    ringIsBoardOpen,
+    ringBoard,
+    releaseRingTarget,
+    unpromoteOwnTarget,
+    onTargetGone,
+  ]);
 
   // --- Feed the provisional ring-edit primitives to the render sink on every draft
   // change (FR-22). An idle draft yields [] so the overlay vanishes on reset (教訓 5.2).

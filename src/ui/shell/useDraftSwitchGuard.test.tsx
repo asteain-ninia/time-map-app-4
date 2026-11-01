@@ -3,6 +3,8 @@
 // 実機の 3 道具の通し検査は `e2e/b117-b118-leftovers.spec.ts`。ここは見張りの分かれ道を見る。
 
 import { act, render } from '@testing-library/react';
+import { useEffect } from 'react';
+import { useStore } from 'zustand';
 import { describe, expect, it, vi } from 'vitest';
 
 import { asFeatureId, type FeatureId } from '../../domain/ids';
@@ -85,6 +87,32 @@ describe('useDraftSwitchGuard — 一覧で別の地物を選んだ', () => {
     expect(h.current().pending).toBeNull();
     expect(h.store.getState().activeFeature).toBe(A);
     expect(h.calls.discardForTime).not.toHaveBeenCalled();
+  });
+
+  it('板を開くと決めた回の後ろの effect にも、板のことが読める（対象の見張りが待つため。B134）', () => {
+    const store: TestStore = makeStore();
+    const seen: Array<readonly [FeatureId | null, boolean]> = [];
+    function Harness(): null {
+      const guard = useDraftSwitchGuard({
+        store,
+        toolId: TOOL_ID.EditRing,
+        hasCommittableDraft: true,
+        vertexCount: 3,
+        onArm: () => {},
+        onDisarm: () => {},
+        onDiscardPoints: () => {},
+      });
+      // 宿主の対象の見張りと同じ置き方。見張りの hook の後ろで、選択が動いた回に読む。
+      const activeFeature = useStore(store, (s) => s.activeFeature);
+      useEffect(() => {
+        seen.push([activeFeature, guard.isBoardOpen()]);
+      }, [activeFeature, guard]);
+      return null;
+    }
+    render(<Harness />);
+    act(() => store.getState().setActiveFeature(B));
+    // B へ動いた最初の回から、板のことが読める（`pending` はこの回ではまだ古い）。
+    expect(seen.find(([id]) => id === B)?.[1]).toBe(true);
   });
 
   it('確定できる下書き: 捨てるで選んだほうを残し、下書きだけ捨てて言い、視点を合わせる', () => {

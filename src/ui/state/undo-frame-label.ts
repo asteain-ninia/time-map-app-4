@@ -52,10 +52,10 @@ export interface UndoFrameLabels<S> {
   /**
    * 枠に出す言葉。戻せるものが履歴に無ければ null。
    *
-   * `surveyLineRemoved` が真のとき、次の Ctrl+Z は履歴ではなく消した測量の線を戻す
-   * （`App` の `runUndo`）。履歴の先頭の名前を言うと嘘になるので null を返し、枠は可否だけを言う。
+   * `nextUndoIsElsewhere` が真のとき、次の Ctrl+Z は履歴ではなく別のもの（消した測量の線・道具の
+   * 打った点）を戻す。履歴の先頭の名前を言うと嘘になるので null を返し、枠は可否だけを言う。
    */
-  frameLabel(history: History<S>, surveyLineRemoved: boolean): string | null;
+  frameLabel(history: History<S>, nextUndoIsElsewhere: boolean): string | null;
 }
 
 export function createUndoFrameLabels<S>(): UndoFrameLabels<S> {
@@ -72,8 +72,8 @@ export function createUndoFrameLabels<S>(): UndoFrameLabels<S> {
       byCommand.set(command, text);
     },
     labelOf,
-    frameLabel(history, surveyLineRemoved): string | null {
-      if (surveyLineRemoved) return null;
+    frameLabel(history, nextUndoIsElsewhere): string | null {
+      if (nextUndoIsElsewhere) return null;
       const top = history.undoStack.at(-1);
       return top === undefined ? null : labelOf(top);
     },

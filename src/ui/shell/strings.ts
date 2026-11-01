@@ -129,6 +129,8 @@ export const APP_STRINGS = {
     'ボタンを離した知らせが届かなかったので、引いていたものを取り消しました。何も記録していません。',
   /** 道具が掴んでいた面がいまの年に居なくなり、手放したとき（B112）。 */
   toolTargetGoneByTime: '掴んでいた面はこの年にありません。対象から外しました。',
+  /** 道具が掴んでいた面が隠れて描かれなくなり、手放したとき（面は居る。B134）。 */
+  toolTargetReleasedHidden: '掴んでいた面は隠れたので、対象から外しました。',
   markDroppedByTime: (count: number): string =>
     `この年に居ない ${String(count)} 件の印を外しました。`,
   /**

@@ -850,9 +850,13 @@ export function App(): JSX.Element {
     statusMessageStore.notice(APP_STRINGS.dragCancelledByProject);
   }, [dragLoadNonce, statusMessageStore]);
   // 打ちかけを黙って消さない（設計書 §D.4.1 / §H.5 の「直前の結果」）。
+  // 下書きを捨てた文（続いて対象を手放したら、同じ文の後ろへ続ける。B134）。
+  const selectionDiscardNoticeRef = useRef<string | null>(null);
   const onToolDraftDiscarded = useCallback(
     (count: number) => {
-      statusMessageStore.notice(ADD_STRINGS.draftDiscarded(count));
+      const text = ADD_STRINGS.draftDiscarded(count);
+      selectionDiscardNoticeRef.current = text;
+      statusMessageStore.notice(text);
     },
     [statusMessageStore],
   );
@@ -895,6 +899,7 @@ export function App(): JSX.Element {
           statusMessageStore.notice(DRAFT_DISCARD_STRINGS.projectSwitchedDiscarded(what));
           return;
         case DRAFT_LOSS_CAUSE.SelectionMoved:
+          selectionDiscardNoticeRef.current = what;
           statusMessageStore.notice(what);
           return;
       }
@@ -903,12 +908,25 @@ export function App(): JSX.Element {
   );
   // 道具が掴んでいた面がいまの年に居なくなり、手放したことを言う（B112）。移動の知らせに上書き
   // されないよう、印を外したときと同じく移動の知らせの後ろへ続ける文としても控える。
-  const onToolTargetGone = useCallback(() => {
-    const text = APP_STRINGS.toolTargetGoneByTime;
-    const time = store.getState().currentTime;
-    noticeAfterRangeClamp(text, time);
-    statusMessageStore.stageMoveTrailer(moveTrailerKey(time), text);
-  }, [noticeAfterRangeClamp, statusMessageStore, store]);
+  const onToolTargetGone = useCallback(
+    (targetId: FeatureId) => {
+      const s = store.getState();
+      const time = s.currentTime;
+      // 面がこの年に居るなら、居なくなったのではなく隠れて描かれなくなった（B134。隠した面は選んでいる
+      // あいだだけ描く）。理由が違うので文を分ける。
+      const hidden = featureByIdAt(s.domain, time, targetId) !== undefined;
+      const text = hidden ? APP_STRINGS.toolTargetReleasedHidden : APP_STRINGS.toolTargetGoneByTime;
+      const shown = statusMessageStore.get()?.text;
+      if (hidden && shown !== undefined && shown === selectionDiscardNoticeRef.current) {
+        // 一覧で選んで下書きを捨てた直後なら、捨てたことが読めるように同じ文の後ろへ続ける。
+        statusMessageStore.notice(`${shown}${text}`);
+      } else {
+        noticeAfterRangeClamp(text, time);
+      }
+      statusMessageStore.stageMoveTrailer(moveTrailerKey(time), text);
+    },
+    [noticeAfterRangeClamp, statusMessageStore, store],
+  );
 
   /**
    * **直前に消した測量の線を戻す**（増分 8C の手直し / 反証 #2）。状態行の［戻す］と、
@@ -4424,10 +4442,11 @@ export function App(): JSX.Element {
               // 測量の線を消した直後は Ctrl+Z がその線を戻すので「可」（増分 8C の手直し）。
               canUndo:
                 historyCanUndo(historyRef.current) || store.getState().survey.removed !== null,
-              // 何が戻るのかまで言う（設計書 §C.8）。`runUndo` の文と同じ覚えから引く。
+              // 何が戻るのかまで言う（設計書 §C.8）。`runUndo` の文と同じ覚えから引く。道具が戻す点を
+              // 持っているあいだは、Ctrl+Z は履歴ではなくその点を戻すので、履歴の名前を言わない（B10 と B64）。
               lastLabel: undoFrameLabelsRef.current.frameLabel(
                 historyRef.current,
-                store.getState().survey.removed !== null,
+                store.getState().survey.removed !== null || toolHoldsUndoPoint,
               ),
             }}
             lastSavedAtMs={saveStatus.savedAtMs}
@@ -5803,8 +5822,12 @@ function createRingEditBootstrap(
   // binding uses (二重真実源を作らない, 教訓 5.29). featureAtPoint picks an INDIVIDUAL
   // leaf (like merge) — ring-edit targets one末端 face's ring set, so a child inside an
   // aggregate must be directly pickable (HB3-16 と同型).
+  // 取得のときだけでなく持っているあいだも同じ関門を通す（分けると同じ。描いていない面を掴んだまま
+  // 残さない。B134）。
   const resolveFeature: RingResolveFeature = (featureId): Feature | undefined =>
-    featuresAt(getRoot(), getTime()).find((f) => f.id === featureId);
+    isVisibleTarget(featureId)
+      ? featuresAt(getRoot(), getTime()).find((f) => f.id === featureId)
+      : undefined;
   const resolveStore: RingResolveStore = (): VertexStore => verticesAt(getRoot(), getTime());
   // FR-113 (Codex F1): reject an FR-113-hidden leaf so a 個別非表示 / 種別オフ / 深度 leaf
   // is never a ring-edit target (raw-leaf picking preserved; only visibility layered on).
@@ -5925,8 +5948,12 @@ function createDrillBootstrap(
   // leaf (like merge / ring-edit) — drill targets one末端 face, so a child inside an
   // aggregate must be directly pickable (HB3-16 と同型); the hook's LEAF gate +
   // checkDrillable's NotTerminal reject a body-click that resolves to an aggregate.
+  // 取得のときだけでなく持っているあいだも同じ関門を通す（分けると同じ。描いていない面を掴んだまま
+  // 残さない。B134）。
   const resolveFeature: DrillResolveFeature = (featureId): Feature | undefined =>
-    featuresAt(getRoot(), getTime()).find((f) => f.id === featureId);
+    isVisibleTarget(featureId)
+      ? featuresAt(getRoot(), getTime()).find((f) => f.id === featureId)
+      : undefined;
   const resolveStore: DrillResolveStore = (): VertexStore => verticesAt(getRoot(), getTime());
   // FR-113 (Codex F1): reject an FR-113-hidden leaf as a drill target (raw-leaf preserved).
   const featureAtPoint: DrillFeatureAtPoint = (point): FeatureId | null => {

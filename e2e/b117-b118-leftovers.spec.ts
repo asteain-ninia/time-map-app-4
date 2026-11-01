@@ -99,6 +99,40 @@ async function draftBesideOther(
   return { target, other, cx, cy };
 }
 
+/** 同じ年に面を 2 つ置き、中央の面を隠して選んだまま道具で掴む（点はまだ打たない）。 */
+async function hiddenTargetBesideOther(
+  page: Page,
+  c: ToolCase,
+): Promise<{ readonly target: string; readonly other: string; readonly cx: number; readonly cy: number }> {
+  await jumpToYear(page, 1500);
+  const other = await faceBeside(page, OTHER_NAME, -320);
+  const { faceId: target, cx, cy } = await commitOneFace(page);
+  await page.getByTestId('tool-edit.select').click();
+  await page.mouse.click(cx, cy);
+  await hideFaceAt(page, cx, cy);
+  await expect(page.getByTestId('app-active-feature')).toHaveText(target);
+  await page.getByTestId(`tool-${c.tool}`).click();
+  await page.mouse.click(cx, cy);
+  await expect(page.getByTestId(c.root)).not.toHaveAttribute('data-flow', RELEASED);
+  return { target, other, cx, cy };
+}
+
+/** 対象を離し、選択は押した地物で、道具は持ったまま。状態行は年の話をせず、隠れたからと言う。 */
+async function expectReleasedBecauseHidden(
+  page: Page,
+  c: ToolCase,
+  selected: string,
+  discarded: string | null,
+): Promise<void> {
+  await expect(page.getByTestId(c.root)).toHaveAttribute('data-flow', RELEASED);
+  await expect(page.getByTestId('app-active-feature')).toHaveText(selected);
+  await expect(page.getByTestId('app-active-tool')).toHaveText(c.tool);
+  const result = page.getByTestId('statusbar-result');
+  await expect(result).toContainText(APP_STRINGS.toolTargetReleasedHidden);
+  await expect(result).not.toContainText(APP_STRINGS.toolTargetGoneByTime);
+  if (discarded !== null) await expect(result).toContainText(discarded);
+}
+
 async function expectNoBoard(page: Page): Promise<void> {
   await page.waitForTimeout(400);
   await expect(page.locator('[data-testid$="-draft-discard-confirm"]')).toHaveCount(0);
@@ -192,6 +226,75 @@ for (const c of CASES) {
       }
     });
 
+    test('隠して掴んだ面: 下書きのまま一覧で別の地物を選ぶ。続けるなら掴んだまま、捨てるなら対象を離して隠れたからと言う', async () => {
+      const { app, page } = await launchApp();
+      try {
+        const { target, other, cx, cy } = await hiddenTargetBesideOther(page, c);
+        for (const [dx, dy] of c.full) await page.mouse.click(cx + dx, cy + dy);
+        await expect(page.getByTestId(c.count)).toHaveText(String(c.full.length));
+        const confirm = page.getByTestId(`${c.prefix}-confirm`);
+
+        // 板が開いているあいだは手放さない（［続ける］で元へ戻れる）。
+        await page.getByTestId(`feature-list-item-${other}`).click();
+        await expect(confirm).toBeVisible();
+        await page.getByTestId(`${c.prefix}-no`).click();
+        await expectNoBoard(page);
+        await expect(page.getByTestId('app-active-feature')).toHaveText(target);
+        await expect(page.getByTestId(c.root)).not.toHaveAttribute('data-flow', RELEASED);
+        await expect(page.getByTestId(c.count)).toHaveText(String(c.full.length));
+
+        await page.getByTestId(`feature-list-item-${other}`).click();
+        await page.getByTestId(`${c.prefix}-yes`).click();
+        await expectNoBoard(page);
+        await expectReleasedBecauseHidden(page, c, other, ADD_STRINGS.draftDiscarded(c.full.length));
+        // 見えなくなった面は押しても掴めない。視点が動くので、面の今の位置は一覧の選び直しで確かめない。
+        await expect(page.getByTestId(c.count)).toHaveText('0');
+      } finally {
+        await app.close();
+      }
+    });
+
+    test('隠して掴んだ面: 確定できない点数なら聞かずに捨てて、対象を離して隠れたからと言う', async () => {
+      const { app, page } = await launchApp();
+      try {
+        const { other, cx, cy } = await hiddenTargetBesideOther(page, c);
+        for (const [dx, dy] of c.short) await page.mouse.click(cx + dx, cy + dy);
+        await expect(page.getByTestId(c.count)).toHaveText(String(c.short.length));
+        await page.getByTestId(`feature-list-item-${other}`).click();
+        await expectNoBoard(page);
+        await expectReleasedBecauseHidden(page, c, other, ADD_STRINGS.draftDiscarded(c.short.length));
+      } finally {
+        await app.close();
+      }
+    });
+
+    test('隠して掴んだ面: 下書きが無くても、一覧で別の地物を選ぶと対象を離して隠れたからと言う', async () => {
+      const { app, page } = await launchApp();
+      try {
+        const { other } = await hiddenTargetBesideOther(page, c);
+        await page.getByTestId(`feature-list-item-${other}`).click();
+        await expectReleasedBecauseHidden(page, c, other, null);
+      } finally {
+        await app.close();
+      }
+    });
+
+    test('見えている面は、［捨てる］のあとも掴んだまま（受け入れた決定）', async () => {
+      const { app, page } = await launchApp();
+      try {
+        const { other } = await draftBesideOther(page, c, c.full);
+        await page.getByTestId(`feature-list-item-${other}`).click();
+        await page.getByTestId(`${c.prefix}-yes`).click();
+        await expectNoBoard(page);
+        await expect(page.getByTestId('app-active-feature')).toHaveText(other);
+        await expect(page.getByTestId(c.count)).toHaveText('0');
+        await expect(page.getByTestId(c.root)).not.toHaveAttribute('data-flow', RELEASED);
+        await expect(page.getByTestId('statusbar-result')).not.toContainText(APP_STRINGS.toolTargetReleasedHidden);
+      } finally {
+        await app.close();
+      }
+    });
+
     test('隠していて選んでいない面は、見えないので掴めない', async () => {
       const { app, page } = await launchApp();
       try {
@@ -258,6 +361,87 @@ test.describe('B118 — 下書きと選択', () => {
       await app.close();
     }
   });
+
+  test('隠して掴んだ面: 素性を入れている局面で［捨てる］と、対象を離して隠れたからと言う', async () => {
+    const { app, page } = await launchApp();
+    try {
+      const drill = CASES[1]!;
+      const { other, cx, cy } = await hiddenTargetBesideOther(page, drill);
+      for (const [dx, dy] of drill.full) await page.mouse.click(cx + dx, cy + dy);
+      await page.getByTestId(drill.confirm).click();
+      await expect(page.getByTestId('add-name')).toBeVisible();
+      await page.getByTestId(`feature-list-item-${other}`).click();
+      await page.getByTestId(`${drill.prefix}-yes`).click();
+      await expectNoBoard(page);
+      await expect(page.getByTestId('add-property-form')).toHaveCount(0);
+      await expectReleasedBecauseHidden(page, drill, other, DRAFT_DISCARD_STRINGS.discardedRegion);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // B116 と同じ形（保存が選択を移す 1 回の描画だけ「選択は新しい面、下書きはまだある」に見える）が、
+  // 3 道具の見張りに無いことを確かめる。あとから板の有無を見るだけでは、畳まれた板を読めない。
+  for (const c of CASES) {
+    test(`${c.tool}: 確定で「捨てますか」の板は 1 度も DOM に現れず、隠れたとも言わない`, async () => {
+      const { app, page } = await launchApp();
+      try {
+        await draftBesideOther(page, c, c.full);
+        await page.evaluate(() => {
+          const seen = { boards: 0 };
+          (window as unknown as { __flash: typeof seen }).__flash = seen;
+          new MutationObserver(() => {
+            if (document.querySelector('[data-testid$="-draft-discard-confirm"]') !== null) seen.boards += 1;
+          }).observe(document.body, { childList: true, subtree: true, characterData: true });
+        });
+        await page.getByTestId(c.confirm).click();
+        if (c.tool === 'edit.knife') await page.getByTestId('knife-confirm-inheritor').click();
+        if (c.tool !== 'edit.ring') {
+          await page.getByTestId('add-name').fill('B118-new');
+          await page.getByTestId('add-save').click();
+          await expect(page.getByTestId('add-property-form')).toHaveCount(0);
+        }
+        await page.waitForTimeout(200);
+        const seen = await page.evaluate(
+          () => (window as unknown as { __flash: { boards: number } }).__flash,
+        );
+        expect(seen).toEqual({ boards: 0 });
+        await expect(page.getByTestId('statusbar-result')).not.toContainText(APP_STRINGS.toolTargetReleasedHidden);
+      } finally {
+        await app.close();
+      }
+    });
+
+    test(`${c.tool}: 隠して掴んだ面を確定しても、板は出ず、隠れたとも言わない`, async () => {
+      const { app, page } = await launchApp();
+      try {
+        const { cx, cy } = await hiddenTargetBesideOther(page, c);
+        for (const [dx, dy] of c.full) await page.mouse.click(cx + dx, cy + dy);
+        await page.evaluate(() => {
+          const seen = { boards: 0 };
+          (window as unknown as { __flash: typeof seen }).__flash = seen;
+          new MutationObserver(() => {
+            if (document.querySelector('[data-testid$="-draft-discard-confirm"]') !== null) seen.boards += 1;
+          }).observe(document.body, { childList: true, subtree: true, characterData: true });
+        });
+        await page.getByTestId(c.confirm).click();
+        if (c.tool === 'edit.knife') await page.getByTestId('knife-confirm-inheritor').click();
+        if (c.tool !== 'edit.ring') {
+          await page.getByTestId('add-name').fill('B118-new');
+          await page.getByTestId('add-save').click();
+          await expect(page.getByTestId('add-property-form')).toHaveCount(0);
+        }
+        await page.waitForTimeout(200);
+        const seen = await page.evaluate(
+          () => (window as unknown as { __flash: { boards: number } }).__flash,
+        );
+        expect(seen).toEqual({ boards: 0 });
+        await expect(page.getByTestId('statusbar-result')).not.toContainText(APP_STRINGS.toolTargetReleasedHidden);
+      } finally {
+        await app.close();
+      }
+    });
+  }
 
   test('隠していて選んでいない面は［動かす］で引けない', async () => {
     const { app, page } = await launchApp();
