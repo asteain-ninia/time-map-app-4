@@ -97,3 +97,26 @@ describe('CommandRegistry — 断ったことを伝える（A5）', () => {
     expect(() => registry.dispatch(COMMAND_ID.EditUndo)).not.toThrow();
   });
 });
+
+describe('CommandRegistry — 実行の直前の関門（読み込みの間の編集を断る。B120）', () => {
+  it('関門が真なら実行せず、取り外せば実行する', () => {
+    const registry = new CommandRegistry();
+    const run = vi.fn();
+    registry.register(COMMAND_ID.EditDelete, { run });
+    const remove = registry.setDispatchGate((id) => id === COMMAND_ID.EditDelete);
+    expect(registry.dispatch(COMMAND_ID.EditDelete)).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+    remove();
+    expect(registry.dispatch(COMMAND_ID.EditDelete)).toBe(true);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('関門が偽のコマンドは普通に走る', () => {
+    const registry = new CommandRegistry();
+    const run = vi.fn();
+    registry.register(COMMAND_ID.EditUndo, { run });
+    registry.setDispatchGate((id) => id === COMMAND_ID.EditDelete);
+    expect(registry.dispatch(COMMAND_ID.EditUndo)).toBe(true);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+});

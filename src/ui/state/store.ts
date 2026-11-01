@@ -323,6 +323,12 @@ export interface SessionStoreState<S> {
    */
   readonly undoRedoNonce: number;
   /**
+   * ファイルの読み込みが動いているか（`docs/現状.md` の B120 の直し）。真の間は書類を変える操作を断る。
+   * 反映の出口（{@link SessionStoreActions.reflectLoadedProject}）で同じ書き込みの中で偽に戻るので、
+   * 反映のあとに走る処理は断られない。やめた・失敗したときは `FileOpsController` が戻す。
+   */
+  readonly documentLoadActive: boolean;
+  /**
    * プロジェクトを読み込んだ／新規にした回数（増分 4 の手直し B10）。
    *
    * 一覧のセッション状態（絞り込み・展開・束）は読み込みで捨てるが、**スクロール位置は
@@ -473,6 +479,16 @@ export interface SessionStoreActions<S> {
    * 戻り値は取り外す関数。
    */
   addTimeChangeGate(gate: TimeChangeGate): () => void;
+  /** 読み込みの始まりと終わりを知らせる（持ち主は `FileOpsController`）。 */
+  setDocumentLoadActive(active: boolean): void;
+  /**
+   * **書類を変える処理が必ず通る関門**。読み込みが動いていれば、断ったことを知らせて真を返す（呼ぶ側は
+   * 何もせずに帰る）。動いていなければ何もせず偽。店の中の書き込み口のほか、履歴を進める前に
+   * `App` の `recordCommand` も呼ぶ（履歴は店の外にあるので、店の中で断ると履歴だけ進む）。
+   */
+  refuseEditDuringLoad(): boolean;
+  /** 断ったことを聞く口を足す（状態行へ出す `App`）。戻り値は取り外す関数。 */
+  addLoadRefusalListener(listener: () => void): () => void;
   setTimelineRange(min: TimePoint, max: TimePoint): void;
 
   // camera / longitude
@@ -1079,6 +1095,8 @@ export function createSessionStore<S>(
   const calendar = options.calendar ?? getCalendar('gregorian');
   // 時刻の変更を差し止める関門（`addTimeChangeGate`。B112）。
   const timeChangeGates = new Set<TimeChangeGate>();
+  // 読み込みの間に書類を変える操作を断ったことを聞く口（`addLoadRefusalListener`。B120）。
+  const loadRefusalListeners = new Set<() => void>();
   // `setCurrentTime` が関門を通したあとの書き込み中（出口でもう一度知らせない）。
   let committingTimeMove = false;
   const domainEquals = options.domainEquals ?? Object.is;
@@ -1362,6 +1380,7 @@ export function createSessionStore<S>(
     filter: init.filter ?? DEFAULT_FILTER_STATE,
     ledger: DEFAULT_LEDGER_STATE,
     undoRedoNonce: 0,
+    documentLoadActive: false,
     projectLoadNonce: 0,
     projectSettings: init.projectSettings ?? DEFAULT_PROJECT_SETTINGS,
     appSettings: init.appSettings ?? DEFAULT_APP_SETTINGS,
@@ -1566,6 +1585,7 @@ export function createSessionStore<S>(
     },
 
     setDomainState(nextDomain) {
+      if (get().refuseEditDuringLoad()) return;
       // A domain swap (any edit path) marks the project dirty (spec §B 単一基準).
       // A LOAD / NEW also swaps the domain but is a clean baseline; those paths
       // clear the flag with markProjectSaved() in the SAME transition (教訓 5.36),
@@ -1827,6 +1847,23 @@ export function createSessionStore<S>(
       timeChangeGates.add(gate);
       return () => {
         timeChangeGates.delete(gate);
+      };
+    },
+
+    setDocumentLoadActive(active) {
+      if (get().documentLoadActive !== active) set({ documentLoadActive: active });
+    },
+
+    refuseEditDuringLoad() {
+      if (!get().documentLoadActive) return false;
+      for (const listener of loadRefusalListeners) listener();
+      return true;
+    },
+
+    addLoadRefusalListener(listener) {
+      loadRefusalListeners.add(listener);
+      return () => {
+        loadRefusalListeners.delete(listener);
       };
     },
 
@@ -2141,6 +2178,7 @@ export function createSessionStore<S>(
     setBundle(bundle) {
       const cur = get().ledger;
       if (cur.bundle === bundle) return;
+      if (get().refuseEditDuringLoad()) return;
       set({ ledger: { ...cur, bundle }, projectDirty: true });
     },
 
@@ -2153,6 +2191,7 @@ export function createSessionStore<S>(
       if (cur.bundle === null) return;
       const next = withBundleCursor(cur.bundle, cursor);
       if (next === cur.bundle) return;
+      if (get().refuseEditDuringLoad()) return;
       set({ ledger: { ...cur, bundle: next }, projectDirty: true });
     },
 
@@ -2235,6 +2274,7 @@ export function createSessionStore<S>(
       if (scope !== SETTINGS_SCOPE.Project) {
         throw new Error(`not a project setting: ${String(key)}`);
       }
+      if (get().refuseEditDuringLoad()) return;
       const nextProject: ProjectSettings = {
         ...get().projectSettings,
         [key]: value,
@@ -2268,6 +2308,7 @@ export function createSessionStore<S>(
     },
 
     setProjectTimelineRangeYears(minYear, maxYear) {
+      if (get().refuseEditDuringLoad()) return;
       // finding bughunt2: the settings-dialog confirm writes changed project keys
       // one at a time, and the two timeline bounds are written in
       // PROJECT_SETTING_KEYS order (timelineMinYear before timelineMaxYear). When
@@ -2340,6 +2381,7 @@ export function createSessionStore<S>(
       // the decision lives once. The setting still round-trips into the file on the
       // next genuine save (the persistence bridge is unchanged).
       const dirties = appSettingDirtiesProject(key);
+      if (dirties && get().refuseEditDuringLoad()) return;
       set({
         appSettings: clamped,
         ...(dirties ? { projectDirty: true } : {}),
@@ -2477,6 +2519,8 @@ export function createSessionStore<S>(
           : {}),
         // -- clean baseline + derived range/time (both halves cleared dirty) --
         projectDirty: notOnDisk,
+        // 反映で読み込みは終わり。反映のあとに走る処理を断らない（B120）。
+        documentLoadActive: false,
         ...timelinePatch,
       });
     },

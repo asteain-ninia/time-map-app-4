@@ -299,8 +299,15 @@ export function createMountInput(options: MountInputOptions): MountInput {
     // 5.29) rather than each re-implementing setPointerCapture/release.
     const heldBefore = dispatcher.holdsEditPress;
     dispatcher.pointerDown(PointerDispatcher.normalize(e, x, y), hookTarget);
+    if (heldBefore || !dispatcher.holdsEditPress) return;
+    // 読み込みの間は掴ませない（離すまで動いて見えてから消える形にしない。B120）。選ぶ・地図の移動は断らない。
+    if (store.getState().refuseEditDuringLoad()) {
+      dispatcher.pointerCancel(e.pointerId);
+      candidateGesture?.cancel(e.pointerId);
+      return;
+    }
     // 掴んだ瞬間の年が記録の年になる。ここから先、再生で年を進めない。
-    if (!heldBefore && dispatcher.holdsEditPress) options.dragYearHostRef?.current?.pressBegan();
+    options.dragYearHostRef?.current?.pressBegan();
   };
   const onPointerMove = (e: PointerEvent): void => {
     const { x, y } = toSurface(e.clientX, e.clientY);

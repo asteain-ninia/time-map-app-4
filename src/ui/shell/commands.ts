@@ -171,6 +171,19 @@ export interface CommandHandler {
  */
 export class CommandRegistry {
   private readonly handlers = new Map<CommandId, CommandHandler>();
+  private dispatchGate: ((id: CommandId) => boolean) | null = null;
+
+  /**
+   * 実行の直前に通す関門を置く（真なら実行しない）。読み込みの間に編集のコマンドを断るのに使う
+   * （B120）。鍵盤・メニュー・右クリック・Ctrl+P は全部 {@link dispatch} を通るので、ここ 1 か所で閉じる。
+   * 理由を言うのは関門の側の仕事。戻り値は取り外す関数。
+   */
+  setDispatchGate(gate: (id: CommandId) => boolean): () => void {
+    this.dispatchGate = gate;
+    return () => {
+      if (this.dispatchGate === gate) this.dispatchGate = null;
+    };
+  }
 
   /** Register (or replace) the handler for a command id. */
   register(id: CommandId, handler: CommandHandler): void {
@@ -208,6 +221,7 @@ export class CommandRegistry {
   dispatch(id: CommandId): boolean {
     const handler = this.handlers.get(id);
     if (handler === undefined) return false;
+    if (this.dispatchGate?.(id) === true) return false;
     if (handler.canRun !== undefined && !handler.canRun()) {
       handler.onRefused?.(COMMAND_REFUSAL.NotRunnable);
       return false;

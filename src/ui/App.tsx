@@ -24,7 +24,7 @@ import { TOOL_ID, isSelectTool } from './shell/tools';
 import { APP_STRINGS, DRAFT_DISCARD_STRINGS, MENU_ITEM_LABELS, SENTENCE_END } from './shell/strings';
 import { DRAFT_LOSS_CAUSE, type DraftLossCause } from './shell/useDraftTimeGate';
 import { DRAG_CANCEL_CAUSE, type DragYearHost } from './map/drag-year';
-import { AppShell, SIDEBAR_SECTION } from './shell';
+import { AppShell, SIDEBAR_SECTION, isEditingCommand } from './shell';
 import { buildSidebarContent } from './shell/SidebarContent';
 import { keepPanelsPresent } from './property/detail-panels';
 import {
@@ -788,9 +788,30 @@ export function App(): JSX.Element {
         return;
       }
       // やめた・失敗した: 反映が無いので、反映のあとで言う文はもう要らない（始めたときに言ってある）。
-      if (nonce === loadStartNonceRef.current) dragCancelledByLoadRef.current = false;
+      if (nonce !== loadStartNonceRef.current) return;
+      dragCancelledByLoadRef.current = false;
+      // もう断っていないので、断りの文を残さない（反映なら状態行ごと消える）。
+      if (statusMessageStore.get()?.text === APP_STRINGS.editRefusedDuringLoad) statusMessageStore.clear();
     },
-    [store],
+    [store, statusMessageStore],
+  );
+  // 読み込みの間に断ったことを状態行で言う（B120）。確定の経路は記録のあとに自分の成功の文（「〈名前〉を
+  // 削除しました」など）を続けるものがあるので、同じ実行が終わってから書いて、嘘の成功を残さない。
+  useEffect(
+    () =>
+      store.getState().addLoadRefusalListener(() => {
+        queueMicrotask(() => {
+          if (store.getState().documentLoadActive) {
+            statusMessageStore.notice(APP_STRINGS.editRefusedDuringLoad);
+          }
+        });
+      }),
+    [store, statusMessageStore],
+  );
+  useEffect(
+    () =>
+      registry.setDispatchGate((id) => isEditingCommand(id) && store.getState().refuseEditDuringLoad()),
+    [registry, store],
   );
   const dragLoadNonce = useStore(store, (s) => s.projectLoadNonce);
   useEffect(() => {
@@ -1532,6 +1553,8 @@ export function App(): JSX.Element {
       preference: NextTargetPreference | undefined,
       anchorTime: TimePoint,
     ): void => {
+      // 全部の確定がここを通る。履歴を進める前に断る（店で断ると履歴だけ進む。B120）。
+      if (store.getState().refuseEditDuringLoad()) return;
       const wrapped = maybeComposeAutoRecolor(command, historyRef.current.state, anchorTime);
       const step = historyExecute(historyRef.current, wrapped);
       historyRef.current = step.history;
@@ -2065,6 +2088,8 @@ export function App(): JSX.Element {
    */
   const requestDelete = useCallback(
     (selection: EditDeleteSelection): void => {
+      // 確認の板を出してから読み込みが終わると、新しい書類へ効く。板を出す前に断る（B120）。
+      if (store.getState().refuseEditDuringLoad()) return;
       if (selection.vertexIds.size > 0 && selection.vertexOwner !== null) {
         const plan = buildVertexDeletePlan(
           { getRoot: () => store.getState().domain, getTime: () => store.getState().currentTime },

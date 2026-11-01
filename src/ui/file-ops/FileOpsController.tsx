@@ -586,8 +586,9 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   const loadActiveRef = useRef(false);
   const noteLoadStarted = useCallback((): void => {
     loadActiveRef.current = true;
+    store.getState().setDocumentLoadActive(true);
     onLoadActivityRef.current?.(true);
-  }, []);
+  }, [store]);
   const runExclusive = useCallback(
     async <T,>(op: () => Promise<T>): Promise<T | undefined> => {
       if (opInFlightRef.current) return undefined;
@@ -598,6 +599,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         opInFlightRef.current = false;
         if (loadActiveRef.current) {
           loadActiveRef.current = false;
+          store.getState().setDocumentLoadActive(false);
           onLoadActivityRef.current?.(false);
         }
         // UC1: the TOTAL discard point for a staged asset capture. Every load entry
@@ -608,7 +610,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         discardPendingAssets();
       }
     },
-    [discardPendingAssets],
+    [discardPendingAssets, store],
   );
 
   const [pendingUnsaved, setPendingUnsaved] = useState<PendingUnsaved | null>(null);
