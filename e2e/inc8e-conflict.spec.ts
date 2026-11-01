@@ -165,9 +165,12 @@ test.describe('増分 8E — 重なりを解消する（V13 の 7 手）', () =>
         expect(r.min >= band.max - eps || r.max <= band.min + eps, `片 ${JSON.stringify(r)} が帯 ${JSON.stringify(band)} に重なる`).toBe(true);
       }
 
+      // 戻せることが、状態行の元に戻す枠で分かる（設計書 §E.1 の V13 の取り消し。B10）。
+      await expect(page.getByTestId('statusbar-undo')).toHaveText('元に戻せます: 重なりの解消（Ctrl+Z）');
+
       // 取り消し: Ctrl+Z 1 回で、解決の適用（＝止まっていた追加ごと）がまるごと戻る。
       await page.keyboard.press('Control+z');
-      await expect(result).toContainText('元に戻しました');
+      await expect(result).toContainText('元に戻しました: 重なりの解消');
       await expect.poll(async () => drawnFeatureCount(page)).toBe(1);
       // 形・頂点・企画の数が、2 つ目を描く前とまったく同じ。
       expect(await drawnShapes(page)).toEqual(before);

@@ -14,6 +14,9 @@ import { fileURLToPath } from 'node:url';
 
 import { test, expect } from '@playwright/test';
 
+import { PROPERTY_STRINGS } from '../src/ui/property/messages';
+import { COMMAND_LABEL_TEXT } from '../src/ui/shell/command-result-strings';
+
 import { commitOneFace, enterEditMode, launchApp, launchAppWithProject } from './helpers';
 
 const REAL_DATA_FILE = 'derle-world-full-2026-08-16.gimoza';
@@ -67,12 +70,10 @@ test.describe('状態行の 5 枠と、アプリバーの素性（設計書 §C.
       await expect(page.getByTestId('app-identity-dirty')).toHaveCount(1);
       expect(await page.title()).toContain('●');
 
-      // 戻せることが常に見えている（実運用に踏み切れない不安への直接の答え）。
-      // **操作名までは出していない**: いまの Command.label はドメイン側が日本語・UI 側が
-      // 内部の英語（'edit' / 'delete' ほか）で揃っておらず、そのまま出すと U-1 に反する。
-      // 語彙を揃えるまで可否だけを出す（現状.md の申し送り）。
+      // 戻せることと、**何が戻るのか**が常に見えている（設計書 §C.8。実運用に踏み切れない不安への
+      // 直接の答え。B10）。内部の英語は出さない。
       const undo = page.getByTestId('statusbar-undo');
-      await expect(undo).toHaveText('元に戻す: 可 Ctrl+Z');
+      await expect(undo).toHaveText(/^元に戻せます: [^a-z]+（Ctrl\+Z）$/);
 
       // 履歴が空になるまで取り消すと「不可」へ戻る。面を 1 つ描いて保存する手順は
       // 「面の確定」と「素性の保存」で 2 手ぶん積むので、1 回では空にならない。
@@ -87,6 +88,42 @@ test.describe('状態行の 5 枠と、アプリバーの素性（設計書 §C.
         await expect(page.getByTestId('app-can-undo')).toHaveText('0', { timeout: 1_000 });
       }).toPass({ timeout: 15_000 });
       await expect(undo).toHaveText('元に戻す: 不可');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('元に戻す枠は対象の名前と操作名を言い、取り消すと次に戻る操作へ変わる（B10）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await commitOneFace(page);
+      await enterEditMode(page);
+      const undo = page.getByTestId('statusbar-undo');
+      const beforeRename = await undo.textContent();
+
+      const nameInput = page.getByTestId('basic-info').getByLabel(PROPERTY_STRINGS.nameLabel);
+      await nameInput.fill('南ケナ州');
+      await page.getByTestId('save-button').click();
+      await expect(page.getByTestId('save-message')).toHaveCount(0);
+      const expected = `元に戻せます: 南ケナ州の${COMMAND_LABEL_TEXT.editOverwrite}（Ctrl+Z）`;
+      await expect(undo).toHaveText(expected);
+      // 枠は 160px のまま。入りきらない文は枠を押し広げず、全文は指し示すと読める。
+      await expect(undo).toHaveAttribute('title', expected);
+      const frame = await page.locator('.statusbar__frame--undo').boundingBox();
+      expect(frame!.width).toBeCloseTo(160, 0);
+      const clipped = await undo.locator('span').evaluate((e) => ({
+        overflow: getComputedStyle(e).textOverflow,
+        cut: e.scrollWidth > e.clientWidth,
+      }));
+      expect(clipped).toEqual({ overflow: 'ellipsis', cut: true });
+
+      // 取り消すと、枠は **次に戻る操作** を言う（直前の結果の枠は戻した操作を言う）。
+      await page.getByTestId('map-input-layer').click({ position: { x: 5, y: 5 } });
+      await page.keyboard.press('Control+z');
+      await expect(page.getByTestId('statusbar-result')).toContainText(
+        `元に戻しました: 南ケナ州の${COMMAND_LABEL_TEXT.editOverwrite}`,
+      );
+      await expect(undo).toHaveText(beforeRename!);
     } finally {
       await app.close();
     }

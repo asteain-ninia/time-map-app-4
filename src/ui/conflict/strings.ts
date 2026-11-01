@@ -52,6 +52,8 @@ export const CONFLICT_STRINGS = {
  * 「何をしたか」を過去形で言い切り、どの年の話かを添える（§H.5）。
  */
 export const RESOLVED_STRINGS = {
+  /** 元に戻す枠に出す操作名（設計書 §E.1 の V13「元に戻せます: 重なりの解消（Ctrl+Z）」）。 */
+  undoLabel: '重なりの解消',
   /** 「アルラーク国とバアカの重なりを解消しました（1200年）」。 */
   one: (a: string, b: string, at: string): string => `${a}と${b}の重なりを解消しました（${at}）`,
   /** 2 件以上を一度に解消したとき。名前は最初の 1 件だけ出し、残りは件数で言う。 */

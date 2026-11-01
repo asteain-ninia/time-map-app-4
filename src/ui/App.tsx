@@ -178,6 +178,7 @@ import {
 } from '../domain/command/history';
 import { createCompositeCommand, type Command } from '../domain/command/index';
 import { createRedoPreferenceRegistry } from './state/redo-preference';
+import { createUndoFrameLabels, soleTouchedFeatureName } from './state/undo-frame-label';
 import { graftLiveBaseMap, reconcileHistoryOnExternalDomainSwap } from './state/history-reconcile';
 import {
   COMMAND_ID,
@@ -1550,6 +1551,7 @@ export function App(): JSX.Element {
   // at record time and look it back up for the exact Command a redo re-applies. undo
   // stays unchanged (deleted features drop via reresolve Step1; nothing to promote).
   const redoPreferenceRef = useRef(createRedoPreferenceRegistry<DomainRoot>());
+  const undoFrameLabelsRef = useRef(createUndoFrameLabels<DomainRoot>());
 
   // Re-evaluate the EditUndo / EditRedo enabled gates after any history change so
   // the menu / shortcut reflect availability immediately (FR-74). The registry's
@@ -1591,8 +1593,13 @@ export function App(): JSX.Element {
       // **記録したかを返す**: 呼び手は真のときだけ成功の文を出し、板や印を片付ける。
       if (store.getState().refuseEditDuringLoad()) return false;
       const wrapped = maybeComposeAutoRecolor(command, historyRef.current.state, anchorTime);
+      const before = historyRef.current.state;
       const step = historyExecute(historyRef.current, wrapped);
       historyRef.current = step.history;
+      undoFrameLabelsRef.current.remember(
+        wrapped,
+        soleTouchedFeatureName(step.result.touched, before, step.history.state, anchorTime),
+      );
       lastCommittedDomainRef.current = step.history.state;
       // Remember this commit's next-target preference so a later redo of the SAME
       // command re-promotes it (第6波 redo-drops-selection-preference). Keyed to the
@@ -1840,7 +1847,7 @@ export function App(): JSX.Element {
       // 道具の持ち替えで捨てられる（`survey-state.ts` の `removed`）ので、そのあとは従来どおり。
       if (restoreRemovedSurveyLine()) return;
       // D1: これから取り消される操作の名前は、**取り消す前の** undo スタックの先頭にある。
-      const undoneLabel = historyRef.current.undoStack.at(-1)?.label;
+      const undoneLabel = undoFrameLabelsRef.current.labelOf(historyRef.current.undoStack.at(-1));
       const step = historyUndo(historyRef.current);
       if (step.history === historyRef.current) return; // empty stack: no-op
       // bughunt (全 undo 後の dirty 解消): an undo recomputes projectDirty against the
@@ -1848,7 +1855,7 @@ export function App(): JSX.Element {
       // back to the saved state clears the unsaved-changes warning. An ordinary edit
       // still dirties through applyCommandResult (recordCommand) — that path is unchanged.
       applyHistoryStep(step, undefined);
-      statusMessageStore.success(RESULT_STRINGS.undone(commandLabelJa(undoneLabel)));
+      statusMessageStore.success(RESULT_STRINGS.undone(undoneLabel));
     };
     const runRedo = (): void => {
       // Recover the preference the commit promoted for the command redo re-applies
@@ -1858,13 +1865,13 @@ export function App(): JSX.Element {
         historyRef.current,
       );
       // D1: やり直される操作の名前は、**やり直す前の** redo スタックの先頭にある。
-      const redoneLabel = historyRef.current.redoStack.at(-1)?.label;
+      const redoneLabel = undoFrameLabelsRef.current.labelOf(historyRef.current.redoStack.at(-1));
       const step = historyRedo(historyRef.current);
       if (step.history === historyRef.current) return;
       // Symmetric to runUndo: a redo recomputes dirty against the saved baseline (redoing
       // away from the saved state re-dirties; redoing back onto it stays clean).
       applyHistoryStep(step, preference);
-      statusMessageStore.success(RESULT_STRINGS.redone(commandLabelJa(redoneLabel)));
+      statusMessageStore.success(RESULT_STRINGS.redone(redoneLabel));
     };
     registry.register(COMMAND_ID.EditUndo, {
       run: runUndo,
@@ -3625,10 +3632,17 @@ export function App(): JSX.Element {
       const conflictAt = conflictState?.anchorTime ?? store.getState().currentTime;
       // 止まっていたのが **追加** なら、直接の確定と同じ入口（子の並びを揃える）を通す。
       const addedId = conflictState?.addedFeatureId;
+      const topBefore = historyRef.current.undoStack.at(-1);
       if (addedId !== undefined) {
         recordAddCommit(result, addedId, conflictState?.preference, conflictAt);
       } else {
         recordCommit(result, conflictState?.preference, conflictAt);
+      }
+      // 元に戻す枠は、利用者が最後に答えた「重なりの解消」を言う（設計書 §E.1 の V13）。
+      // 履歴の先頭が変わったときだけ。断られたときの先頭は別の操作である。
+      const topAfter = historyRef.current.undoStack.at(-1);
+      if (topAfter !== undefined && topAfter !== topBefore) {
+        undoFrameLabelsRef.current.rename(topAfter, RESOLVED_STRINGS.undoLabel);
       }
       // Survive vertex-delete (bughunt5 HOLE-1): the deleted vertex ids linger in the
       // selection because reresolve cannot prune them (makeCommand reports deletion at
@@ -4362,15 +4376,11 @@ export function App(): JSX.Element {
               // 測量の線を消した直後は Ctrl+Z がその線を戻すので「可」（増分 8C の手直し）。
               canUndo:
                 historyCanUndo(historyRef.current) || store.getState().survey.removed !== null,
-              // 設計書 §C.8 は「元に戻せます: 南ケナ州の改名（Ctrl+Z）」まで出すとしているが、
-              // ここではまだ **可否だけ** を出す。`Command.label` の語彙の混在（ドメイン側の
-              // 4 か所が日本語「所属変更」「地物の削除」「自動配色」「結合」、UI 側の 5 か所が
-              // 内部の英語 'edit' / 'delete' / 'interval' / 'palette' / 'unshare'）は
-              // `shell/command-result.ts` の写像表で解けるようになったが、設計書の例は
-              // 操作名だけでなく **対象の名前** も含んでおり、どの label もそれを持っていない。
-              // 対象の名前を運ぶのは全コミット経路に触る別の作業（現状.md へ申し送り）。
-              // なお「直前の結果」枠には、同じ写像表を通した操作名が既に出ている。
-              lastLabel: null,
+              // 何が戻るのかまで言う（設計書 §C.8）。`runUndo` の文と同じ覚えから引く。
+              lastLabel: undoFrameLabelsRef.current.frameLabel(
+                historyRef.current,
+                store.getState().survey.removed !== null,
+              ),
             }}
             lastSavedAtMs={saveStatus.savedAtMs}
             /* A4-a: 自動保存は上書き先を確認するまで本体ファイルに書かない。書いて

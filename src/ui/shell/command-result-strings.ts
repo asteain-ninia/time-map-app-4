@@ -46,6 +46,9 @@ export const RESULT_STRINGS = {
     targetName === null || targetName === undefined || targetName === ''
       ? `${labelJa}を行いました`
       : `${targetName}: ${labelJa}を行いました`,
+  /** 元に戻す枠と取り消しの文で言う「何の操作か」（「南ケナ州の素性の変更」）。名前が無ければ操作名だけ。 */
+  undoTarget: (labelJa: string, targetName: string | null): string =>
+    targetName === null ? labelJa : `${targetName}の${labelJa}`,
   /** 取り消した。 */
   undone: (labelJa: string): string => `元に戻しました: ${labelJa}`,
   /** やり直した。 */

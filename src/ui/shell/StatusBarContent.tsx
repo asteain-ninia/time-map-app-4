@@ -151,8 +151,10 @@ export function StatusBarContent<S>(props: StatusBarContentProps<S>): JSX.Elemen
       </span>
 
       <span className="statusbar__frame statusbar__frame--undo">
-        <span className="statusbar__value" data-testid="statusbar-undo">
-          {undoText(undo)}
+        {/* 枠は 160px のまま（§C.8）。文字を包むのは、値の箱が横並びの箱なので、直に置いた文字には
+            省略記号が付かないから。全文は指し示すと読める。 */}
+        <span className="statusbar__value" data-testid="statusbar-undo" title={undoText(undo)}>
+          <span className="statusbar__result-text">{undoText(undo)}</span>
         </span>
       </span>
 
