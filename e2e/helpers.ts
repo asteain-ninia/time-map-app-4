@@ -743,9 +743,17 @@ export async function jumpToYear(page: Page, year: number): Promise<void> {
  * こちらを使う ―― `jumpToYear` は「動いたこと」まで確かめるので必ず失敗する。
  */
 export async function requestYear(page: Page, year: number): Promise<void> {
-  await page.getByLabel('直接ジャンプ 年', { exact: true }).fill(String(year));
-  // 完全一致で拾うのは、未指定のトグル（「直接ジャンプ 月 未指定」等）を拾わないため。
-  await page.getByRole('button', { name: 'ジャンプ', exact: true }).click();
+  await jumpControls(page).year.fill(String(year));
+  await jumpControls(page).go.click();
+}
+
+/** 直接ジャンプの年の欄とボタン（押したままの検査はボタンへ合図を直接送るので、部品を返す）。 */
+export function jumpControls(page: Page): { readonly year: Locator; readonly go: Locator } {
+  return {
+    // 完全一致で拾うのは、未指定のトグル（「直接ジャンプ 月 未指定」等）を拾わないため。
+    year: page.getByLabel('直接ジャンプ 年', { exact: true }),
+    go: page.getByRole('button', { name: 'ジャンプ', exact: true }),
+  };
 }
 
 // ---------------------------------------------------------------------------

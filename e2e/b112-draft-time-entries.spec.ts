@@ -12,8 +12,13 @@
 //   端の送り       板のあいだ状態行が「動いた」と言う／捨てたことだけ残って端が読めない。
 //   打っていた場所 ［続ける］で選択だけ動く。
 
+import { copyFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { expect, test, type Page } from '@playwright/test';
 
+import { PROPERTY_STRINGS } from '../src/ui/property/messages';
 import { DRAFT_DISCARD_STRINGS, APP_STRINGS } from '../src/ui/shell/strings';
 import { RAIL_STRINGS } from '../src/ui/timeline/rail-strings';
 
@@ -24,6 +29,8 @@ import {
   commitSquareFace,
   jumpToYear,
   launchApp,
+  leaveViewMode,
+  loadProject,
   projectStats,
   railMarkPositions,
   railView,
@@ -38,6 +45,7 @@ const COUNT = 'ring-edit-vertex-count';
 const YEAR = 'timeline-current';
 const STATUS = 'statusbar-result';
 const FULL = [[-40, -40], [40, -40], [0, 40]] as const;
+const FILE_STATUS_SAVED = '保存しました';
 
 /** 輪郭の道具で (cx, cy) の面を掴み、`points` を打つ。 */
 async function ringDraft(
@@ -151,6 +159,10 @@ test.describe('B112 の入口 — 続きは年と一緒に走る', () => {
       const [mark1500] = await railMarkPositions(page);
       const menu = page.getByTestId('context-menu');
       const startFields = page.locator('[data-testid^="anchor-interval-start-"][data-testid$="-year"]');
+      // 右の窓は一覧を見ておく。欄を開く続きは素性のタブへ移すので、先に走ると分かる。
+      const listTab = page.getByTestId('sidebar-tab-list');
+      await listTab.click();
+      await expect(listTab).toHaveAttribute('aria-pressed', 'true');
 
       await page.mouse.click(lane.x + (mark1500 ?? 0), lane.y, { button: 'right' });
       await menu.locator('[data-rail-item="changeAnchorStart"]').click();
@@ -159,11 +171,8 @@ test.describe('B112 の入口 — 続きは年と一緒に走る', () => {
       await expect(page.getByTestId(ASK)).toBeHidden();
       await page.waitForTimeout(200);
       await expect(page.getByTestId(YEAR)).toHaveText('1600年');
-      await expect(page.getByTestId(`ring-edit-vertex-count`)).toHaveText('3');
-      const focusedStart = await page.evaluate(
-        () => document.activeElement?.getAttribute('data-testid')?.startsWith('anchor-interval-start-') ?? false,
-      );
-      expect(focusedStart).toBe(false);
+      await expect(page.getByTestId(COUNT)).toHaveText('3');
+      await expect(listTab).toHaveAttribute('aria-pressed', 'true');
 
       await page.mouse.click(lane.x + (mark1500 ?? 0), lane.y, { button: 'right' });
       await menu.locator('[data-rail-item="changeAnchorStart"]').click();
@@ -225,7 +234,7 @@ test.describe('B112 の入口 — 続きは年と一緒に走る', () => {
       await page.getByTestId('tool-edit.select').click();
       await page.mouse.click(a.cx, a.cy);
       await expect(page.getByTestId('app-active-feature')).toHaveText(a.faceId);
-      await page.getByTestId('basic-info').getByLabel('名前').fill('typed-on-a');
+      await page.getByTestId('basic-info').getByLabel(PROPERTY_STRINGS.nameLabel).fill('typed-on-a');
       await jumpToYear(page, 1600);
       await expect(page.getByTestId('draft-discard-confirm')).toBeVisible();
 
@@ -343,30 +352,63 @@ test.describe('B112 の入口 — 新規作成で手放したとは言わない�
     { tool: 'edit.knife', count: 'knife-point-count', root: 'knife-tool', points: 2 },
   ] as const;
 
-  for (const c of TOOLS) {
-    test(`${c.tool}: 面は消えるが、捨てたことだけを言う`, async () => {
-      const { app, page } = await launchApp();
-      try {
-        await jumpToYear(page, 1500);
-        const { cx, cy } = await commitOneFace(page);
-        await page.getByTestId('tool-edit.select').click();
-        await page.getByTestId(`tool-${c.tool}`).click();
-        await page.mouse.click(cx, cy);
-        await expect(page.getByTestId(c.root)).not.toHaveAttribute('data-flow', 'selecting-target');
-        const pts = c.points === 2 ? ([[-200, 0], [200, 0]] as const) : FULL;
-        for (const [dx, dy] of pts) await page.mouse.click(cx + dx, cy + dy);
-        await expect(page.getByTestId(c.count)).toHaveText(String(c.points));
+  /** 面の無い書類へ替わったあと、捨てたことだけを言い、手放したとは言わない（控えにも残らない）。 */
+  async function expectOnlyDiscardSaid(page: Page, points: number): Promise<void> {
+    await expect(page.getByTestId('app-mode')).toHaveText('view');
+    await expect(page.getByTestId(STATUS)).toContainText(
+      DRAFT_DISCARD_STRINGS.projectSwitchedDiscarded(DRAFT_DISCARD_STRINGS.discarded(points)),
+    );
+    await page.waitForTimeout(300);
+    await expect(page.getByTestId(STATUS)).not.toContainText(APP_STRINGS.toolTargetGoneByTime);
+    // 手放した文は、すぐ上書きされても移動の知らせへ続ける控えに残る。同じ年への移動で読む。
+    const here = (await page.getByTestId(YEAR).textContent()) ?? '';
+    await requestYear(page, Number(here.replace(/\D/g, '')));
+    await expect(page.getByTestId(STATUS)).toContainText(RAIL_STRINGS.movedTo(here));
+    await expect(page.getByTestId(STATUS)).not.toContainText(APP_STRINGS.toolTargetGoneByTime);
+  }
 
+  /** 1500 年に面を作って保存し（未保存の確認を出さない）、道具で掴んで点を打つ。 */
+  async function draftOnNewFace(page: Page, c: (typeof TOOLS)[number]): Promise<void> {
+    await jumpToYear(page, 1500);
+    const { cx, cy } = await commitOneFace(page);
+    await page.getByTestId('tool-edit.select').click();
+    await page.keyboard.press('Control+s');
+    await expect(page.getByTestId(STATUS)).toContainText(FILE_STATUS_SAVED);
+    await page.getByTestId(`tool-${c.tool}`).click();
+    await page.mouse.click(cx, cy);
+    await expect(page.getByTestId(c.root)).not.toHaveAttribute('data-flow', 'selecting-target');
+    const pts = c.points === 2 ? ([[-200, 0], [200, 0]] as const) : FULL;
+    for (const [dx, dy] of pts) await page.mouse.click(cx + dx, cy + dy);
+    await expect(page.getByTestId(c.count)).toHaveText(String(c.points));
+  }
+
+  for (const c of TOOLS) {
+    test(`${c.tool}: 新規にすると面は消えるが、捨てたことだけを言う`, async () => {
+      const target = join(mkdtempSync(join(tmpdir(), 'gimoza-b112-')), 'a.gimoza');
+      const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });
+      try {
+        await draftOnNewFace(page, c);
         await page.getByTestId('menu-file').click();
         await page.getByTestId('menu-items-file').locator('[data-command="file.new"]').click();
-        const unsaved = page.getByTestId('unsaved-discard');
-        if (await unsaved.isVisible()) await unsaved.click();
-        await expect(page.getByTestId('app-mode')).toHaveText('view');
-        await expect(page.getByTestId(STATUS)).toContainText(
-          DRAFT_DISCARD_STRINGS.projectSwitchedDiscarded(DRAFT_DISCARD_STRINGS.discarded(c.points)),
-        );
-        await page.waitForTimeout(300);
-        await expect(page.getByTestId(STATUS)).not.toContainText(APP_STRINGS.toolTargetGoneByTime);
+        await expectOnlyDiscardSaid(page, c.points);
+      } finally {
+        await app.close();
+      }
+    });
+
+    test(`${c.tool}: 面の無い書類を開いても、捨てたことだけを言う`, async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'gimoza-b112-'));
+      const target = join(dir, 'a.gimoza');
+      const empty = join(dir, 'empty.gimoza');
+      const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });
+      try {
+        await leaveViewMode(page);
+        await page.keyboard.press('Control+s');
+        await expect(page.getByTestId(STATUS)).toContainText(FILE_STATUS_SAVED);
+        copyFileSync(target, empty);
+        await draftOnNewFace(page, c);
+        expect(await loadProject(page, empty)).toBe('loaded');
+        await expectOnlyDiscardSaid(page, c.points);
       } finally {
         await app.close();
       }

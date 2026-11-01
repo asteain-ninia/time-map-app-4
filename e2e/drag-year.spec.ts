@@ -24,6 +24,7 @@ import {
   commitOneFace,
   commitSquareFace,
   committedVertices,
+  jumpControls,
   jumpToYear,
   launchApp,
   leaveViewMode,
@@ -209,7 +210,7 @@ for (const tool of TOOLS) {
         await jumpToYear(page, 1500);
         await page.getByTestId(`tool-${tool}`).click();
         await page.getByTestId('list-mode-history').click();
-        await page.getByLabel('直接ジャンプ 年', { exact: true }).fill('1600');
+        await jumpControls(page).year.fill('1600');
         const stats = await projectStats(page);
         const before = await committedVertices(page, faceId);
         const row = page
@@ -229,7 +230,7 @@ for (const tool of TOOLS) {
           await expect(page.getByTestId(YEAR)).toHaveText('1500年');
           await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
         };
-        await page.getByRole('button', { name: 'ジャンプ', exact: true }).dispatchEvent('click');
+        await jumpControls(page).go.dispatchEvent('click');
         await asserts();
         await row.dispatchEvent('click');
         await asserts();

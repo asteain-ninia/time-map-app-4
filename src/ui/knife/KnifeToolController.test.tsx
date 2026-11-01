@@ -23,7 +23,7 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -179,6 +179,9 @@ function mountKnife(
     readonly resolveLeafShape?: (
       fid: typeof TARGET_ID,
     ) => GeoMultiPolygon | undefined;
+    /** 対象の地物を解決する口（書類が替わって面が消える形に使う）。 */
+    readonly resolveFeature?: (fid: typeof TARGET_ID) => Feature | undefined;
+    readonly onTargetGone?: () => void;
   } = {},
 ): Harness {
   const { feature, store: vstore } = fixture;
@@ -197,8 +200,9 @@ function mountKnife(
     },
   };
 
-  const resolveFeature = (fid: typeof TARGET_ID): Feature | undefined =>
-    fid === TARGET_ID ? feature : undefined;
+  const resolveFeature =
+    extra.resolveFeature ??
+    ((fid: typeof TARGET_ID): Feature | undefined => (fid === TARGET_ID ? feature : undefined));
   const resolveStore = (): VertexStore => vstore;
   // Clicking anywhere inside [0,10]² resolves the target; outside → miss.
   const featureAtPoint: FeatureAtPoint = (p) =>
@@ -245,6 +249,7 @@ function mountKnife(
           ? { resolveLeafShape: extra.resolveLeafShape }
           : {})}
         {...(onDrawingChange ? { onDrawingChange } : {})}
+        {...(extra.onTargetGone ? { onTargetGone: extra.onTargetGone } : {})}
       />
     </>,
   );
@@ -1521,6 +1526,51 @@ function uLeaf(): { feature: Feature; store: VertexStore } {
     createCoordinate(0, 10),
   ]);
 }
+
+describe('掴んでいた面が消えたとき（B112。「構えている」の条件）', () => {
+  // 実機では読み込みの文があとから状態行を上書きするので、言ってしまっても E2E からは読めない
+  // （控えも年が動くと捨てられる）。呼ばれたかどうかをここで見る。
+  function drawnOnVanishingFace(): { h: Harness; onTargetGone: Mock; vanish: () => void } {
+    const fixture = targetLeaf();
+    let gone = false;
+    const onTargetGone = vi.fn();
+    const h = mountKnife(committed, fixture, undefined, {
+      resolveLeafShape: () => (gone ? undefined : [[[]]]),
+      resolveFeature: () => (gone ? undefined : fixture.feature),
+      onTargetGone,
+    });
+    activateKnife(h.store);
+    clickInput(1, 1);
+    clickInput(-1, 5);
+    return {
+      h,
+      onTargetGone,
+      vanish: () => {
+        gone = true;
+      },
+    };
+  }
+
+  it('構えたまま面が消えたら手放して言う（対照）', () => {
+    const { h, onTargetGone, vanish } = drawnOnVanishingFace();
+    act(() => {
+      vanish();
+      h.store.setState({ domain: { tag: 'without-target' } });
+    });
+    expect(onTargetGone).toHaveBeenCalledTimes(1);
+    h.unmount();
+  });
+
+  it('読み込みで道具を降りるコミットでは、面が消えても手放したとは言わない', () => {
+    const { h, onTargetGone, vanish } = drawnOnVanishingFace();
+    act(() => {
+      vanish();
+      h.store.setState({ domain: { tag: 'loaded' }, mode: EDIT_MODE.View, activeTool: null });
+    });
+    expect(onTargetGone).not.toHaveBeenCalled();
+    h.unmount();
+  });
+});
 
 describe('増分 8B の手直し — 延ばした先でも切れたら、保存の前に言う（B69 の残り）', () => {
   it('飛び地の東を延長が割ると、継承先の板と、名前を入れる段の次の一手の両方で言う', () => {
