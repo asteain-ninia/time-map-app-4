@@ -1,4 +1,4 @@
-// UI layer (素性欄 / 右クリック): **まとめ役を「この年に終わったことにする」前に見せる影響**
+// UI layer (素性欄 / 右クリック): **集約地物を「この年に終わったことにする」前に見せる影響**
 //（司令塔の決定 (2)。設計書 §A.3 の入口 A）。
 //
 // 決定 (2) は「子を黙って道連れにしない。押す前に影響（『下位領域 n 件は、この年から
@@ -40,7 +40,7 @@ export function buildEndHereImpactView(input: {
   /** 一緒に終わる、その年より後の途切れずに続いていた記録の件数（手直し 3 回目）。 */
   readonly trimmedCount?: number;
   /**
-   * 下位領域を全て失って一緒に終わるまとめ役（名前と年。手直し 3 回目 1-1）。`whole` はどの年にも
+   * 下位領域を全て失って一緒に終わる集約地物（名前と年。手直し 3 回目 1-1）。`whole` はどの年にも
    * 下位領域が居なくなって記録ごと無くなるもの（4 回目 #1）。
    */
   readonly cascaded?: readonly { readonly name: string; readonly yearLabel: string; readonly whole?: boolean }[];

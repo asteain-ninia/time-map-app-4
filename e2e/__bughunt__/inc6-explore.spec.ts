@@ -39,7 +39,7 @@ const dataDir =
 const canonicalPath = join(dataDir, REAL_DATA_FILE);
 
 /**
- * まとめ役の子（親の系列を借りる側）。最後の節で掃く。
+ * 集約地物の下位領域（親の系列を借りる側）。最後の節で掃く。
  *
  * **錨を 5 本足す相手には向かない。** Ctrl+K で足した錨は親の系列へ書かれ、値が何も
  * 変わっていないので「その子に関わる錨」に選ばれず、子の錨表にもレーンにも出ない
@@ -286,7 +286,7 @@ test.describe('増分 6 の探索 — 実データのコピーでレールから
         record('next-anchor-edge', `']' の終点が ${String(lastYear)}年（最後の錨は ${String(maxAnchorYear)}年）`);
       }
 
-      // --- ⑥ まとめ役の子でもレーンが空にならない（裁定 §N-15 の (A)）---------
+      // --- ⑥ 集約地物の下位領域でもレーンが空にならない（裁定 §N-15 の (A)）---------
       await selectByName(page, CHILD_NAME);
       const childStats = await railLaneStats(page);
       if (!childStats.inherited) {

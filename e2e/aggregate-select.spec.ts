@@ -101,7 +101,7 @@ test.describe('Codex #2 — 集約表示中のクリックは集約地物を選�
       await expect(page.getByTestId('app-active-vertex')).toHaveText('');
       await expect(activeFeature).toHaveText(parentId);
 
-      // 3) 「選択」でも同じ場所はまとめ役の本体に当たる。
+      // 3) 「選択」でも同じ場所は集約地物の本体に当たる。
       await page.getByTestId('tool-edit.select').click();
       await page.mouse.click(ccx - 58, ccy - 58);
       await expect(page.getByTestId('app-active-vertex')).toHaveText('');

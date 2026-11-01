@@ -14,7 +14,7 @@
 //   ① 一覧・素性欄・錨表・存続期間の言うことが食い違わないか
 //   ② Ctrl+Z で正しく戻るか
 //   ③ 保存して開き直しても残るか
-//   ④ まとめ役の子を触ったとき、親の錨がどう増えるか
+//   ④ 集約地物の下位領域を触ったとき、親の錨がどう増えるか
 //
 // ファイルがどれだけ増えるか（⑤）は `scripts/measure-anchor-growth.ts` が
 // ドメイン層で正確に測るので、ここでは扱わない（画面から測ると ZIP 圧縮と
@@ -99,7 +99,7 @@ test.describe('増分 2 の探索 — 実データのコピーで年をまたい
     `実データが無い (${canonicalPath})。DERLE_TMAP_DIR で置き場を指定する`,
   );
 
-  test('まとめ役の子を 3 件 × 3 年で改名し、一覧・素性欄・錨表・保存の往復が食い違わない', async () => {
+  test('集約地物の下位領域を 3 件 × 3 年で改名し、一覧・素性欄・錨表・保存の往復が食い違わない', async () => {
     test.setTimeout(300_000);
     const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-inc2-explore-'));
     const workingCopy = join(workDir, REAL_DATA_FILE);
@@ -132,7 +132,7 @@ test.describe('増分 2 の探索 — 実データのコピーで年をまたい
           // ① 保存ボタンの文言と、実際に起きることが食い違わないか。
           //
           // **数える相手を取り違えない**（増分 2 の手直し G4 で直した観察の誤り）。
-          // まとめ役の子では、錨表の行は「親の系列のうち **この子に関わる** 錨」なので、
+          // 集約地物の下位領域では、錨表の行は「親の系列のうち **この子に関わる** 錨」なので、
           // 兄弟が既に作った年へ上書きするときも **行は 1 増える**（その年がこの子にとって
           // 変化の年になるため）。ボタンの文言が約束しているのは
           // **プロジェクト全体の錨が増えるかどうか**である。
@@ -177,7 +177,7 @@ test.describe('増分 2 の探索 — 実データのコピーで年をまたい
         `[観察] 錨の総数 ${String(before.anchorCount)} → ${String(after.anchorCount)}（3 件 × 3 年の改名後）`,
       );
 
-      // ④ まとめ役の子で「この年に錨を作る」を押したとき、画面のどこが変わるか。
+      // ④ 集約地物の下位領域で「この年に錨を作る」を押したとき、画面のどこが変わるか。
       // 子の錨表は「その子に関わる錨だけ」なので、姿を変えない錨は行が増えないはずである
       // （裁定 §N-15）。それでも「押したのに何も起きない」に見えないかを確かめる。
       await selectByName(page, renamed.get(targets[0]!) ?? targets[0]!);
@@ -192,7 +192,7 @@ test.describe('増分 2 の探索 — 実データのコピーで年をまたい
       // 開発ガイド §5.54: フォーカスを外す手で選択が動いていないことを見る。
       await expect(page.getByTestId('app-active-feature')).toHaveText(activeBeforeCtrlK ?? '');
       await page.keyboard.press('Control+k');
-      // まとめ役の子では記録は親の年表に増えるので、状態行は **どこに増えたか**を親の名前で言う
+      // 集約地物の下位領域では記録は親の年表に増えるので、状態行は **どこに増えたか**を親の名前で言う
       // （増分 7 の手直し 2 回目 / バグ狩り 2-4。子のレーンには印が増えない）。
       await expect(page.getByTestId('statusbar-result')).toContainText('デーレ共和国');
       await page.getByTestId('sidebar-tab-properties').click();
@@ -209,13 +209,13 @@ test.describe('増分 2 の探索 — 実データのコピーで年をまたい
         `[観察] Ctrl+K 後: 親の断り書き ${notice ? 'あり' : 'なし'} / 錨表の件数表示「${listCount}」 / 選択 id ${activeId}`,
       );
       observations.push(
-        `[観察] まとめ役の子で Ctrl+K: 錨の行 ${String(ctrlkRowsBefore)} → ${String(ctrlkRowsAfter)} / ` +
+        `[観察] 集約地物の下位領域で Ctrl+K: 錨の行 ${String(ctrlkRowsBefore)} → ${String(ctrlkRowsAfter)} / ` +
           `バッジ ${ctrlkBadgeBefore} → ${ctrlkBadgeAfter} / ` +
           `作るボタン ${hadCreateButton ? 'あり' : 'なし'} → ${stillHasCreateButton ? 'あり' : 'なし'}`,
       );
       if (ctrlkBadgeBefore === ctrlkBadgeAfter && ctrlkRowsBefore === ctrlkRowsAfter) {
         observations.push(
-          '[粗] まとめ役の子で Ctrl+K を押しても、素性欄のどこも変わらないように見える',
+          '[粗] 集約地物の下位領域で Ctrl+K を押しても、素性欄のどこも変わらないように見える',
         );
       }
       // 別の年へ移って同じ子を見直すと、行の数はどうなるか（選り分けが

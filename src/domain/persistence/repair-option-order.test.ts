@@ -66,7 +66,7 @@ describe('修復の選択肢の並び', () => {
   const DROP_ONLY_BY_NATURE: ReadonlyMap<string, string> = new Map([
     ['missing-vertex-reference', '引く頂点が無い地物は形が解けず、描けない'],
     ['ring-hierarchy-invalid', '輪の入れ子が壊れた形は面積・包含の計算が成り立たない'],
-    ['aggregate-sum-mismatch', '捨てるのはまとめ役だけで下位領域は最上位として残る（既存の振る舞い）'],
+    ['aggregate-sum-mismatch', '捨てるのは集約地物だけで下位領域は最上位として残る（既存の振る舞い）'],
     ['duplicate-owner-history', '同じ地物の歴史が 2 本あると年ごとの姿が決まらない（先頭は残す）'],
   ]);
 

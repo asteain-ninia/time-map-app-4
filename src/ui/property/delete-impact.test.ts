@@ -63,7 +63,7 @@ describe('buildDeleteImpactView — 影響の一覧の文（設計書 §A.3 の�
     expect(view.title).toContain('全部の年から消します');
   });
 
-  it('まとめ役では「頂点 0 個（自分の形を持ちません）」と言う', () => {
+  it('集約地物では「頂点 0 個（自分の形を持ちません）」と言う', () => {
     const view = buildDeleteImpactView({
       impact: impactOf({ ownsShape: false, vertexCount: 0 }),
       targetName: 'デーレ共和国',
@@ -161,7 +161,7 @@ describe('buildDeleteImpactView — 影響の一覧の文（設計書 §A.3 の�
     expect(auto?.lines[0]).toContain('デーレ共和国');
   });
 
-  it('一部の年からだけ消えるまとめ役は「自動で消える」と言わず、前の年の記録が残ると言う（手直し 3 回目 / 再検証 #3）', () => {
+  it('一部の年からだけ消える集約地物は「自動で消える」と言わず、前の年の記録が残ると言う（手直し 3 回目 / 再検証 #3）', () => {
     const view = buildDeleteImpactView({
       impact: impactOf({ partlyRemovedIds: [asFeatureId('agg')] }),
       targetName: 'アアウェン州',

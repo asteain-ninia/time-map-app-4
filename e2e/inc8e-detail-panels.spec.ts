@@ -91,8 +91,8 @@ test.describe('増分 8E — 結合点 #12: 詳細パネルが 3 つの契機で
   });
 
   // -------------------------------------------------------------------------
-  // 増分 8E の手直し（反証 2-3）: **まとめ役の子** のパネル。子は自分の系列を持たず、
-  // まとめ役の系列の中に居るので、「その id の系列があるか」で見ていた掃除は、関係のない
+  // 増分 8E の手直し（反証 2-3）: **集約地物の下位領域** のパネル。子は自分の系列を持たず、
+  // 集約地物の系列の中に居るので、「その id の系列があるか」で見ていた掃除は、関係のない
   // 編集のたびに子のパネルを閉じていた。いまは「その年に居るか」で見る。
   // -------------------------------------------------------------------------
 
@@ -119,7 +119,7 @@ test.describe('増分 8E — 結合点 #12: 詳細パネルが 3 つの契機で
     await expect(page.getByTestId(`detail-panel-${CHILD_0}`)).toBeVisible();
   }
 
-  test('まとめ役の子のパネルは、別の子の名前を直す（関係のない編集）では閉じない', async () => {
+  test('集約地物の下位領域のパネルは、別の子の名前を直す（関係のない編集）では閉じない', async () => {
     const { app, page } = await launchApp();
     try {
       await openChildPanel(page);
@@ -135,7 +135,7 @@ test.describe('増分 8E — 結合点 #12: 詳細パネルが 3 つの契機で
     }
   });
 
-  test('まとめ役の子のパネルも、削除で閉じる', async () => {
+  test('集約地物の下位領域のパネルも、削除で閉じる', async () => {
     const { app, page } = await launchApp();
     try {
       await openChildPanel(page);
@@ -149,7 +149,7 @@ test.describe('増分 8E — 結合点 #12: 詳細パネルが 3 つの契機で
     }
   });
 
-  test('まとめ役の子のパネルも、居ない年へ動かすと閉じ、戻っても開き直さない', async () => {
+  test('集約地物の下位領域のパネルも、居ない年へ動かすと閉じ、戻っても開き直さない', async () => {
     const { app, page } = await launchApp();
     try {
       await openChildPanel(page);
@@ -164,7 +164,7 @@ test.describe('増分 8E — 結合点 #12: 詳細パネルが 3 つの契機で
     }
   });
 
-  test('まとめ役の子のパネルも、プロジェクトを開き直すと閉じる', async () => {
+  test('集約地物の下位領域のパネルも、プロジェクトを開き直すと閉じる', async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-detail-child-reopen-'));
     const target = join(workDir, 'child-reopen.gimoza');
     const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });

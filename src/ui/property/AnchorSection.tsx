@@ -28,8 +28,8 @@ export interface AnchorSectionProps {
   /** 錨表に出す行（錨とその「前の錨」の組、B2）。 */
   readonly rows: readonly AnchorRow[];
   /**
-   * 差分の文を作る相手（増分 2 の中身 5）。まとめ役の子を選んでいるときは **その子の
-   * id** で、`series` は親のものになる（設計書 §C.6「まとめ役の子の錨」）。
+   * 差分の文を作る相手（増分 2 の中身 5）。集約地物の下位領域を選んでいるときは **その子の
+   * id** で、`series` は親のものになる（設計書 §C.6「集約地物の下位領域の錨」）。
    */
   readonly featureIdForDiff: FeatureId;
   /** 既定で出す範囲（現在時刻の前後）を決めるための現在時刻。 */

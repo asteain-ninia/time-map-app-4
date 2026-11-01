@@ -327,8 +327,8 @@ test.describe('裁定 2026-11-01: ［動かす］は地物だけを動かす', (
   });
 });
 
-test.describe('［動かす］とまとめ役', () => {
-  test('自分の頂点を持たないまとめ役は、引いても形が変わらず、板も出ず、地図も動かない', async () => {
+test.describe('［動かす］と集約地物', () => {
+  test('自分の頂点を持たない集約地物は、引いても形が変わらず、板も出ず、地図も動かない', async () => {
     const { app, page } = await launchApp();
     try {
       await loadSyntheticNested(page, 6, [1000, 1200]);

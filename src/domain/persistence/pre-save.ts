@@ -13,8 +13,8 @@
 //      親を指したまま。
 //
 //   **聞く**（年をまたぐ食い違い。読み込みの検査は年ごとに見るので、開くと修復を聞かれる）:
-//   3. その年に居ない親を指す parentId（親は別の年には居る）／まとめ役の子の並びがその年の
-//      実際の所属と食い違う／まとめ役にその年の下位領域が無い／その年の所属が輪になる、など。判定は読み込みの検査と同じ
+//   3. その年に居ない親を指す parentId（親は別の年には居る）／集約地物の下位領域の並びがその年の
+//      実際の所属と食い違う／集約地物にその年の下位領域が無い／その年の所属が輪になる、など。判定は読み込みの検査と同じ
 //      `checkHierarchyOverTime`（同じ時刻の切り方・同じ判定）。**保存を止めて利用者を
 //      行き止まりにしない**ために、理由（どの地物が・何年に・どの親を）を見せて
 //      ［このまま保存する（次に開くときに修復されます）］［やめる］を選ばせる。
@@ -44,9 +44,9 @@ export const PRE_SAVE_PROBLEM = {
   DanglingParent: 'dangling-parent',
   /** その年に居ない親を指している（親は別の年には居る。聞く）。 */
   ParentAbsentThatYear: 'parent-absent-that-year',
-  /** まとめ役の子の並びが、その年の実際の所属と食い違う（聞く）。 */
+  /** 集約地物の下位領域の並びが、その年の実際の所属と食い違う（聞く）。 */
   ChildListMismatch: 'child-list-mismatch',
-  /** まとめ役にその年の下位領域が 1 件も無い（聞く）。 */
+  /** 集約地物にその年の下位領域が 1 件も無い（聞く）。 */
   EmptyAggregate: 'empty-aggregate',
   /** その年の所属が輪になる・最上位の印が食い違う、など（聞く）。 */
   OtherHierarchy: 'other-hierarchy',
@@ -56,7 +56,7 @@ export type PreSaveProblemKind = (typeof PRE_SAVE_PROBLEM)[keyof typeof PRE_SAVE
 
 export interface PreSaveProblem {
   readonly kind: PreSaveProblemKind;
-  /** 持ち主の居ない系列ならその持ち主、親の食い違いならその子、子の並びならそのまとめ役。 */
+  /** 持ち主の居ない系列ならその持ち主、親の食い違いならその子、子の並びならその集約地物。 */
   readonly featureId: FeatureId;
   /** 親を指しているときだけ、指している先。 */
   readonly parentId?: FeatureId;
@@ -65,8 +65,8 @@ export interface PreSaveProblem {
   /** 子の並びの食い違いのときだけ、食い違っている子。 */
   readonly relatedIds?: readonly FeatureId[];
   /**
-   * 子の居ないまとめ役のときだけ: 次に開いたとき、既定の修復（子の居ない区間だけ無くす）が
-   * 効くか（4 回目 #1 (ii)。一度も子を持たない・自分の系列を持たないまとめ役には効かない）。
+   * 子の居ない集約地物のときだけ: 次に開いたとき、既定の修復（子の居ない区間だけ無くす）が
+   * 効くか（4 回目 #1 (ii)。一度も子を持たない・自分の系列を持たない集約地物には効かない）。
    */
   readonly intervalRepairable?: boolean;
 }

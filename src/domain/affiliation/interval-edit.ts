@@ -1,7 +1,7 @@
 // 存続期間の編集（開始年を動かす・終わりを打つ・錨を消す）を、所属の記録ごと正しく動かす純関数。
 //
 // **何が壊れていたか**（増分 7 の手直し 2 回目。反証 #1・#5、GPT #2、バグ狩り §3 の開き直し）:
-//   1. まとめ役 P をある年で終わらせると、子の `parentId` を **その年より後の全部の錨で**外していた。
+//   1. 集約地物 P をある年で終わらせると、子の `parentId` を **その年より後の全部の錨で**外していた。
 //      子が後の年に別の親 Q へ移っていても Q との所属まで外れ（反証 #1）、P が後の年の錨で
 //      再び現れるときは子の居ない殻になった。孫まで最上位にしていた（反証 #5）。
 //   2. 自分の系列を持つ子（外から移された・連邦化で束ねられた子）を終わらせても、親の
@@ -13,7 +13,7 @@
 // 求め、その区間の中だけで
 //   - F を指している直接の子の `parentId` を外す（区間の外は触らない。F が後の年に再び
 //     現れれば、そこからは元の所属に戻る ―― 殻を作らない）。別の親を指す錨は触らない。
-//   - 孫は外さない（中間のまとめ役は子を保ったまま最上位になる）。
+//   - 孫は外さない（中間の集約地物は子を保ったまま最上位になる）。
 // そのうえで、F の存在が変わった年について **F の親の子の並び**を時刻ごとの実際の所属に揃える。
 // F の錨に居候している子・孫は、居なくなる区間で一緒に消えないよう先に自分の系列へ起こす
 // （記録の置き場の決定 (1)）。
@@ -290,8 +290,8 @@ function orderedLike(derived: readonly FeatureId[], declared: readonly FeatureId
 }
 
 /**
- * 自分の系列を持つまとめ役 `aggregateIds` の子の並び（`childIds`）を、**時刻ごとの実際の所属**
- * （その時刻に居て `parentId` がそのまとめ役である地物）に揃える。錨の区間の途中で子が
+ * 自分の系列を持つ集約地物 `aggregateIds` の子の並び（`childIds`）を、**時刻ごとの実際の所属**
+ * （その時刻に居て `parentId` がその集約地物である地物）に揃える。錨の区間の途中で子が
  * 出入りするときは、その時刻で錨を割る。揃っている錨は触らない（同一参照を返す）。
  *
  * 子の並びは `parentId` の写し（U08 の単一真実源は `parentId`）なので、揃える向きは常に
@@ -308,7 +308,7 @@ export function syncAggregateChildIds(
     const history = index >= 0 ? current[index] : undefined;
     if (history === undefined) continue;
 
-    // 子になりうる地物（どこかの年で親がこのまとめ役・または子の並びに載っている）の境目の時刻。
+    // 子になりうる地物（どこかの年で親がこの集約地物・または子の並びに載っている）の境目の時刻。
     const candidates = new Set<FeatureId>();
     for (const entry of history.series.entries) {
       for (const f of entry.anchor.snapshot.features) {
@@ -559,7 +559,7 @@ interface ChildRun {
 }
 
 /**
- * まとめ役 `aggId`（自分の系列を持つ）の、途切れずに続く記録ごとの「子が居るか」の区切り。
+ * 集約地物 `aggId`（自分の系列を持つ）の、途切れずに続く記録ごとの「子が居るか」の区切り。
  * 子は、その時刻に居て親が `aggId` である地物（自分の系列でも、居候でも）。
  */
 function childSegments(
@@ -621,7 +621,7 @@ function intersectIntervals(
   return subtractIntervals(a, subtractIntervals(a, b, calendar), calendar);
 }
 
-/** まとめ役が居て子が 0 件の区間・子が居る区間（どの続きも含めて）。 */
+/** 集約地物が居て子が 0 件の区間・子が居る区間（どの続きも含めて）。 */
 function childPresenceSplit(
   histories: readonly FeatureHistory[],
   aggId: FeatureId,
@@ -640,16 +640,16 @@ function childPresenceSplit(
 }
 
 /**
- * **編集で後ろ側が空になったまとめ役**（増分 7 の手直し 3 回目 1-1・4 回目 #1 / 締め C）: 途切れずに続く
+ * **編集で後ろ側が空になった集約地物**（増分 7 の手直し 3 回目 1-1・4 回目 #1 / 締め C）: 途切れずに続く
  * 記録ごとに、その続きの終わりまで子が 0 件の後ろ側 [Y, 続きの終わり) を返す。ただし **編集の前
  * （`before`）にはその区間のどこかに子が居た**ときだけ（＝この編集で空になったときだけ）。
  *
  * - 後ろ側の前に子が居る続き → Y から終わる（手直し 3 回目の形）。
  * - 続き全体が空になった（作った年のうちに子を全部終わらせた・連邦入りの錨を全部消した・1 人だけの
- *   連邦の子をその前の年で終わらせた）→ 続きごと無くなる。所属変更で下位領域を全て失ったまとめ役が
+ *   連邦の子をその前の年で終わらせた）→ 続きごと無くなる。所属変更で下位領域を全て失った集約地物が
  *   「この年から自動で消える」のと同じ扱い（4 回目 #1。手直し 3 回目は編集の **後** の状態で
  *   「最初から子が居ない」と判定していたので、殻が残り、開き直すと除外しか選べなかった）。
- * - 編集の前から空だった区間（関係の無い編集・最初から子が居ないまとめ役）には触らない（4 回目 #4）。
+ * - 編集の前から空だった区間（関係の無い編集・最初から子が居ない集約地物）には触らない（4 回目 #4）。
  * - 途中だけ空の続きは返さない（後ろ側に子が居る）。
  */
 export function tailEmptyCuts(
@@ -672,8 +672,8 @@ export function tailEmptyCuts(
 }
 
 /**
- * まとめ役 `aggId` に子が 1 件も居ない区間（読み込みの修復 1-2 の材料）。**一度も子を持たない
- * まとめ役**（どの続きにも子が居ない）は空を返す ―― その区間を無くすと地物ごと消えるので、
+ * 集約地物 `aggId` に子が 1 件も居ない区間（読み込みの修復 1-2 の材料）。**一度も子を持たない
+ * 集約地物**（どの続きにも子が居ない）は空を返す ―― その区間を無くすと地物ごと消えるので、
  * 区間の修復の対象にしない（締め C）。
  */
 export function emptyAggregateIntervals(
@@ -694,7 +694,7 @@ export function emptyAggregateIntervals(
   return out;
 }
 
-/** 終わらせる操作の連鎖で、別のまとめ役がその年から終わったもの（1-1）。 */
+/** 終わらせる操作の連鎖で、別の集約地物がその年から終わったもの（1-1）。 */
 export interface CascadedEnd {
   readonly featureId: FeatureId;
   readonly at: TimePoint;
@@ -727,7 +727,7 @@ export type FeatureIntervalEditResult =
       readonly promoted: readonly FeatureId[];
       /** 居なくなる区間（編集の前は居て後は居ない）。空なら何も失われない。 */
       readonly lost: readonly TimeInterval[];
-      /** 後ろ側の子が 0 件になったので、その年から終わったまとめ役（1-1）。 */
+      /** 後ろ側の子が 0 件になったので、その年から終わった集約地物（1-1）。 */
       readonly cascaded: readonly CascadedEnd[];
     }
   /** `reason === null` は「自分の系列が無い」（呼び手が錨の id を添えて断る）。 */
@@ -737,7 +737,7 @@ interface CoreEdit {
   readonly histories: readonly FeatureHistory[];
   readonly promoted: readonly FeatureId[];
   readonly lost: readonly TimeInterval[];
-  /** 子の並びを揃えたまとめ役（後ろ側が空になったかを見る相手）。 */
+  /** 子の並びを揃えた集約地物（後ろ側が空になったかを見る相手）。 */
   readonly touchedParents: ReadonlySet<FeatureId>;
 }
 
@@ -774,7 +774,7 @@ function coreEdit(
   if (history === undefined) return { ok: false, reason: null };
   const run = op(history.series);
   if (!run.ok) return { ok: false, reason: run.reason };
-  // 記録が全部無くなった（連鎖でまとめ役の続きごと切った）系列は落とす（持ち主の居ない空の
+  // 記録が全部無くなった（連鎖で集約地物の続きごと切った）系列は落とす（持ち主の居ない空の
   // 系列を残さない）。利用者の操作の `op` は空の系列を返さない（U09 が断る）。
   base =
     run.series.entries.length === 0
@@ -784,7 +784,7 @@ function coreEdit(
   const children = directChildrenWithin(base, featureId, lost, calendar);
   // **印のある分け残しは最上位へ昇格させず、一緒に居なくする**（B39 の手直し 2 回目 / 検証 2-3。
   // 司令塔の決定）。分け残しは元の面の土地の残りとして導かれた面で、本物の子ではない。
-  // まとめ役を「この年に終わった」にしたのに分け残しだけが最上位の面として残ると、終わらせた
+  // 集約地物を「この年に終わった」にしたのに分け残しだけが最上位の面として残ると、終わらせた
   // はずの土地が地図に居残る（印のせいで上位領域の候補にも出ない）。居なくなる区間で、その
   // 分け残しの記録を切る（区間の外は触らない）。
   const directDomains = children.filter((id) => isMarkedDirectDomainOf(base, id, featureId));
@@ -809,7 +809,7 @@ function coreEdit(
     parents.add(parentId);
   }
 
-  // F の存在が変わったので、F の親（どの年でも）と、F を子の並びに載せているまとめ役の
+  // F の存在が変わったので、F の親（どの年でも）と、F を子の並びに載せている集約地物の
   // 子の並びを、時刻ごとの実際の所属に揃える。
   for (const series of [own.series, run.series]) {
     for (const entry of series.entries) {
@@ -835,9 +835,9 @@ function coreEdit(
  * {@link endRunAt}）で編集し、所属の記録を一緒に動かす（先頭の注記）。自分の系列が無ければ
  * `reason: null`。
  *
- * そのあと、子の並びを揃えたまとめ役のうち **後ろ側の子が 0 件になったもの**を、その年から
+ * そのあと、子の並びを揃えた集約地物のうち **後ろ側の子が 0 件になったもの**を、その年から
  * 終わらせる（1-1。削除・所属変更の「下位領域を全て失うので自動で消える」と同じ規則を、
- * 存続期間の編集にも通す）。終わらせたまとめ役の親も同じ規則で見る（連鎖）。
+ * 存続期間の編集にも通す）。終わらせた集約地物の親も同じ規則で見る（連鎖）。
  */
 export function editFeatureInterval(
   histories: readonly FeatureHistory[],
@@ -907,7 +907,7 @@ export interface EndingPlan {
    * 親・形などが違う錨）の件数（4 回目 #5）。帳簿のために割られただけの錨は数えない。
    */
   readonly trimmedLaterRecords: number;
-  /** 後ろ側の子を全部失うので、その年から終わるまとめ役（1-1）。 */
+  /** 後ろ側の子を全部失うので、その年から終わる集約地物（1-1）。 */
   readonly cascaded: readonly CascadedEnd[];
   /**
    * 一緒に終わる後ろの記録の中にあった **別の上位領域への所属**（4 回目 #2。その上位領域は下位

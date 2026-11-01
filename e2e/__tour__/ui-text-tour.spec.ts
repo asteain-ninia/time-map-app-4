@@ -65,7 +65,7 @@ const MIN_SCENES = 30;
 const USER_WORDS: string[] = ['巡回の横長', '巡回の縦長'];
 for (let i = 0; i < 60; i += 1) USER_WORDS.push(`合成地物${String(i).padStart(4, '0')}`);
 for (let i = 1; i <= 40; i += 1) USER_WORDS.push(`合成州 ${String(i).padStart(2, '0')}`);
-USER_WORDS.push('合成の州', '合成の国', '合成の連邦', '合成の外の国', '合成のまとめ役', '合成の錨だらけ');
+USER_WORDS.push('合成の州', '合成の国', '合成の連邦', '合成の外の国', '合成の集約地物', '合成の錨だらけ');
 
 /** `UI_TEXT_TOUR_SIZE=幅x高さ` で窓を変える（見た目の点検で最小の窓を撮る）。無ければ既定の窓のまま。 */
 const TOUR_SIZE = ((): { width: number; height: number } | null => {

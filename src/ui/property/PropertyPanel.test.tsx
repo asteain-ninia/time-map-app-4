@@ -1353,7 +1353,7 @@ describe('増分 2 — 打ちかけの内容は、時間を動かしても黙っ
   });
 });
 
-describe('増分 2 — まとめ役の子でも錨の欄が消えない（設計書 §C.6 / 裁定 §N-15）', () => {
+describe('増分 2 — 集約地物の下位領域でも錨の欄が消えない（設計書 §C.6 / 裁定 §N-15）', () => {
   const fChild = asFeatureId('child');
   const fParent = asFeatureId('parent');
   const vChild = asVertexId('child-v1');

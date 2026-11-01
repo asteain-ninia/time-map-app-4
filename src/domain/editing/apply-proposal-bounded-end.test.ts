@@ -259,9 +259,9 @@ const rows: readonly Row[] = [
     },
   },
   {
-    site: 'removeFeatureAtTime と rewriteFeatureSnapshotAtTime（結ぶ: まとめ役の錨の中の子を結ぶ）',
+    site: 'removeFeatureAtTime と rewriteFeatureSnapshotAtTime（結ぶ: 集約地物の錨の中の子を結ぶ）',
     run: () => {
-      // まとめ役 P（[0, END)）の錨に a・b・d が居候している。a と b を P の下のまま結ぶ。
+      // 集約地物 P（[0, END)）の錨に a・b・d が居候している。a と b を P の下のまま結ぶ。
       const a = square('a', ['a0', 'sc1', 'sc2', 'a3'], 0, 0);
       const b = square('b', ['sc1', 'b1', 'b2', 'sc2'], 10, 0);
       const d = square('d', ['d0', 'd1', 'd2', 'd3'], 50, 0);

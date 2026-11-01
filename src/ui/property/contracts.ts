@@ -39,12 +39,12 @@ export interface FeatureLookup {
 export interface AnchorSeriesLookup {
   anchorSeriesOf(featureId: FeatureId): AnchorSeries | null;
   /**
-   * その地物の編集が **実際に書き込まれる** 系列を返す（設計書 §C.6「まとめ役の子の錨」/
-   * 裁定 §N-15）。自分の系列があればそれ、無ければ **その時刻に自分を含む親（まとめ役）の
+   * その地物の編集が **実際に書き込まれる** 系列を返す（設計書 §C.6「集約地物の下位領域の錨」/
+   * 裁定 §N-15）。自分の系列があればそれ、無ければ **その時刻に自分を含む親（集約地物）の
    * 系列**である。
    *
    * なぜ別の口が要るか: {@link anchorSeriesOf} は `histories.find(h => h.featureId === id)`
-   * であり、実データの **86 件（3 つのまとめ役の子ぜんぶ）は必ず null を返す**。そのため
+   * であり、実データの **86 件（3 つの集約地物の下位領域ぜんぶ）は必ず null を返す**。そのため
    * 素性欄は錨の欄ごと消えていたし、「この保存は錨を作るのか上書きするのか」も判定できな
    * かった。ドメイン側の編集（`applyEditProposal`）は `findHistoryContaining` で親の系列へ
    * 書くので、**画面もその系列を見なければ嘘になる**（教訓 5.46: 結果を決めている経路を見る）。

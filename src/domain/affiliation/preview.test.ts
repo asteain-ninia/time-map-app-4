@@ -2,7 +2,7 @@
 //
 // ここで固定するのは 3 つ。
 //   1. 洗い直し（{@link planAffiliationTargets}）が **確定と同じ展開規則**で動くこと
-//      ―― まとめ役は下位領域へ広げ、居ないものは理由つきで外す。
+//      ―― 集約地物は下位領域へ広げ、居ないものは理由つきで外す。
 //   2. 「子を得る既存の地物」（{@link gainingParentId}）を決定から先読みできること。
 //   3. 分け残し（直轄領）が生まれる見込みと既定名称（{@link previewDirectDomain}）。
 
@@ -34,7 +34,7 @@ describe('planAffiliationTargets — 対象の洗い直し（FR-48 / 増分 7 �
     expect(plan.dropped).toEqual([]);
   });
 
-  it('まとめ役は全下位領域へ広げ、広げたことを記録する（FR-48 後半）', () => {
+  it('集約地物は全下位領域へ広げ、広げたことを記録する（FR-48 後半）', () => {
     const plan = planAffiliationTargets(world(), [fid('agg')]);
     expect([...plan.leafIds].sort()).toEqual([fid('a'), fid('b')].sort());
     expect(plan.expansions).toHaveLength(1);
@@ -42,7 +42,7 @@ describe('planAffiliationTargets — 対象の洗い直し（FR-48 / 増分 7 �
     expect(plan.expansions[0]?.leafIds).toHaveLength(2);
   });
 
-  it('重複は 1 件に畳む（まとめ役とその子を両方マークしても増えない）', () => {
+  it('重複は 1 件に畳む（集約地物とその子を両方マークしても増えない）', () => {
     const plan = planAffiliationTargets(world(), [fid('agg'), fid('a')]);
     expect([...plan.leafIds].sort()).toEqual([fid('a'), fid('b')].sort());
   });
@@ -55,7 +55,7 @@ describe('planAffiliationTargets — 対象の洗い直し（FR-48 / 増分 7 �
     ]);
   });
 
-  it('下位領域を 1 つも持たないまとめ役も理由つきで外す', () => {
+  it('下位領域を 1 つも持たない集約地物も理由つきで外す', () => {
     const features = [...world(), aggregate('empty', [])];
     const plan = planAffiliationTargets(features, [fid('empty')]);
     expect(plan.leafIds).toEqual([]);
@@ -106,7 +106,7 @@ describe('previewDirectDomain — 分け残し（直轄領）の見込みと既�
     expect(preview?.defaultName).toBe('leaf-lone 直轄領');
   });
 
-  it('まとめ役が親のときは出ない（形を持たないので分け残しが無い）', () => {
+  it('集約地物が親のときは出ない（形を持たないので分け残しが無い）', () => {
     expect(previewDirectDomain(world(), parentExisting(fid('agg')))).toBeNull();
   });
 

@@ -119,8 +119,8 @@ export function sweepAndPruneAnchor(
   options: {
     readonly sweepAbsentTargets?: boolean;
     /**
-     * 下位領域が 0 個になっても連鎖剪定しないまとめ役（増分 7 の手直し 2 回目）。その錨の
-     * 区間の途中で子が居ると分かったまとめ役を、区間の始まりの時刻だけで消さないため。
+     * 下位領域が 0 個になっても連鎖剪定しない集約地物（増分 7 の手直し 2 回目）。その錨の
+     * 区間の途中で子が居ると分かった集約地物を、区間の始まりの時刻だけで消さないため。
      * 対象への参照の掃除はほかと同じく行う。
      */
     readonly keep?: ReadonlySet<FeatureId>;

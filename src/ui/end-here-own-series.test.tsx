@@ -1,4 +1,4 @@
-// 決定 (2)「まとめ役を終わらせても子は道連れにせず、その年から最上位になる」を、
+// 決定 (2)「集約地物を終わらせても子は道連れにせず、その年から最上位になる」を、
 // **自分の系列を持つ子**（別の親から移された・連邦化で束ねられた子）でも固定する。
 //
 // 2026-10-03 に探針で見つけた: 確定（`createAnchorIntervalCommandForRoot`）が居候しか
@@ -23,7 +23,7 @@ import { buildSetEndIntent } from './property/index';
 
 const calendar = getCalendar('gregorian');
 
-/** まとめ役 agg に a（自分の系列を持つ子）と b（居候）が居る形。 */
+/** 集約地物 agg に a（自分の系列を持つ子）と b（居候）が居る形。 */
 function project(): DomainRoot {
   const a = leafTile('a', 0, 0, 10, 10, 'agg');
   const b = leafTile('b', 10, 0, 10, 10, 'agg');
@@ -49,7 +49,7 @@ function project(): DomainRoot {
   } as DomainRoot;
 }
 
-describe('まとめ役を終わらせる — 自分の系列を持つ子も最上位になる（決定 (2)）', () => {
+describe('集約地物を終わらせる — 自分の系列を持つ子も最上位になる（決定 (2)）', () => {
   it('終わったあとの年に、どの子も消えた親を指さず、整合検査が空', () => {
     const root = project();
     expect(checkConsistency(root, calendar).inconsistencies).toEqual([]);

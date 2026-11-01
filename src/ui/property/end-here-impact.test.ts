@@ -1,10 +1,10 @@
-// 決定 (2)「まとめ役を終わらせる前に、下位領域が最上位になることを見せる」の文を固定する。
+// 決定 (2)「集約地物を終わらせる前に、下位領域が最上位になることを見せる」の文を固定する。
 
 import { describe, expect, it } from 'vitest';
 
 import { buildEndHereImpactView } from './end-here-impact';
 
-describe('buildEndHereImpactView — まとめ役を終わらせる前の影響（決定 (2)）', () => {
+describe('buildEndHereImpactView — 集約地物を終わらせる前の影響（決定 (2)）', () => {
   it('件数と名前を「この年から最上位になります」で言い、題に名前と年が入る', () => {
     const view = buildEndHereImpactView({
       targetName: '正統ノル王国',
@@ -45,7 +45,7 @@ describe('buildEndHereImpactView — まとめ役を終わらせる前の影響�
     expect(view.groups.find((g) => g.testId === 'ends')?.lines[0]).toContain('削除ではありません');
   });
 
-  it('後ろの続いていた記録が一緒に終わる・まとめ役が一緒に終わるときは、その行を出す（手直し 3 回目 / 締め D）', () => {
+  it('後ろの続いていた記録が一緒に終わる・集約地物が一緒に終わるときは、その行を出す（手直し 3 回目 / 締め D）', () => {
     const view = buildEndHereImpactView({
       targetName: '合成州 02',
       yearLabel: '1400年',
@@ -58,11 +58,11 @@ describe('buildEndHereImpactView — まとめ役を終わらせる前の影響�
       '1400年より後の、途切れずに続いていた記録（中身の変わる記録 2 件）も一緒に終わります',
     );
     expect(view.groups.find((g) => g.testId === 'cascaded')?.lines).toEqual([
-      'まとめ役「第一連邦」は下位領域を全て失うので、1400年から終わります',
+      '集約地物「第一連邦」は下位領域を全て失うので、1400年から終わります',
     ]);
   });
 
-  it('別の上位領域への後の所属が一緒に終わる・まとめ役が記録ごと無くなるときは、その行を出す（4 回目 #1・#2）', () => {
+  it('別の上位領域への後の所属が一緒に終わる・集約地物が記録ごと無くなるときは、その行を出す（4 回目 #1・#2）', () => {
     const view = buildEndHereImpactView({
       targetName: '州 a',
       yearLabel: '1400年',
@@ -75,7 +75,7 @@ describe('buildEndHereImpactView — まとめ役を終わらせる前の影響�
       '1700年からの「連邦 G」への所属も一緒に終わります（「連邦 G」の下位領域から外れます）',
     );
     expect(view.groups.find((g) => g.testId === 'cascaded')?.lines).toEqual([
-      'まとめ役「連邦 G」はどの年にも下位領域が居なくなるので、記録ごと無くなります（所属を変えて下位領域を全て失ったときと同じ）',
+      '集約地物「連邦 G」はどの年にも下位領域が居なくなるので、記録ごと無くなります（所属を変えて下位領域を全て失ったときと同じ）',
     ]);
   });
 });

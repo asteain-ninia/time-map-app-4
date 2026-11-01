@@ -283,7 +283,7 @@ describe('ReparentToolController — 所属変更 actually reparents (bughunt3 r
     expect(screen.getByTestId('reparent-guide').textContent).toContain('新しい上位領域');
     // **増分 7**: ［所属を変える］は対象さえ掴んでいれば押せる（押すと 3 択の板が開く）。
     // 旧版は「新しい上位領域を地図でクリック済み」までを条件にしていたので、地図に
-    // 描かれていないまとめ役を親にしたい人はここへ辿り着けなかった。
+    // 描かれていない集約地物を親にしたい人はここへ辿り着けなかった。
     expect(screen.getByTestId('reparent-confirm')).not.toBeDisabled();
 
     // Second click = new parent (leaf-b) — 板の「既存から選ぶ」枝の初期値になる。

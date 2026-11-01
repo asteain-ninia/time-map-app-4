@@ -141,7 +141,7 @@ export {
   hasAnchorStartingAt,
 } from './edit-plan';
 
-// Pure logic: 錨どうしの差分（錨表の文 / まとめ役の子の選り分け、増分 2 の中身 4・5）
+// Pure logic: 錨どうしの差分（錨表の文 / 集約地物の下位領域の選り分け、増分 2 の中身 4・5）
 export {
   ANCHOR_CHANGE,
   ANCHOR_DIFF_STRINGS,
@@ -178,7 +178,7 @@ export {
   buildDeleteImpactView,
   summarizeNames,
 } from './delete-impact';
-// 決定 (2): まとめ役を終わらせる前の影響の文。
+// 決定 (2): 集約地物を終わらせる前の影響の文。
 export { type EndHereImpactView, buildEndHereImpactView } from './end-here-impact';
 // 項目 6: 錨を消す前の板の中身（錨表と時刻レールの右クリックで共有）と、開始年の欄を開く口。
 export { anchorDeleteImpactView } from './AnchorList';

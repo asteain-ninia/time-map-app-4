@@ -1877,7 +1877,7 @@ export class CycleAttemptCmd6 implements SCmd6 {
           AFFILIATION_REJECT.SameFeature,
           AFFILIATION_REJECT.ExistencePeriod,
           AFFILIATION_REJECT.TargetKind,
-          // 司令塔の決定 (8): 分け残し（直轄領）は親の候補から外す。まとめ役を対象に
+          // 司令塔の決定 (8): 分け残し（直轄領）は親の候補から外す。集約地物を対象に
           // すると **下位領域へ展開してから**判定するので、展開後の 1 件から見て
           // 候補が子孫でないことがある ―― そのとき循環では断られず、こちらで断られる。
           // どちらでも「確定させない」という性質は同じなので、許す理由に加える。

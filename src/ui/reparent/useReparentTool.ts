@@ -375,8 +375,8 @@ export function useReparentTool<S>(options: UseReparentToolOptions<S>): UseRepar
     if (flow === REPARENT_FLOW.Idle) return false;
     if (targetIds.length === 0 || newParentId === null) return false;
     const forest = buildForest(resolveFeatures());
-    // **対象は洗い直したあとの末端で見る**（増分 7 の中身 2b）。まとめ役を掴んでいる
-    // ときの合法性は「まとめ役そのもの」ではなく「その下位領域それぞれ」で決まる
+    // **対象は洗い直したあとの末端で見る**（増分 7 の中身 2b）。集約地物を掴んでいる
+    // ときの合法性は「集約地物そのもの」ではなく「その下位領域それぞれ」で決まる
     // ―― 確定側（buildProposalForLeaves）が展開後に同じ述語を回すので、ここでも
     // 同じ集合で判定しないとボタンの名乗りと結果が食い違う（教訓 5.26）。
     if (plan.leafIds.length === 0) return false;

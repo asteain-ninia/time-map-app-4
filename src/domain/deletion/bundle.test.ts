@@ -1,13 +1,13 @@
 // 「その時刻に効いている全系列の束」で掃除する削除の検査（所有者の裁定 2026-09-07「直す」）。
 //
 // 固定すること:
-//   1. まとめ役 P から外のまとめ役 Q へ移した子は、P を全部の年から消しても Q の子のまま残る
+//   1. 集約地物 P から外の集約地物 Q へ移した子は、P を全部の年から消しても Q の子のまま残る
 //      （以前は Q の錨に子が居ないので「下位領域を全部失った」と読まれ、Q ごと消えていた）。
-//   2. 連邦化で作ったまとめ役 F でも同じ形になる。
-//   3. 関係の無い地物を消しても、子が自分の系列を持つまとめ役は消えない。
+//   2. 連邦化で作った集約地物 F でも同じ形になる。
+//   3. 関係の無い地物を消しても、子が自分の系列を持つ集約地物は消えない。
 //   4. 消える親を指していた「自分の系列を持つ子」の parentId も同じ操作で外れる
 //      （教訓 5.21。以前は子の錨に親が居ないので掃除されず、保存前検査で止まった）。
-//   5. 子を本当に全部失ったまとめ役は、これまでどおり連鎖して消える（FR-35）。
+//   5. 子を本当に全部失った集約地物は、これまでどおり連鎖して消える（FR-35）。
 
 import { describe, expect, it } from 'vitest';
 
@@ -38,7 +38,7 @@ const calendar = getCalendar('gregorian');
 const MOVE_YEAR = 1200;
 
 /**
- * 実データと同じ形: まとめ役 P が系列を持ち、その錨（1000 年・1200 年）に子 a・b・c が
+ * 実データと同じ形: 集約地物 P が系列を持ち、その錨（1000 年・1200 年）に子 a・b・c が
  * 居候している。外に最上位の末端 Q（自分の系列つき）と、関係の無い末端 Z を置く。
  */
 function nestedRoot(): DomainProject {
@@ -121,7 +121,7 @@ function deleteOrThrow(root: DomainProject, id: FeatureId): DomainProject {
 }
 
 describe('削除は「その時刻の全系列の束」で掃除する', () => {
-  it('外のまとめ役へ移した子は、元のまとめ役を消しても行き先の子のまま残る', () => {
+  it('外の集約地物へ移した子は、元の集約地物を消しても行き先の子のまま残る', () => {
     const moved = moveAB(nestedRoot(), parentExisting(fid('Q')));
     // 前提: 移した子は自分の系列を持ち、Q の錨には居ない（Q は錨 1 枚だけ見ると空に見える形）。
     expect(moved.histories.some((h) => h.featureId === fid('a'))).toBe(true);
@@ -151,7 +151,7 @@ describe('削除は「その時刻の全系列の束」で掃除する', () => {
     expect(checkBeforeSave(after, calendar)).toEqual([]);
   });
 
-  it('連邦化で作ったまとめ役でも同じ（元のまとめ役を消しても連邦は残る）', () => {
+  it('連邦化で作った集約地物でも同じ（元の集約地物を消しても連邦は残る）', () => {
     const federated = moveAB(nestedRoot(), parentCreate({ name: '連邦' }, parentNone));
     const fedId = parentAt(federated.histories, fid('a'), MOVE_YEAR);
     expect(fedId).not.toBeNull();
@@ -168,7 +168,7 @@ describe('削除は「その時刻の全系列の束」で掃除する', () => {
     expect(checkBeforeSave(after, calendar)).toEqual([]);
   });
 
-  it('関係の無い地物を消しても、子が自分の系列を持つまとめ役は消えない', () => {
+  it('関係の無い地物を消しても、子が自分の系列を持つ集約地物は消えない', () => {
     const moved = moveAB(nestedRoot(), parentExisting(fid('Q')));
     const after = deleteOrThrow(moved, fid('Z'));
     expect(after.histories.some((h) => h.featureId === fid('Q'))).toBe(true);
@@ -180,7 +180,7 @@ describe('削除は「その時刻の全系列の束」で掃除する', () => {
     expect(after.histories.some((h) => h.featureId === fid('Z'))).toBe(false);
   });
 
-  it('子を本当に全部失ったまとめ役は連鎖して消える（FR-35 はそのまま）', () => {
+  it('子を本当に全部失った集約地物は連鎖して消える（FR-35 はそのまま）', () => {
     const moved = moveAB(nestedRoot(), parentCreate({ name: '連邦' }, parentNone));
     const federationId = parentAt(moved.histories, fid('a'), MOVE_YEAR) as FeatureId;
     // 連邦の子 a を消しても b が居るので連邦は残る。
@@ -191,7 +191,7 @@ describe('削除は「その時刻の全系列の束」で掃除する', () => {
     expect(afterB.histories.some((h) => h.featureId === federationId)).toBe(false);
   });
 
-  it('影響の一覧と判定も束で数える（行き先のまとめ役を「自動で消える」と言わない）', () => {
+  it('影響の一覧と判定も束で数える（行き先の集約地物を「自動で消える」と言わない）', () => {
     const moved = moveAB(nestedRoot(), parentExisting(fid('Q')));
     const { state } = deletionStateFromHistories(moved.histories, calendar);
     const impact = describeDeletionImpact(state, fid('P'));
@@ -201,7 +201,7 @@ describe('削除は「その時刻の全系列の束」で掃除する', () => {
   });
 });
 
-describe('まとめ役の剪定は、その錨の区間のどの時点でも子が居ないときだけ（増分 7 の手直し 2 回目）', () => {
+describe('集約地物の剪定は、その錨の区間のどの時点でも子が居ないときだけ（増分 7 の手直し 2 回目）', () => {
   /**
    * 連邦 F の錨は 1100 年から（開始年を前へ直した形）。子 a・b は 1200 年から F の子
    * （自分の系列）。関係の無い Z と W を置く。F の錨の始まりの時刻（1100 年）には子が居ない。
@@ -266,7 +266,7 @@ describe('まとめ役の剪定は、その錨の区間のどの時点でも子�
   });
 });
 
-describe('削除の影響: 一部の年からだけ消えるまとめ役を「自動で消える」と数えない（手直し 3 回目 / 再検証 #3）', () => {
+describe('削除の影響: 一部の年からだけ消える集約地物を「自動で消える」と数えない（手直し 3 回目 / 再検証 #3）', () => {
   it('連邦の州 a を 1400 年で終わらせてから州 b を消すと、連邦は 1400 年からだけ消え、前の年は残る', () => {
     // 連邦 F（1200 年から）。a は [1200, 1400)、b は 1200 年からずっと。F の記録は 1400 年で割られている。
     const a = leafTile('a', 0, 0, 10, 10, 'F');

@@ -557,7 +557,7 @@ test.describe('B114 の検証: 押している最中の入力', () => {
 });
 
 test.describe('B114 の検証: 「選択」で選べるもの', () => {
-  test('まとめ役の子（合成データ）: 深さ 0 ではまとめ役、深さを上げると子が選べ、頂点には当たらない', async () => {
+  test('集約地物の下位領域（合成データ）: 深さ 0 では集約地物、深さを上げると子が選べ、頂点には当たらない', async () => {
     const { app, page } = await launchApp();
     try {
       await loadSyntheticNested(page, 6, [1000, 1200]);

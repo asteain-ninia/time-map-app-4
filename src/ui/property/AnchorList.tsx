@@ -106,8 +106,8 @@ export interface AnchorListProps {
    */
   readonly rows: readonly AnchorRow[];
   /**
-   * 差分の文を作る相手。まとめ役の子を選んでいるときは **その子の id** で、行は親の
-   * 系列から来る（設計書 §C.6「まとめ役の子の錨」）。
+   * 差分の文を作る相手。集約地物の下位領域を選んでいるときは **その子の id** で、行は親の
+   * 系列から来る（設計書 §C.6「集約地物の下位領域の錨」）。
    */
   readonly featureIdForDiff: FeatureId;
   /** 既定の母数（現在時刻の前後）を決めるための現在時刻。 */

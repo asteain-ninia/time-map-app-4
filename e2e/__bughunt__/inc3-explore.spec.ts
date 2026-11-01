@@ -115,7 +115,7 @@ test.describe('増分 3 の探索 — 東西の地図端で分断された大陸
       const before = await projectStats(page);
       rec(
         `[観察] 実データ: 履歴 ${before.historyCount} / 地物 ${before.featureCount}` +
-          `（末端 ${before.leafCount} / まとめ役 ${before.aggregateCount}）／ 錨 ${before.anchorCount}`,
+          `（末端 ${before.leafCount} / 集約地物 ${before.aggregateCount}）／ 錨 ${before.anchorCount}`,
       );
 
       // ---------------------------------------------------------------------

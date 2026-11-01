@@ -58,7 +58,7 @@ export const MENU_ITEM_KIND = {
   MarkTarget: 'markTarget',
   /** 対象から外す。上の印つきの相方。 */
   UnmarkTarget: 'unmarkTarget',
-  /** まとめ役: その全下位領域を対象にする（FR-48 後半 / 増分 7 の中身 3）。 */
+  /** 集約地物: その全下位領域を対象にする（FR-48 後半 / 増分 7 の中身 3）。 */
   MarkSubtree: 'markSubtree',
   /** 印が 1 件以上あるとき: 選んだ n 件の所属をまとめて変える（増分 7 の中身 2b）。 */
   ReparentMarked: 'reparentMarked',
@@ -144,7 +144,7 @@ export const DISABLE_REASON = {
    */
   AnchorAlreadyAtThisYear: 'anchorAlreadyAtThisYear',
   /**
-   * その地物は **自分の歴史を持っていない**（まとめ役の錨の中に居る）ので、この年に
+   * その地物は **自分の歴史を持っていない**（集約地物の錨の中に居る）ので、この年に
    * 終わりを打てない（設計書 §C.6 / 反証 2-9）。素性欄のボタンは同じ条件で無効に
    * なっていたのに、右クリックの項目だけが常に有効で、押すと状態行に断りが出るだけ
    * だった ―― 出す=起きる（教訓 5.6）に反する。

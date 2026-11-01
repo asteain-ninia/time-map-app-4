@@ -93,8 +93,8 @@ export const REPAIR_OPTION = {
    */
   DetachToTopLevelWithin: 'detach-to-top-level-within',
   /**
-   * 下位領域が 1 件も無いまとめ役 → **子の居ない区間だけ**そのまとめ役を無くす（子の居る年の記録は
-   * そのまま。増分 7 の手直し 3 回目 1-2。既定）。一度も子を持たないまとめ役には効かない。
+   * 下位領域が 1 件も無い集約地物 → **子の居ない区間だけ**その集約地物を無くす（子の居る年の記録は
+   * そのまま。増分 7 の手直し 3 回目 1-2。既定）。一度も子を持たない集約地物には効かない。
    */
   RemoveEmptyAggregateIntervals: 'remove-empty-aggregate-intervals',
   /** ツリー位相不整合 → 当該地物を除外する。 */
@@ -239,7 +239,7 @@ export function repairOptionsFor(inc: Inconsistency): RepairOption[] {
           opt(REPAIR_OPTION.DropShapeRoleFeature),
         ];
       }
-      // 下位領域の居ないまとめ役は、**子の居ない区間だけ**無くすのを既定にする（増分 7 の手直し
+      // 下位領域の居ない集約地物は、**子の居ない区間だけ**無くすのを既定にする（増分 7 の手直し
       // 3 回目 1-2）。読み込みから除外すると、子の居た年の記録まで全部の年から消える。
       if (inc.detail === 'aggregate-no-children') {
         return [
@@ -370,11 +370,11 @@ function scrubReferences(
  * parent path already dropped). Pure.
  *
  * **時刻ごとに揃える**（増分 7 の手直し 2 回目 / バグ狩り §3）: 子が自分の系列を持つ
- * まとめ役（連邦化で束ねた・外から移した子）の子は、まとめ役の錨の中には居ない。錨 1 枚
+ * 集約地物（連邦化で束ねた・外から移した子）の子は、集約地物の錨の中には居ない。錨 1 枚
  * だけで子を数え直すと子の並びが空になり、時刻ごとの検査では食い違いが残ったまま
- * （修復しても「解消できなかった」）になっていた。自分の系列を持つまとめ役は、時刻ごとの
+ * （修復しても「解消できなかった」）になっていた。自分の系列を持つ集約地物は、時刻ごとの
  * 実際の所属で揃える（`syncAggregateChildIds`。区間の途中で子が出入りすれば錨を割る）。
- * 錨に居候しているまとめ役（自分の系列を持たない）だけは、従来どおりその錨の中で揃える。
+ * 錨に居候している集約地物（自分の系列を持たない）だけは、従来どおりその錨の中で揃える。
  */
 function reconcileChildIds(project: DomainProject, calendar: Calendar): DomainProject {
   const owners = new Set<FeatureId>(project.histories.map((h) => h.featureId));
@@ -441,8 +441,8 @@ function detachWhereParentAbsent(
 }
 
 /**
- * 下位領域の居ないまとめ役を、**子の居ない区間だけ**無くす（増分 7 の手直し 3 回目 1-2）。一度も
- * 子を持たないまとめ役・自分の系列を持たないまとめ役には効かない（そのまま返す ―― 未解決として
+ * 下位領域の居ない集約地物を、**子の居ない区間だけ**無くす（増分 7 の手直し 3 回目 1-2）。一度も
+ * 子を持たない集約地物・自分の系列を持たない集約地物には効かない（そのまま返す ―― 未解決として
  * 次の方法を選ぶことになる）。上位領域の子の並びも時刻ごとに揃える。純粋。
  */
 function removeEmptyAggregateIntervals(
@@ -453,7 +453,7 @@ function removeEmptyAggregateIntervals(
   let histories: readonly FeatureHistory[] = project.histories;
   for (const id of ids) {
     if (emptyAggregateIntervals(histories, id, calendar).length === 0) continue;
-    // **切る前に、まとめ役の錨に居候している地物を自分の系列へ起こす**（増分 7 の手直し 4 回目 #3。
+    // **切る前に、集約地物の錨に居候している地物を自分の系列へ起こす**（増分 7 の手直し 4 回目 #3。
     // 存続期間の編集と同じ順）。起こさずに切ると、子でない居候の記録まで道連れに消えていた。
     const residents = residentFeatureIds(histories, id);
     if (residents.length > 0) histories = materializeOwnSeries(histories, residents, calendar).histories;
@@ -914,7 +914,7 @@ function entryEffectiveEnd(
  * まま残る。帳簿の割り方で、どの年の姿も変えない。純粋。
  *
  * 居なくなる年でも割る（2026-10-04、B39 の戻しの再検証 3-1・2-1）: 以前は割らずに、子の居なく
- * なった年から先も親をまとめ役のまま続けていたので、分け残し（子のぶんの穴がある）だけが親の
+ * なった年から先も親を集約地物のまま続けていたので、分け残し（子のぶんの穴がある）だけが親の
  * 後ろの記録の上に居残り、親の土地に穴があいた・親の境の直しが黙って戻った・隣が除外された。
  * いまは分け残しの区間も親のその片の終わりで区切る（{@link materializeDirectDomain}）。
  */

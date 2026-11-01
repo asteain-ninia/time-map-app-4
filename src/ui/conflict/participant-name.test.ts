@@ -1,7 +1,7 @@
 // 増分 8E（N-18）: 重なり解決の呼び名は **内部 ID を決して出さない**。
 //
 // 名前があれば名前、空なら「名前のない面（1500年に作成）」。作成の年は、その地物を載せた
-// いちばん早い錨の開始（まとめ役の系列に居候している子でも探せる）。
+// いちばん早い錨の開始（集約地物の系列に居候している子でも探せる）。
 
 import { describe, expect, it } from 'vitest';
 
@@ -102,7 +102,7 @@ describe('participantDisplayName — 内部 ID を出さない（N-18）', () =>
       color,
       [],
     );
-    // まとめ役も「面」と呼ぶ（取り込みで 8D の修復ダイアログの呼び方とそろえた。B83）。
+    // 集約地物も「面」と呼ぶ（取り込みで 8D の修復ダイアログの呼び方とそろえた。B83）。
     expect(participantDisplayName(agg, timePointYear(10))).toBe('名前のない面（10年に作成）');
   });
 
@@ -123,7 +123,7 @@ describe('createdAtOf — いちばん早い錨の開始', () => {
     expect(createdAtOf([h], asFeatureId('f-a'), calendar)).toEqual(timePointYear(1200));
   });
 
-  it('まとめ役の系列に居候している子は、その子が初めて載った錨で数える', () => {
+  it('集約地物の系列に居候している子は、その子が初めて載った錨で数える', () => {
     const child = leaf('f-child', '');
     const other = leaf('f-other', '');
     const owner = history('g-owner', [

@@ -41,7 +41,7 @@ export interface AffiliationTargetExpansion {
 export interface AffiliationTargetPlan {
   /** 展開後の末端対象（入力順・重複なし）。これがそのまま確定の対象になる。 */
   readonly leafIds: readonly FeatureId[];
-  /** 集約から展開したもの（画面に「まとめ役 1 件を下位領域 60 件に広げました」と出す）。 */
+  /** 集約から展開したもの（画面に「集約地物 1 件を下位領域 60 件に広げました」と出す）。 */
   readonly expansions: readonly AffiliationTargetExpansion[];
   /** 外した入力と理由。 */
   readonly dropped: readonly {
@@ -72,8 +72,8 @@ export function planAffiliationTargets(
   const dropped: { featureId: FeatureId; reason: AffiliationTargetDropKind }[] = [];
 
   /**
-   * まとめ役を **末端まで**展開する（反証 2-10）。`resolveTargetLeaves` は直接の子しか
-   * 返さないので、まとめ役の下にまとめ役が居ると「末端に限る」（FR-48 前半）を破った
+   * 集約地物を **末端まで**展開する（反証 2-10）。`resolveTargetLeaves` は直接の子しか
+   * 返さないので、集約地物の下に集約地物が居ると「末端に限る」（FR-48 前半）を破った
    * まま確定へ流れる。ここで葉に達するまで畳む ―― 予告と確定が同じ集合を見る
    * （教訓 5.26 / 5.29）。
    */
@@ -99,7 +99,7 @@ export function planAffiliationTargets(
   };
 
   for (const targetId of targetIds) {
-    // **下位領域を 1 つも持たない「まとめ役」は外す**（増分 7）。`resolveTargetLeaves` は
+    // **下位領域を 1 つも持たない「集約地物」は外す**（増分 7）。`resolveTargetLeaves` は
     // 親子を `parentId` から数えるので、宣言だけが集約で子が居ない地物は「末端」として
     // 自分自身を返す ―― そのまま確定へ流すと **集約そのものの親を張り替える**ことになり、
     // FR-48 前半の「対象は末端に限る」から外れる。ここで種別を見て断る。
@@ -121,8 +121,8 @@ export function planAffiliationTargets(
       continue;
     }
     // 展開が起きたのは「返ってきた集合が自分 1 件ではない」とき（結果状態で判定＝教訓 5.6）。
-    // **同じまとめ役を 2 回渡されても 1 本しか記録しない**（反証 1-1）。旧版は
-    // 「まとめ役 1 件を 60 件に広げました」が 2 行出ていた。
+    // **同じ集約地物を 2 回渡されても 1 本しか記録しない**（反証 1-1）。旧版は
+    // 「集約地物 1 件を 60 件に広げました」が 2 行出ていた。
     if (!(leaves.length === 1 && leaves[0] === targetId) && !expanded.has(targetId)) {
       expanded.add(targetId);
       expansions.push({ aggregateId: targetId, leafIds: leaves });

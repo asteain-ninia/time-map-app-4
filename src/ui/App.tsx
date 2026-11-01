@@ -389,7 +389,7 @@ export function App(): JSX.Element {
           const root = getRoot !== null ? getRoot() : buildEmptyProject();
           // **母集合は「どこかの年に居る地物」**（司令塔の決定 (10)）。旧版は
           // `histories.map(h => h.featureId)` ＝「自分の系列を持つ地物」だったので、
-          // **まとめ役の子（実データで 86 件）が最初から母集合に居ない**。だから
+          // **集約地物の下位領域（実データで 86 件）が最初から母集合に居ない**。だから
           // その子に付けた印も、その子に掛けた個別の表示条件も、次の確定で黙って
           // 消えていた（バグ狩り #8）。錨の中に居る地物まで数えれば、消された地物
           // だけが母集合から落ちる ―― 取り消しで戻れば母集合にも戻る。
@@ -502,7 +502,7 @@ export function App(): JSX.Element {
   );
 
   // 増分 6: **1 地物が 5 万錨**の投入口（T-2）。設計書 §F.2 の受け入れ条件がその規模で
-  // 書かれている。まとめ役の子の形も作れる ―― 系列を引く経路が違うので別に測る。
+  // 書かれている。集約地物の下位領域の形も作れる ―― 系列を引く経路が違うので別に測る。
   useEffect(
     () =>
       registerE2eHarnessAction(globalThis, 'loadSyntheticAnchors', (count, options) => {
@@ -1012,7 +1012,7 @@ export function App(): JSX.Element {
   // `recordCommitRef` と同じく ref に置く ―― 編集セッションの口は地図マウント時に 1 度だけ
   // 組み立てられるので、毎レンダーの関数を直接渡すと地図を組み直すことになる（技術方針 2.3）。
   const announceEditRefusalRef = useRef<((reason: EditRefusalKind) => void) | null>(null);
-  // ［動かす］でまとめ役を引いたとき、動かない理由を状態行へ出す口。上と同じく ref に置く。
+  // ［動かす］で集約地物を引いたとき、動かない理由を状態行へ出す口。上と同じく ref に置く。
   const announceAggregateMoveRef = useRef<(() => void) | null>(null);
   // 増分 8E（G-14）: 確定の手続きが編集を断ったとき（穴・飛び地の形を壊す編集など）の理由を
   // 状態行へ出す口。上と同じく ref に置く（地図マウント時に 1 度だけ組み立てるため）。
@@ -2227,7 +2227,7 @@ export function App(): JSX.Element {
   /**
    * その時刻ちょうどに錨があるか（＝この保存は上書きか、新設か）。**編集が実際に
    * 書き込まれる系列**をドメインと同じ `findHistoryContaining` で引いて判定する
-   * （まとめ役の子は親の系列に書かれる、設計書 §C.6 / 教訓 5.30 単一真実源）。
+   * （集約地物の下位領域は親の系列に書かれる、設計書 §C.6 / 教訓 5.30 単一真実源）。
    */
   const anchorExistsAt = useCallback(
     (featureId: FeatureId, at: TimePoint): boolean => {
@@ -2309,7 +2309,7 @@ export function App(): JSX.Element {
   //   Unshare          → the FR-33 live unshare launcher (ONE composite undo unit +
   //                      owner-selection remap onto the minted ids).
   /**
-   * まとめ役の **全下位領域**へ印をつける（FR-48 後半 / 増分 7 の中身 3）。展開は
+   * 集約地物の **全下位領域**へ印をつける（FR-48 後半 / 増分 7 の中身 3）。展開は
    * ドメインの `resolveTargetLeaves` に任せる ―― 「対象は末端に限る」という制約は
    * その関数が守っているので、ここで 2 つ目の展開規則を書かない（教訓 5.29）。
    */
@@ -2317,8 +2317,8 @@ export function App(): JSX.Element {
     (featureId: FeatureId): void => {
       const s = store.getState();
       // **孫まで**広げる（反証 2-10）。旧版は `resolveTargetLeaves` を 1 段しか通して
-      // いなかったので、まとめ役の下にまとめ役が居ると「全下位領域」と言いながら
-      // まとめ役だけに印が付いていた。確定と同じ洗い直し（`planAffiliationTargets`）を
+      // いなかったので、集約地物の下に集約地物が居ると「全下位領域」と言いながら
+      // 集約地物だけに印が付いていた。確定と同じ洗い直し（`planAffiliationTargets`）を
       // 通せば、末端まで畳んだ集合が返る（教訓 5.29: 予告と確定が同じ規則を見る）。
       const leaves = planAffiliationTargets(featuresAt(s.domain, s.currentTime), [featureId])
         .leafIds;
@@ -2334,7 +2334,7 @@ export function App(): JSX.Element {
 
   /**
    * 対象のうち **自分の歴史をまだ持っていない**件数（司令塔の決定 (1) の予告に使う）。
-   * まとめ役の錨に居候している地物は、所属を変えた瞬間に自分の系列が起きる。
+   * 集約地物の錨に居候している地物は、所属を変えた瞬間に自分の系列が起きる。
    */
   const countWithoutOwnSeries = useCallback(
     (featureIds: readonly FeatureId[]): number => {
@@ -2402,7 +2402,7 @@ export function App(): JSX.Element {
       const s = store.getState();
       const own = s.domain.histories.find((h) => h.featureId === featureId);
       if (own !== undefined) return null;
-      // まとめ役の子（実データで 86 件）は自分の系列を持たない。親の錨に終了を打つと
+      // 集約地物の下位領域（実データで 86 件）は自分の系列を持たない。親の錨に終了を打つと
       // **親が終わって**しまうので、ここからは断って上位領域へ案内する（設計書 §C.6）。
       // **親欄と同じ源から引く**（Fable #7）。旧版は「記録を持っている歴史の持ち主」
       // だけを見ていたので、所属を変えた直後は **移す前の親の名前**が出ていた（古い名前）。
@@ -2446,7 +2446,7 @@ export function App(): JSX.Element {
         return;
       }
       // **黙らない**（手直し 3 回目 / 締め D）: 後ろの続いていた記録が一緒に終わる・下位領域を
-      // 全て失ったまとめ役が一緒に終わるときは、状態行でもそう言う。確定と同じ 1 本で数える。
+      // 全て失った集約地物が一緒に終わるときは、状態行でもそう言う。確定と同じ 1 本で数える。
       const plan = planEnding(s.domain.histories, featureId, at, calendar);
       const nameAnyYear = (id: FeatureId, when: TimePoint): string =>
         featureByIdAt(s.domain, when, id)?.attributes.name ?? featureNameOf(id) ?? '';
@@ -2489,7 +2489,7 @@ export function App(): JSX.Element {
   );
 
   /**
-   * **まとめ役を終わらせる前の影響の板**（司令塔の決定 (2)）。素性欄のボタンと右クリックの
+   * **集約地物を終わらせる前の影響の板**（司令塔の決定 (2)）。素性欄のボタンと右クリックの
    * 項目は、どちらもこの `endFeatureHere` に合流するので、板もここ 1 か所で出す。
    */
   // --- 項目 6: 時刻レールの右クリック（設計書 §I.3）---------------------------
@@ -2547,7 +2547,7 @@ export function App(): JSX.Element {
       // 姿が変わらない。子が 1 件も居なければ、起きることは「この地物が終わる」だけで、
       // それはボタンの文がそのまま言っている（Ctrl+Z 1 回で戻る）ので、板は出さない。
       //
-      // **下位領域を全て失うまとめ役が一緒に終わるときも板を出す**（手直し 3 回目 / 締め D）。
+      // **下位領域を全て失う集約地物が一緒に終わるときも板を出す**（手直し 3 回目 / 締め D）。
       // 末端を終わらせるだけでも、別の地物（親）が変わるなら押す前に見せる。
       const plan = planEnding(s.domain.histories, featureId, at, calendar);
       // その年に居る子だけを数える（`featureByIdAt` は居なければ undefined を返す）。
@@ -2629,7 +2629,7 @@ export function App(): JSX.Element {
     (featureId: FeatureId): DeleteImpactView => {
       const s = store.getState();
       // 実行（createDeleteFeatureCommandForRoot）と同じ「時刻ごとの全系列の束」の見方で数える
-      // （教訓 5.26）。錨 1 枚だけで数えると、子が自分の系列を持つまとめ役を
+      // （教訓 5.26）。錨 1 枚だけで数えると、子が自分の系列を持つ集約地物を
       // 「自動で消える」と誤って予告する。
       const { state: deletionState } = deletionStateFromHistories(s.domain.histories, calendar);
       const ownYears = (s.domain.histories.find((h) => h.featureId === featureId)?.series.entries ??
@@ -2997,8 +2997,8 @@ export function App(): JSX.Element {
    * さかのぼって描く・親の後ろの記録の先に描く形で、開き直しの修復が利用者の描いた子を
    * 消す道ができた。追加の確定の後始末（集約化・削り）はやめ、読み込み時の修復で受ける。
    *
-   * **残したのは子の並びを揃えることだけ**（{@link recordAddCommit}）。まとめ役の下に面を
-   * 足したとき、まとめ役の `childIds` を実際の所属に揃える（居候のまとめ役は先に自分の系列へ
+   * **残したのは子の並びを揃えることだけ**（{@link recordAddCommit}）。集約地物の下に面を
+   * 足したとき、集約地物の `childIds` を実際の所属に揃える（居候の集約地物は先に自分の系列へ
    * 起こす）。形も所属も変えない。揃えないと開き直しで「子の並びの食い違い」を聞かれる。
    */
   const recordAddCommit = useCallback(
@@ -3627,7 +3627,7 @@ export function App(): JSX.Element {
   // (camera / time set()s are skipped) and returns the SAME state ref when nothing is
   // pruned, so it adds no re-render churn.
   // 増分 8E の手直し（設計適合 S2-3・反証 2-3）: 「在るか」は **いまの年に居るか**（地図と
-  // 同じ `featuresAt`）で見て、時刻の変化でも掃除する。系列の有無で見ていたころは、まとめ役の
+  // 同じ `featuresAt`）で見て、時刻の変化でも掃除する。系列の有無で見ていたころは、集約地物の
   // 子（自分の系列を持たない）のパネルが関係のない編集のたびに閉じ、年を動かして居なくなった
   // 地物のパネルは閉じずに隠れていた（規則は `keepPanelsPresent` の 1 か所）。
   useEffect(() => {
@@ -3845,7 +3845,7 @@ export function App(): JSX.Element {
       const proposal = createEditProposal(featureId, at, snapshot);
       const result = propertyEditBindings.createAnchor.startProcess(proposal);
       if (result.status === PROCESS_STATUS.Committed) {
-        // 自分の年表を持たないまとめ役の子では、記録は **上位領域の年表**に増える。子の
+        // 自分の年表を持たない集約地物の下位領域では、記録は **上位領域の年表**に増える。子の
         // レーンには印が増えないので、どこに増えたかを名前で言う（バグ狩り 2-4: 押しても
         // 何も起きなかったように見えていた）。
         const before = store.getState().domain;
@@ -3980,7 +3980,7 @@ export function App(): JSX.Element {
           anchorIntervalRecolorTime(root, intent, store.getState().currentTime),
         );
         // **黙らない**（手直し 3 回目 / 締め D）: 存続期間の欄の編集で、下位領域を全て失った
-        // まとめ役が一緒に終わったら、名前と年を状態行に出す。「この年に終わったことにする」は
+        // 集約地物が一緒に終わったら、名前と年を状態行に出す。「この年に終わったことにする」は
         // 呼び手（`commitEndHere`）が同じことを自分の文に含めるので、ここでは言わない。
         if (intent.op !== ANCHOR_INTERVAL_OP.EndHere && result.cascaded.length > 0) {
           const live = store.getState().domain;
@@ -4778,7 +4778,7 @@ export function App(): JSX.Element {
               />
             )}
 
-            {/* **まとめ役を終わらせる前の影響の板**（司令塔の決定 (2)）。素性欄のボタンと
+            {/* **集約地物を終わらせる前の影響の板**（司令塔の決定 (2)）。素性欄のボタンと
                 右クリックの項目の両方がここを通る。削除と同じ器・同じ作法（鍵盤の持ち主へ
                 自分で名乗る＝決定 (13)）。 */}
             {pendingEndHere !== null && (
@@ -5290,7 +5290,7 @@ interface ConflictPending {
   readonly clearVertexOwner?: FeatureId;
   /**
    * 止まっていたのが **面・線・点の追加** なら、その新しい地物の id。板を通った確定でも、
-   * 直接の確定と同じ入口（まとめ役の子の並びを揃える）を通すために使う。ほかの道具では無い。
+   * 直接の確定と同じ入口（集約地物の下位領域の並びを揃える）を通すために使う。ほかの道具では無い。
    */
   readonly addedFeatureId?: FeatureId;
 }

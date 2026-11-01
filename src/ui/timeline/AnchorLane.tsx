@@ -67,7 +67,7 @@ export interface AnchorLaneProps {
   readonly calendar: Calendar;
   /** 選んでいる地物があるか（無いときは淡い 1 行を出す）。 */
   readonly hasSelection: boolean;
-  /** まとめ役の子で、親の系列を借りているときの持ち主の名前。 */
+  /** 集約地物の下位領域で、親の系列を借りているときの持ち主の名前。 */
   readonly ownerName: string | null;
   /** 歴史の節目が時間軸の左端にしかないか（設計書 §H.4 の空状態）。 */
   readonly onlyOrigin: boolean;

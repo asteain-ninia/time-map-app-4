@@ -87,7 +87,7 @@ export interface MenuLaunchPorts {
    * 何もしない正直な空実装になる。
    */
   readonly setFeatureMarked?: ((featureId: FeatureId, marked: boolean) => void) | undefined;
-  /** まとめ役の全下位領域に印をつける（FR-48 後半 / 増分 7 の中身 3）。 */
+  /** 集約地物の全下位領域に印をつける（FR-48 後半 / 増分 7 の中身 3）。 */
   readonly markSubtree?: ((featureId: FeatureId) => void) | undefined;
   /** 印を付けた地物の所属をまとめて変える（増分 7 の中身 2b / V8）。 */
   readonly reparentMarked?: ((featureIds: ReadonlySet<FeatureId>) => void) | undefined;

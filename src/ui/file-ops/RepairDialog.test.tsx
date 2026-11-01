@@ -178,7 +178,7 @@ describe('RepairDialog (FR-106 一覧表示 + 動的選択肢, 受け入れ基�
 
 // --- 増分 8D: 修復ダイアログの整理（N-22）-------------------------------------------
 
-/** 名前の無いまとめ役の、下位領域の一覧と親の食い違い（方法が 3 つある種類）。 */
+/** 名前の無い集約地物の、下位領域の一覧と親の食い違い（方法が 3 つある種類）。 */
 const CHILD_PARENT_MISMATCH: Inconsistency = {
   kind: INCONSISTENCY.TreeTopology,
   featureIds: [asFeatureId('f-5-4')],

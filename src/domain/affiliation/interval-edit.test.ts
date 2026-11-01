@@ -1,12 +1,12 @@
 // 存続期間の編集が所属の記録を一緒に動かすことの検査（増分 7 の手直し 2 回目）。
 //
 // 固定するのは次のとおり。
-//   1. まとめ役を終わらせると、直接の子はその年から最上位になる（前の年の「子だった」記録は残る）。
+//   1. 集約地物を終わらせると、直接の子はその年から最上位になる（前の年の「子だった」記録は残る）。
 //   2. 子が後の年に別の親へ移っていたら、その所属は外さない（反証 #1 / GPT #2）。
-//   3. まとめ役が後の年の錨で再び現れるなら、子はその年から元の所属に戻る（殻を作らない）。
+//   3. 集約地物が後の年の錨で再び現れるなら、子はその年から元の所属に戻る（殻を作らない）。
 //   4. 孫は最上位にしない（反証 #5）。居候の孫も起こして、道連れに消さない。
 //   5. 自分の系列を持つ子を終わらせると、親の子の並びからその年以後は外れる（バグ狩り §3 / D1）。
-//   6. 開始年を後ろへ動かしたまとめ役の、居なくなった年の子も親を外す（GPT #4 の例）。
+//   6. 開始年を後ろへ動かした集約地物の、居なくなった年の子も親を外す（GPT #4 の例）。
 //   7. 終わりのある錨を割っても、後ろの片が終わりを越えて続かない。
 //   8. 押す前の板の数え上げ（`planEnding`）と確定は同じ結果になる。
 
@@ -88,7 +88,7 @@ function treeIssues(histories: readonly FeatureHistory[]): string[] {
     .map((i) => `${i.detail ?? ''}@${i.atTime?.year ?? '?'}:${i.featureIds.map(String).join(',')}`);
 }
 
-/** まとめ役 agg（1000 年〜、錨は `aggYears`）に居候 a・b。 */
+/** 集約地物 agg（1000 年〜、錨は `aggYears`）に居候 a・b。 */
 function nested(aggYears: readonly number[] = [1000]): readonly FeatureHistory[] {
   const a = leafTile('a', 0, 0, 10, 10, 'agg');
   const b = leafTile('b', 10, 0, 10, 10, 'agg');
@@ -112,7 +112,7 @@ describe('presenceOf / subtractIntervals', () => {
   });
 });
 
-describe('editFeatureInterval — まとめ役を終わらせる（決定 (2) と手直し 2 回目）', () => {
+describe('editFeatureInterval — 集約地物を終わらせる（決定 (2) と手直し 2 回目）', () => {
   it('居候の子を起こし、その年から最上位にする（前の年の所属は残る）', () => {
     const result = endAt(nested(), 'agg', 1500);
     if (!result.ok) throw new Error('rejected');
@@ -182,7 +182,7 @@ describe('editFeatureInterval — まとめ役を終わらせる（決定 (2) �
     expect(treeIssues(result.histories)).toEqual([]);
   });
 
-  it('孫は最上位にしない（中間のまとめ役は子を保ったまま最上位になる。反証 #5）', () => {
+  it('孫は最上位にしない（中間の集約地物は子を保ったまま最上位になる。反証 #5）', () => {
     const d = leafTile('d', 0, 0, 10, 10, 'c');
     const e = leafTile('e', 10, 0, 10, 10, 'c');
     const x = leafTile('x', 20, 0, 10, 10, 'p');
@@ -235,7 +235,7 @@ describe('editFeatureInterval — 子を終わらせる・開始年を動かす'
     expect(treeIssues(result.histories)).toEqual([]);
   });
 
-  it('まとめ役の開始年を後ろへ動かすと、居なくなった年の子は親を外す（GPT #4 の例）', () => {
+  it('集約地物の開始年を後ろへ動かすと、居なくなった年の子は親を外す（GPT #4 の例）', () => {
     const base = federation();
     const anchorId = base[0]!.series.entries[0]!.anchor.id;
     const result = editFeatureInterval(base, fid('agg'), (s) => changeStart(s, anchorId, y(1200), calendar), calendar);
@@ -288,7 +288,7 @@ describe('syncAggregateChildIds — 子の並びを時刻ごとの所属に揃�
   });
 });
 
-describe('手直し 3 回目 — 途切れずに続く記録をまとめて終わらせる・後ろ側が空のまとめ役を終わらせる', () => {
+describe('手直し 3 回目 — 途切れずに続く記録をまとめて終わらせる・後ろ側が空の集約地物を終わらせる', () => {
   /** 連邦 F（自分の系列）と、自分の系列を持つ州 a・b（どちらも 1200 年から F の子）。 */
   function federation(): readonly FeatureHistory[] {
     const a = leafTile('a', 0, 0, 10, 10, 'F');
@@ -388,7 +388,7 @@ describe('手直し 3 回目 — 途切れずに続く記録をまとめて終�
     expect(checkConsistency({ histories: result.histories } as unknown as DomainProject, calendar).inconsistencies).toEqual([]);
   });
 
-  it('締め C: 最初から子が居ないまとめ役・途中だけ空のまとめ役は終わらせない', () => {
+  it('締め C: 最初から子が居ない集約地物・途中だけ空の集約地物は終わらせない', () => {
     const lonely: readonly FeatureHistory[] = [
       { featureId: fid('L'), series: { entries: [entryOf('L', 1000, [aggregate('L', [])], [])] } },
     ];
@@ -427,7 +427,7 @@ describe('手直し 3 回目 — 途切れずに続く記録をまとめて終�
   });
 });
 
-describe('手直し 4 回目 — どの年にも子が居なくなるまとめ役・後ろの別の所属・帳簿の錨・関係の無い空', () => {
+describe('手直し 4 回目 — どの年にも子が居なくなる集約地物・後ろの別の所属・帳簿の錨・関係の無い空', () => {
   /** 州 a・b（1000 年から最上位、1200 年から連邦 F の子）と連邦 F（1200 年から）。 */
   function federatedAt1200(): readonly FeatureHistory[] {
     const a = leafTile('a', 0, 0, 10, 10);
@@ -508,7 +508,7 @@ describe('手直し 4 回目 — どの年にも子が居なくなるまとめ�
     expect(noIssues(r.histories)).toEqual([]);
   });
 
-  it('#4 Q7: 関係の無い編集では、前から空だったまとめ役に触らない', () => {
+  it('#4 Q7: 関係の無い編集では、前から空だった集約地物に触らない', () => {
     // G{F, Z}: F・Z は 1600 年に G から出ている（G は 1600 年から子の居ない古い形）。
     const f = leafTile('Fx', 0, 0, 10, 10);
     const z = leafTile('Z', 10, 0, 10, 10);

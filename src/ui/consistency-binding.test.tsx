@@ -1380,7 +1380,7 @@ describe('createDeleteFeatureCommandForRoot (bughunt2 — U31 全錨削除 over 
     expect(after.result.survived.has(b.feature.id)).toBe(true);
   });
 
-  // 所有者の裁定 2026-09-07「直す」: まとめ役 P を消しても、P から外のまとめ役 Q へ移した
+  // 所有者の裁定 2026-09-07「直す」: 集約地物 P を消しても、P から外の集約地物 Q へ移した
   // 子 a の行き先 Q は消えない（以前は Q の錨に子が居ないので連鎖剪定されていた）。
   // 取り消しは構築時の根をそのまま戻す（全体差し替えの命令）。
   it('keeps the destination aggregate of a moved child alive, and undo restores the root identity', () => {

@@ -77,8 +77,8 @@ export function buildSyntheticProject(base: DomainProject, count: number): Domai
  * その形をその場で作る口を開ける。5 万錨入りの `.gimoza` はリポジトリへ置けない
  * （錨 1 本＝スナップショット 1 部なので、実データ換算で数百 MB になる）。
  *
- * `asAggregateChild` を立てると **まとめ役の子**の形にする ―― 自分の履歴を持たず、
- * 親（まとめ役）の系列に自分が入っている。§F.2 の「まとめ役の子でも同じ条件を満たす」
+ * `asAggregateChild` を立てると **集約地物の下位領域**の形にする ―― 自分の履歴を持たず、
+ * 親（集約地物）の系列に自分が入っている。§F.2 の「集約地物の下位領域でも同じ条件を満たす」
  * を測るための形で、実データの 86 件と同じ構造である。
  */
 export function buildSyntheticAnchorProject(
@@ -102,7 +102,7 @@ export function buildSyntheticAnchorProject(
   const parentId = asFeatureId('syn-anchor-parent');
   const entries = [];
   for (let i = 0; i < count; i += 1) {
-    // 形をわずかに動かして「その錨で何かが変わった」ようにする ―― まとめ役の子の
+    // 形をわずかに動かして「その錨で何かが変わった」ようにする ―― 集約地物の下位領域の
     // 選り分け（`isRelevantAnchor`）が全部を「関わる」と判定する形にしておかないと、
     // 母数が 0 になって測りたいものが測れない。
     const lon = -10 + (i % 1000) * 0.001;
@@ -134,7 +134,7 @@ export function buildSyntheticAnchorProject(
       ? [
           createAggregateFeature(
             parentId,
-            createBasicAttributes('合成のまとめ役', 0, 9999),
+            createBasicAttributes('合成の集約地物', 0, 9999),
             color,
             [childId],
             { kindLabel: '合成の国' },
@@ -154,7 +154,7 @@ export function buildSyntheticAnchorProject(
         : timePointYear(withinOneYear > 0 ? 1201 + i : i);
     entries.push(createAnchorEntry(anchor, start));
   }
-  // 系列の持ち主は、まとめ役の子のときは **親**（実データと同じ形）。
+  // 系列の持ち主は、集約地物の下位領域のときは **親**（実データと同じ形）。
   return {
     ...base,
     histories: [{ featureId: asChild ? parentId : childId, series: { entries } }],
@@ -163,10 +163,10 @@ export function buildSyntheticAnchorProject(
 
 /** 合成した錨だらけの地物の id（E2E がそのまま選べるように公開する）。 */
 export const SYNTHETIC_ANCHOR_FEATURE_ID = 'syn-anchor-child';
-/** 同じくまとめ役（親）の id。 */
+/** 同じく集約地物（親）の id。 */
 export const SYNTHETIC_ANCHOR_PARENT_ID = 'syn-anchor-parent';
 
-/** 合成の入れ子（まとめ役 + その錨に居候する子）の id（E2E がそのまま選べるように公開）。 */
+/** 合成の入れ子（集約地物 + その錨に居候する子）の id（E2E がそのまま選べるように公開）。 */
 export const SYNTHETIC_NEST_PARENT_ID = 'syn-nest-parent';
 export const SYNTHETIC_NEST_PARENT_NAME = '合成の連邦';
 export const SYNTHETIC_NEST_OUTSIDER_ID = 'syn-nest-outsider';
@@ -179,13 +179,13 @@ export function syntheticNestChildName(index: number): string {
 /**
  * **記録の置き場の検査のための合成データ**（司令塔の決定 (1)(2)。増分 7 の手直し A）。
  *
- * 実データの「デーレ共和国 60 州」と同じ形を作る ―― まとめ役 1 件が系列を持ち、
+ * 実データの「デーレ共和国 60 州」と同じ形を作る ―― 集約地物 1 件が系列を持ち、
  * その錨のスナップショットの中に `childCount` 件の子が居る（**子は自分の系列を
  * 持たない**）。錨は `years` のぶんだけ並べるので、「全部の年の記録を写す」が
  * 効いているかを画面から数えられる。
  *
  * 別の親へ移す先として、最上位の面「合成の外の国」を 1 件だけ自分の系列つきで置く。
- * 子は横に並べた正方形で、まとめ役の形＝子の和になる（FR-35 を満たす）。
+ * 子は横に並べた正方形で、集約地物の形＝子の和になる（FR-35 を満たす）。
  */
 export function buildSyntheticNestedProject(
   base: DomainProject,

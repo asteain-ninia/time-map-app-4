@@ -15,7 +15,7 @@ import { describeDeletionImpact, directChildCountAt } from './impact';
 import { createDeleteFeatureCommand } from './command';
 
 describe('describeDeletionImpact — 削除の影響を数える（設計書 §A.3）', () => {
-  it('まとめ役を消すと、下位領域が「最上位へ移るもの」として全部挙がる', () => {
+  it('集約地物を消すと、下位領域が「最上位へ移るもの」として全部挙がる', () => {
     const a = leafTile('a', 0, 0, 10, 10, 'agg');
     const b = leafTile('b', 10, 0, 10, 10, 'agg');
     const agg = aggregate('agg', ['a', 'b']);
@@ -26,7 +26,7 @@ describe('describeDeletionImpact — 削除の影響を数える（設計書 §A
     const impact = describeDeletionImpact(state, fid('agg'), [0]);
 
     expect([...impact.promotedChildIds].sort()).toEqual([fid('a'), fid('b')].sort());
-    // まとめ役は自分の形を持たない（FR-35）ので、消える頂点は 0 個である。
+    // 集約地物は自分の形を持たない（FR-35）ので、消える頂点は 0 個である。
     expect(impact.ownsShape).toBe(false);
     expect(impact.vertexCount).toBe(0);
     expect(impact.ownAnchorYears).toEqual([0]);
@@ -45,7 +45,7 @@ describe('describeDeletionImpact — 削除の影響を数える（設計書 §A
     expect(impact.autoRemovedIds).toEqual([]);
   });
 
-  it('最後の下位領域を消すと、空になるまとめ役が「自動で消える地物」に挙がる', () => {
+  it('最後の下位領域を消すと、空になる集約地物が「自動で消える地物」に挙がる', () => {
     const a = leafTile('a', 0, 0, 10, 10, 'agg');
     const agg = aggregate('agg', ['a']);
     const state = stateOf(anchorOf('an-0', [agg, a.feature], a.vertices));
@@ -107,7 +107,7 @@ describe('describeDeletionImpact — 削除の影響を数える（設計書 §A
 });
 
 describe('directChildCountAt — その年の直接の下位領域の数', () => {
-  it('まとめ役の直接の子だけを数える（孫は数えない）', () => {
+  it('集約地物の直接の子だけを数える（孫は数えない）', () => {
     const a = leafTile('a', 0, 0, 10, 10, 'agg');
     const b = leafTile('b', 10, 0, 10, 10, 'agg');
     const agg = aggregate('agg', ['a', 'b']);

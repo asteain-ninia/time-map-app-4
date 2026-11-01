@@ -369,7 +369,7 @@ function deleteItemFor(hasVertexSelection: boolean): ContextMenuItem {
 /**
  * 「この年に終わったことにする」の項目（設計書 §A.3 の入口 A / 反証 2-9）。
  *
- * **素性欄のボタンと同じ条件**で無効にする ―― 自分の歴史を持たない地物（まとめ役の
+ * **素性欄のボタンと同じ条件**で無効にする ―― 自分の歴史を持たない地物（集約地物の
  * 錨の中に居る子）は、ここから終わりを打つと **親が終わって**しまうので打てない。
  * 判定そのものは根を引かないと出せないので、呼び出し側が結果を渡す（教訓 5.30 単一の
  * 真実源: 素性欄の `endHereDisabledReason` と同じ関数から来る）。渡されなければ
@@ -512,7 +512,7 @@ export function composeContextMenu(input: ComposeInput): ContextMenuModel | NoMe
         marked.has(displayTargetId) ? MENU_ITEM_KIND.UnmarkTarget : MENU_ITEM_KIND.MarkTarget,
       ),
     );
-    // まとめ役だけに出す（FR-48 後半の入口）。末端には下位領域が無いので意味が無い。
+    // 集約地物だけに出す（FR-48 後半の入口）。末端には下位領域が無いので意味が無い。
     if (
       target.kind === MENU_TARGET_KIND.Feature &&
       target.featureKind === FEATURE_KIND.Aggregate

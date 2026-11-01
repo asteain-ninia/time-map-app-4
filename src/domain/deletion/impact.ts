@@ -27,7 +27,7 @@ import { sweepDeletionState } from './sweep-state';
 export interface DeletionImpact {
   readonly targetId: FeatureId;
   /**
-   * 対象自身の系列の錨が始まる年（昇順・重複なし）。**まとめ役の子（自分の履歴を持たない
+   * 対象自身の系列の錨が始まる年（昇順・重複なし）。**集約地物の下位領域（自分の履歴を持たない
    * 地物）では空**になる —— そのときは「歴史は親が持っています」と画面が言う。
    * 呼び出し側が対象の系列の開始時刻を渡す（U31 は系列の並びを持たない）。
    */
@@ -41,7 +41,7 @@ export interface DeletionImpact {
    * 頂点表に残る（消えるのは参照）。
    */
   readonly soleVertexCount: number;
-  /** 対象は自分の形を持つか（false＝まとめ役なので頂点 0 個が正しい姿）。 */
+  /** 対象は自分の形を持つか（false＝集約地物なので頂点 0 個が正しい姿）。 */
   readonly ownsShape: boolean;
   /**
    * どこかの年で対象を上位領域としている地物（＝削除で **すべての年で最上位へ移る**
@@ -120,7 +120,7 @@ export function describeDeletionImpact(
     // 「消える」ではなく「消す」ものなので除く。
     //
     // **全部の錨で消えるものだけ**を「自動で消える」と言う（手直し 3 回目 / 再検証 #3）。
-    // 一部の年の錨でだけ消え、ほかの年の錨に残るまとめ役は「その年から消える」側に分ける。
+    // 一部の年の錨でだけ消え、ほかの年の錨に残る集約地物は「その年から消える」側に分ける。
     const swept = perAnchor[index];
     if (swept === undefined) continue;
     for (const id of swept.removedIds) if (id !== targetId) removedSomewhere.add(id);

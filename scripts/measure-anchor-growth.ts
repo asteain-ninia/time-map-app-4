@@ -712,7 +712,7 @@ function main(): void {
   const baseManifest = serialize(baseProject);
   const baseShape = shapeOf(baseManifest);
 
-  // まとめ役の錨 1 本ぶんの「manifest 上の実測バイト数」。
+  // 集約地物の錨 1 本ぶんの「manifest 上の実測バイト数」。
   // 保存されるのは manifest の形なので、ドメイン側のオブジェクトではなく
   // manifest の該当エントリをそのまま数える。
   const ownerManifestHistory = baseManifest.histories.find(
@@ -733,7 +733,7 @@ function main(): void {
   printTable(
     ['項目', '値'],
     [
-      ['まとめ役の地物', `${aggregate.attributes.name}（${String(aggregate.id)}）`],
+      ['集約地物', `${aggregate.attributes.name}（${String(aggregate.id)}）`],
       ['その子の数', num(aggregate.childIds.length)],
       ['歴史を持っている履歴', String(found.ownerHistoryFeatureId)],
       ['その錨のスナップショットの地物数', num(ownerFeatureCount)],

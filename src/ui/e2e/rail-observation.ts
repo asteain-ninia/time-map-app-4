@@ -14,9 +14,9 @@
 export interface AnchorLaneStats {
   /** レーンが描いている地物の id（選択が無ければ空文字）。 */
   readonly featureId: string;
-  /** まとめ役の子か（親の系列から選り分けたレーンか）。 */
+  /** 集約地物の下位領域か（親の系列から選り分けたレーンか）。 */
   readonly inherited: boolean;
-  /** レーンの母数（まとめ役の子なら選り分けたあとの本数）。 */
+  /** レーンの母数（集約地物の下位領域なら選り分けたあとの本数）。 */
   readonly anchorCount: number;
   /** いま表示範囲に入っている錨の本数。 */
   readonly inView: number;

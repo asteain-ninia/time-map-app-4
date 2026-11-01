@@ -913,7 +913,7 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
       close: (page) => page.getByTestId('bulk-kind-cancel').click(),
     },
     {
-      ledger: '#26 まとめ役を終わらせる前の影響',
+      ledger: '#26 集約地物を終わらせる前の影響',
       backdrop: 'end-here-impact-backdrop',
       dialog: 'end-here-impact',
       open: async (page) => {

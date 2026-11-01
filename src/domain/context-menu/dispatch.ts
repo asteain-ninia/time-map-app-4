@@ -281,7 +281,7 @@ export function dispatchMenuItem(
       };
     }
     case MENU_ITEM_KIND.MarkSubtree: {
-      // まとめ役の全下位領域へ印をつける（FR-48 後半）。展開そのものはドメインの
+      // 集約地物の全下位領域へ印をつける（FR-48 後半）。展開そのものはドメインの
       // `resolveTargetLeaves` が行うので、意図が運ぶのは相手の id だけである。
       if (ft === null) return blocked(DISPATCH_BLOCKED_KIND.NoFeatureTarget);
       return { kind: FLOW_KIND.MarkSubtree, featureId: ft.featureId };

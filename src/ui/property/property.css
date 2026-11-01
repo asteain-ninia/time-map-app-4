@@ -250,7 +250,7 @@
   cursor: pointer;
 }
 
-/* まとめ役の子（実データで 86 件）の断り書き。 */
+/* 集約地物の下位領域（実データで 86 件）の断り書き。 */
 .property-panel__inherited {
   margin: 0;
   display: flex;

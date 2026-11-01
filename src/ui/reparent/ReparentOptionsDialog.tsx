@@ -168,8 +168,8 @@ export function ReparentOptionsDialog(props: ReparentOptionsDialogProps): JSX.El
   );
 
   /**
-   * この操作で **子を全部失って自動で消えるまとめ役**（FR-35 の連鎖消滅。反証 2-4）。
-   * 解体（3 択の「最上位へ」）はこれが主経路なので、予告に出ないと「まとめ役が黙って
+   * この操作で **子を全部失って自動で消える集約地物**（FR-35 の連鎖消滅。反証 2-4）。
+   * 解体（3 択の「最上位へ」）はこれが主経路なので、予告に出ないと「集約地物が黙って
    * 消えた」に見える。`features` と対象集合だけで決まるので板の中で数える。
    */
   const autoRemovedNames = useMemo<readonly string[]>(() => {
@@ -218,11 +218,11 @@ export function ReparentOptionsDialog(props: ReparentOptionsDialogProps): JSX.El
     if (missing > 0) lines.push(REPARENT_STRINGS.previewDroppedMissing(missing));
     const empty = plan.dropped.filter((d) => d.reason === 'empty-aggregate').length;
     if (empty > 0) lines.push(REPARENT_STRINGS.previewDroppedEmpty(empty));
-    // 決定 (1): まとめ役の錨に居候している対象は、この操作で自分の系列を持つ。
+    // 決定 (1): 集約地物の錨に居候している対象は、この操作で自分の系列を持つ。
     if (materializingCount > 0) {
       lines.push(REPARENT_STRINGS.previewMaterialize(materializingCount));
     }
-    // 子を全部失って自動で消えるまとめ役（解体の主経路。反証 2-4）。
+    // 子を全部失って自動で消える集約地物（解体の主経路。反証 2-4）。
     if (autoRemovedNames.length > 0) {
       lines.push(REPARENT_STRINGS.previewAutoRemoved(autoRemovedNames.join(REPARENT_TEXT.nameSeparator)));
     }

@@ -19,7 +19,7 @@ import { asFeatureId, type FeatureId } from '../../domain/ids';
 import { REPARENT_CHOICE, ReparentOptionsDialog } from './ReparentOptionsDialog';
 import { REPARENT_STRINGS } from './strings';
 
-/** まとめ役 1 件（子 2 件）＋独立した面 1 件。親候補の木が 2 段になる。 */
+/** 集約地物 1 件（子 2 件）＋独立した面 1 件。親候補の木が 2 段になる。 */
 function world(): readonly Feature[] {
   const a = leafTile('a', 0, 0, 10, 10, 'agg');
   const b = leafTile('b', 10, 0, 10, 10, 'agg');
@@ -77,7 +77,7 @@ describe('ReparentOptionsDialog — 3 択（増分 7 の中身 1）', () => {
 describe('ReparentOptionsDialog — 台帳と同じツリーから親を選ぶ（中身 2）', () => {
   it('候補は階層の木として出る（素のプルダウンではない）', () => {
     mount();
-    // まとめ役も候補に出る（FR-48 は集約を親にすることを禁じていない）。
+    // 集約地物も候補に出る（FR-48 は集約を親にすることを禁じていない）。
     expect(screen.getByTestId('reparent-parent-existing-pick-item-agg')).toBeInTheDocument();
     expect(screen.getByTestId('reparent-parent-existing-pick-item-lone')).toBeInTheDocument();
     // 木なので、子を持つ行には開閉の三角が付く。
@@ -171,7 +171,7 @@ describe('ReparentOptionsDialog — 分け残し（直轄領）の名前（G-4 /
     );
   });
 
-  it('まとめ役を親にすると、名前の欄そのものが出ない（分け残しが無いから）', () => {
+  it('集約地物を親にすると、名前の欄そのものが出ない（分け残しが無いから）', () => {
     mount({ initialParentId: asFeatureId('agg') });
     expect(screen.queryByTestId('reparent-direct-domain')).not.toBeInTheDocument();
   });
@@ -215,7 +215,7 @@ describe('ReparentOptionsDialog — 予告文と洗い直し（中身 2b / V6・
     expect(screen.getByTestId('reparent-preview').textContent).toContain('Ctrl+Z');
   });
 
-  it('まとめ役を広げたことを言う（FR-48 後半）', () => {
+  it('集約地物を広げたことを言う（FR-48 後半）', () => {
     mount({
       plan: {
         leafIds: [asFeatureId('a'), asFeatureId('b')],

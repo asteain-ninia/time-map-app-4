@@ -173,8 +173,8 @@ export interface ReparentHighlightInput {
 /** 印を付けた地物の形（ホストが live-lookup で解いて渡す）。 */
 export interface MarkedHighlightInput {
   /**
-   * 面の形。**まとめ役もここへ入る** ―― まとめ役は自分の形を持たないので、ホストは
-   * 下位領域の和（`resolveFeatureArea`）を解いて渡す（反証 1-2: まとめ役に印を付けても
+   * 面の形。**集約地物もここへ入る** ―― 集約地物は自分の形を持たないので、ホストは
+   * 下位領域の和（`resolveFeatureArea`）を解いて渡す（反証 1-2: 集約地物に印を付けても
    * 地図に何も出なかった）。
    */
   readonly markedShapes: readonly (GeoMultiPolygon | undefined)[];

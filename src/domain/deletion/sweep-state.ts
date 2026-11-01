@@ -30,8 +30,8 @@ export interface DeletionStateSweep {
   readonly bundleSurvivors: readonly (readonly Feature[] | undefined)[];
   /**
    * 錨の始まりの時刻では子を全部失って見えるが、その錨の区間の途中で子が居るので
-   * **連鎖剪定しなかった**まとめ役（増分 7 の手直し 2 回目）。始まりの時刻の世界では子の居ない
-   * まとめ役として残るので、削除の判定（eligibility）はこれらの「子が居ない」を削除が作った
+   * **連鎖剪定しなかった**集約地物（増分 7 の手直し 2 回目）。始まりの時刻の世界では子の居ない
+   * 集約地物として残るので、削除の判定（eligibility）はこれらの「子が居ない」を削除が作った
    * 違反としては数えない（削除の前からある形）。
    */
   readonly keptAggregateIds: ReadonlySet<FeatureId>;
@@ -93,9 +93,9 @@ export function sweepDeletionState(
     const bundle = bundling?.bundles[k];
     if (bundle === undefined) return undefined;
     let done = sweepBundle(bundle.features, targets);
-    // **区間の途中で子が居るまとめ役は剪定しない**（増分 7 の手直し 2 回目 / 反証 #3・GPT #3）。
+    // **区間の途中で子が居る集約地物は剪定しない**（増分 7 の手直し 2 回目 / 反証 #3・GPT #3）。
     // 束は錨の始まりの時刻で組むので、始まりの時刻に子が居なくても途中から子が入る
-    // まとめ役（開始年を前へ直した連邦など）が、関係の無い削除で系列ごと消えていた。
+    // 集約地物（開始年を前へ直した連邦など）が、関係の無い削除で系列ごと消えていた。
     // 錨 1 枚は丸ごと残すか消すかしか選べないので、区間のどこかで子が居れば残す
     // （途中から子の居ない殻が残る逆の形は「消えない」側なので許容。docs/現状.md）。
     const interior = bundling?.interior;

@@ -64,7 +64,7 @@ function planDeletion(state: DeletionState, targetId: FeatureId): DeletionPlan {
   const touched = new Set<DomainId>();
 
   // 束（その時刻の全系列）があれば束で判定する（所有者の裁定 2026-09-07。錨 1 枚だけを
-  // 見ると、子が自分の系列を持つまとめ役が「下位領域を全部失った」と読まれて消えていた）。
+  // 見ると、子が自分の系列を持つ集約地物が「下位領域を全部失った」と読まれて消えていた）。
   const { perAnchor } = sweepDeletionState(state, targets);
   for (const [index, anchor] of state.anchors.entries()) {
     const swept = perAnchor[index];

@@ -1,7 +1,7 @@
-// 子の和が半周を超えるまとめ役の隙間の判定。
+// 子の和が半周を超える集約地物の隙間の判定。
 //
 // 途中の和に経度 180 度以上の辺があると、次の整列で別の形（裏回り）になり、子の間の隙間が見えなく
-// なる。`checkAggregateShapes` は確定前の検査なので、見逃すと隙間のあるまとめ役が確定する。
+// なる。`checkAggregateShapes` は確定前の検査なので、見逃すと隙間のある集約地物が確定する。
 
 import { describe, expect, it } from 'vitest';
 
@@ -53,7 +53,7 @@ function run(children: readonly { id: string; outer: WorldCoordinate[]; hole?: W
   return checkAggregateShapes(buildForest(features), createVertexStore(vertices)).map((v) => v.kind);
 }
 
-describe('子の和が半周を超えるまとめ役', () => {
+describe('子の和が半周を超える集約地物', () => {
   it('子の間に囲まれた隙間があれば、隙間と言う', () => {
     expect(
       run([

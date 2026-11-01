@@ -1,8 +1,8 @@
 // 増分 7 の手直し A —「記録の置き場」を実アプリで押す（司令塔の決定 (1)(2)(3)）。
 //
 // **これが守るもの**: 地物の記録は自分の系列（歴史）に置く。唯一の例外は「自分の系列を
-// 持たないまとめ役の子」で、その記録は親の錨の中にある。**まとめ役の子でなくなる瞬間**
-// （別の親へ移す／最上位へ昇格／まとめ役を全部の年から消す／まとめ役をその年で終わらせる）
+// 持たない集約地物の下位領域」で、その記録は親の錨の中にある。**集約地物の下位領域でなくなる瞬間**
+// （別の親へ移す／最上位へ昇格／集約地物を全部の年から消す／集約地物をその年で終わらせる）
 // に、その記録を親の錨から選り分けて自分の系列を起こす。
 //
 // これを怠ると実データで何が起きたか（検証 5 本の一致した指摘）:
@@ -11,7 +11,7 @@
 //   ・別の親へ移した州まで、元の親を消すと巻き添えで消える（バグ狩り #3）
 //
 // **合成データで押す**（`loadSyntheticNested`）。実データそのものは本体の検査に置けない
-// （2MB のファイルを毎回読ませない／別の計算機に無い）が、形は同じ ―― まとめ役 1 件が
+// （2MB のファイルを毎回読ませない／別の計算機に無い）が、形は同じ ―― 集約地物 1 件が
 // 系列を持ち、その錨の中に子が居候する。年を 2 つ並べてあるので「全部の年の記録を写す」も
 // 数えられる。
 //
@@ -45,7 +45,7 @@ function childName(index: number): string {
 }
 
 /**
- * 一覧で 1 行を **出す**。木の表示ではまとめ役の子は畳まれていて DOM に居ないので、
+ * 一覧で 1 行を **出す**。木の表示では集約地物の下位領域は畳まれていて DOM に居ないので、
  * 名前で絞り込んで先祖を自動で開かせる（増分 4 の「一致した子の先祖を自動で開く」）。
  */
 async function revealRow(page: Page, name: string, featureId: string): Promise<void> {
@@ -88,7 +88,7 @@ async function armReparent(page: Page): Promise<void> {
 }
 
 test.describe('増分 7 の手直し A — 記録の置き場（決定 (1)(2)）', () => {
-  test('まとめ役を全部の年から消しても、子は 1 件も失われず自分の歴史を持つ', async () => {
+  test('集約地物を全部の年から消しても、子は 1 件も失われず自分の歴史を持つ', async () => {
     const { app, page } = await launchApp();
     try {
       await loadSyntheticNested(page, CHILD_COUNT);
@@ -98,14 +98,14 @@ test.describe('増分 7 の手直し A — 記録の置き場（決定 (1)(2)）
       await jumpToYear(page, 1200);
 
       const before = await projectStats(page);
-      // 読み込んだ直後は「まとめ役 + 外の国」の 2 系列しか無い（子は居候）。
+      // 読み込んだ直後は「集約地物 + 外の国」の 2 系列しか無い（子は居候）。
       expect(before.historyCount).toBe(2);
       expect(before.featureCount).toBe(CHILD_COUNT + 2);
 
       await selectInLedger(page, PARENT_NAME, PARENT_ID);
       await deleteAllYears(page);
 
-      // 子は 1 件も消えていない（まとめ役だけが消える）。
+      // 子は 1 件も消えていない（集約地物だけが消える）。
       const after = await projectStats(page);
       expect(after.featureCount).toBe(CHILD_COUNT + 1);
       // **子が自分の歴史を持った**（居候のままなら親と一緒に消えていた）。
@@ -134,7 +134,7 @@ test.describe('増分 7 の手直し A — 記録の置き場（決定 (1)(2)）
     }
   });
 
-  test('まとめ役をその年で終わらせても子は道連れにならず、次の年に最上位で居る', async () => {
+  test('集約地物をその年で終わらせても子は道連れにならず、次の年に最上位で居る', async () => {
     const { app, page } = await launchApp();
     try {
       await loadSyntheticNested(page, CHILD_COUNT, [1000, 1200]);
@@ -146,7 +146,7 @@ test.describe('増分 7 の手直し A — 記録の置き場（決定 (1)(2)）
       const endHere = page.getByTestId('end-here');
       await expect(endHere).toBeEnabled();
       await endHere.click();
-      // **押す前に影響の板が出る**（決定 (2)）。子が居るまとめ役なので、下位領域が
+      // **押す前に影響の板が出る**（決定 (2)）。子が居る集約地物なので、下位領域が
       // この年から最上位になることを見せてから確定する。
       await expect(page.getByTestId('end-here-impact-promoted')).toContainText(
         `${String(CHILD_COUNT)} 件`,
@@ -171,7 +171,7 @@ test.describe('増分 7 の手直し A — 記録の置き場（決定 (1)(2)）
     }
   });
 
-  test('外へ出した子は、元のまとめ役を消しても無傷でいる', async () => {
+  test('外へ出した子は、元の集約地物を消しても無傷でいる', async () => {
     const { app, page } = await launchApp();
     try {
       await loadSyntheticNested(page, CHILD_COUNT);
@@ -188,7 +188,7 @@ test.describe('増分 7 の手直し A — 記録の置き場（決定 (1)(2)）
       await page.getByTestId('reparent-options-confirm').click();
       await expect(page.getByTestId('reparent-options-dialog')).toHaveCount(0);
 
-      // 元のまとめ役を全部の年から消す。
+      // 元の集約地物を全部の年から消す。
       await selectInLedger(page, PARENT_NAME, PARENT_ID);
       await deleteAllYears(page);
 
@@ -202,20 +202,20 @@ test.describe('増分 7 の手直し A — 記録の置き場（決定 (1)(2)）
       expect(await listedFeatureCount(page)).toBe(CHILD_COUNT);
 
       // 移した子は一覧に居て、素性欄が開ける（記録は失われていない）。
-      // **上位領域は行き先のまとめ役のまま**である（所有者の裁定 2026-09-07「直す」）。
+      // **上位領域は行き先の集約地物のまま**である（所有者の裁定 2026-09-07「直す」）。
       // 以前は U31 の掃除が錨 1 枚ずつを見ていたので、子が自分の系列を持つ行き先の
-      // まとめ役は「下位領域を全部失った」と読まれて連鎖剪定され、ここが「上位領域なし」に
+      // 集約地物は「下位領域を全部失った」と読まれて連鎖剪定され、ここが「上位領域なし」に
       // なっていた。いまは時刻ごとに全系列を束ねてから掃除する。
       await selectInLedger(page, childName(0), childId(0));
       await page.getByTestId('sidebar-tab-properties').click();
       await expect(page.getByTestId('parent-row')).toBeVisible();
       await expect(page.getByTestId('parent-value')).toHaveText(OUTSIDER_NAME);
-      // 行き先のまとめ役そのものも一覧に居る。
+      // 行き先の集約地物そのものも一覧に居る。
       await page.getByTestId('sidebar-tab-list').click();
       await page.getByTestId('unified-list-filter').fill(OUTSIDER_NAME);
       await expect(page.getByTestId(`feature-list-item-${OUTSIDER_ID}`)).toBeVisible();
 
-      // 取り消すと、消す前の姿（元のまとめ役が居る）へ戻る。全体差し替えの命令なので
+      // 取り消すと、消す前の姿（元の集約地物が居る）へ戻る。全体差し替えの命令なので
       // 構築時の根がそのまま戻る。
       await page.getByTestId('ledger-scroller').click({ position: { x: 5, y: 5 } });
       await page.keyboard.press('Control+z');

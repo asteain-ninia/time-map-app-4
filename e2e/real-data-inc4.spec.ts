@@ -183,7 +183,7 @@ test.describe('増分 4 — 実データ（デーレ界）', () => {
       expect(domRows).toBeGreaterThan(0);
       expect(domRows).toBeLessThanOrEqual(20);
       // **畳んである親が居る**（＝木になっている。フラットなら展開の三角は 1 つも無い）。
-      // 仮想スクロールなので窓に入るぶんしか DOM に無い ―― まとめ役を絞り込んで出す。
+      // 仮想スクロールなので窓に入るぶんしか DOM に無い ―― 集約地物を絞り込んで出す。
       await page.getByTestId('unified-list-filter').fill('デーレ共和国');
       await expect
         .poll(async () => page.locator('[data-testid^="ledger-expand-"]').count())
@@ -229,7 +229,7 @@ test.describe('増分 4 — 実データ（デーレ界）', () => {
       await expect(page.locator('[data-testid^="feature-list-item-"]').first()).toBeVisible();
 
       // 深さ 0 の表示で **描かれていない**行を 1 つ選ぶ（＝親へ畳まれている深さ 1 の州）。
-      // 絞り込みの先頭はまとめ役のことがあるので、描画の集合と突き合わせて選ぶ。
+      // 絞り込みの先頭は集約地物のことがあるので、描画の集合と突き合わせて選ぶ。
       const before = await readDrawnFills(page);
       const drawn = new Set(Object.keys(before));
       const ids = await page

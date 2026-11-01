@@ -1,6 +1,6 @@
 // 増分 7 の手直し（再開分・実装係 2）—— 画面の結線でしか確かめられないものを実アプリで押す。
 //
-//   ① 決定 (2): まとめ役を「この年に終わったことにする」前に、影響の板が出る（素性欄・右クリック）
+//   ① 決定 (2): 集約地物を「この年に終わったことにする」前に、影響の板が出る（素性欄・右クリック）
 //   ② B64 / Fable #8: 所属変更の道具が対象を掴んだままでも、Ctrl+Z が黙らない
 //   ③ B の残り: 板が出ている間、Ctrl+Z / Ctrl+S / Delete / Enter が背後へ抜けない（5 枚）
 //   ④ C の残り: 複数対象の帯の名乗り「A ほか n 件」
@@ -49,7 +49,7 @@ function childName(index: number): string {
   return `合成州 ${String(index + 1).padStart(2, '0')}`;
 }
 
-/** 一覧で 1 行を出す（まとめ役の子は畳まれているので名前で絞り込む）。 */
+/** 一覧で 1 行を出す（集約地物の下位領域は畳まれているので名前で絞り込む）。 */
 async function revealRow(page: Page, name: string, featureId: string): Promise<void> {
   await page.getByTestId('sidebar-tab-list').click();
   await page.getByTestId('unified-list-filter').fill(name);
@@ -84,7 +84,7 @@ async function nested(page: Page, children: number, years: readonly number[], ye
 // ① 決定 (2): 終わらせる前の影響の板
 // ---------------------------------------------------------------------------
 
-test.describe('決定 (2) — まとめ役を終わらせる前に、下位領域が最上位になることを見せる', () => {
+test.describe('決定 (2) — 集約地物を終わらせる前に、下位領域が最上位になることを見せる', () => {
   test('素性欄から押すと板が出て、やめれば何も起きず、確定すると子は次の年に最上位で居る', async () => {
     const { app, page } = await launchApp();
     try {

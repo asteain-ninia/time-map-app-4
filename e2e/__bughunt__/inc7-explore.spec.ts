@@ -8,8 +8,8 @@
 //   ④ 一括編集が 1 回で戻るか（335 件でも形は同じ）
 //   ⑤ 確定の 2.8 秒の間に二重クリックできてしまわないか
 //
-// **順番に意味がある。** ③（削除の影響）を先にやるのは、①でまとめ役を対象にすると
-// **そのまとめ役が下位領域を全部失って自動消滅する**（FR-41）ためである ―― 先に組み替えて
+// **順番に意味がある。** ③（削除の影響）を先にやるのは、①で集約地物を対象にすると
+// **その集約地物が下位領域を全部失って自動消滅する**（FR-41）ためである ―― 先に組み替えて
 // しまうと、消す相手がもう居ない。探索は「実際に起きること」を追う場所なので、順番の
 // ほうを実物に合わせる。
 //
@@ -33,7 +33,7 @@ const dataDir =
   resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'derle-import');
 const canonicalPath = join(dataDir, REAL_DATA_FILE);
 
-/** まとめ役の名前（実データで 60 州を束ねている側）。 */
+/** 集約地物の名前（実データで 60 州を束ねている側）。 */
 const AGGREGATE_NAME = 'デーレ共和国';
 /** 分け残しの既定名称の目印（`domain/promotion/direct-domain.ts` の唯一の規則）。 */
 const DIRECT_DOMAIN_SUFFIX = '直轄領';
@@ -57,7 +57,7 @@ async function filterList(page: Page, needle: string): Promise<void> {
  * **名前がちょうど一致する行**を選ぶ。返り値はその地物の id。
  *
  * **先頭の行では駄目である**（探索の 1 回目で踏んだ）。絞り込みは部分一致なので、
- * 「デーレ共和国」で絞ると **「デーレ共和国領海01」** のほうが先に来る ―― まとめ役を
+ * 「デーレ共和国」で絞ると **「デーレ共和国領海01」** のほうが先に来る ―― 集約地物を
  * 選んだつもりで末端を選び、そこから先の観察が全部ずれた。行の `title` は表示名
  * （同名があるときだけ見分けが付く）なので、ちょうど一致で拾う。
  */
@@ -119,12 +119,12 @@ async function countByName(page: Page, needle: string): Promise<number> {
 }
 
 /**
- * **まとめ役の全下位領域に印を付ける**（右クリックの「その全下位領域を対象にする」。
+ * **集約地物の全下位領域に印を付ける**（右クリックの「その全下位領域を対象にする」。
  * FR-48 後半 / 増分 7 の中身 3）。
  *
  * **一覧の升目を 60 回押す形にはしない。** 一覧は仮想スクロールなので、窓に入っていない
  * 行の升目は DOM に居ない ―― id で押しにいくと「見つからない」で止まる（教訓 5.59 の
- * 別の顔）。まとめ役 1 行から広げるほうが、実際の導線とも一致する。
+ * 別の顔）。集約地物 1 行から広げるほうが、実際の導線とも一致する。
  */
 async function markSubtreeOf(
   page: Page,
@@ -202,7 +202,7 @@ test.describe('増分 7 の探索 — 実データのコピーで 60 州を組�
 
       // --- ③ 削除の影響一覧が実際の結果と一致するか ------------------------
       //
-      // **先にやる**（見出しの注記）。まとめ役を消すと 60 州は「すべての年で最上位へ
+      // **先にやる**（見出しの注記）。集約地物を消すと 60 州は「すべての年で最上位へ
       // 移る」はずである（裁定 §N-3）。板が言った件数と、消したあとの実際の数を突き合わせる。
       await selectByName(page, AGGREGATE_NAME);
       await page.getByTestId('unified-list-filter').fill('');
@@ -215,7 +215,7 @@ test.describe('増分 7 の探索 — 実データのコピーで 60 州を組�
       let promised = Number.NaN;
       if ((await page.getByTestId('delete-impact-referenced').count()) === 0) {
         findings.push({
-          tag: '[異常] まとめ役を消す板に「他から参照されているところ」が出ない',
+          tag: '[異常] 集約地物を消す板に「他から参照されているところ」が出ない',
           detail: (await impact.textContent()) ?? '',
         });
       } else {
@@ -237,7 +237,7 @@ test.describe('増分 7 の探索 — 実データのコピーで 60 州を組�
       const removed = base.featureCount - afterDelete.featureCount;
       if (removed !== 1) {
         findings.push({
-          tag: '[観察] まとめ役を消したときに消えた地物が 1 件ではない',
+          tag: '[観察] 集約地物を消したときに消えた地物が 1 件ではない',
           detail:
             `${String(removed)} 件（板は「下位領域 ${String(promised)} 件が最上位へ移る」と言っていた）`,
         });
@@ -263,7 +263,7 @@ test.describe('増分 7 の探索 — 実データのコピーで 60 州を組�
       let markedCount = subtree.count;
       if (!Number.isFinite(markedCount) || markedCount < 2) {
         findings.push({
-          tag: '[観察] まとめ役の行の右クリックに「その全下位領域を対象にする」が出ない',
+          tag: '[観察] 集約地物の行の右クリックに「その全下位領域を対象にする」が出ない',
           detail: `出ていた項目: ${subtree.itemKinds.join(', ')}`,
         });
         // 探索は止めない ―― 窓に出ている行へ印を付けて先へ進む。
@@ -301,17 +301,17 @@ test.describe('増分 7 の探索 — 実データのコピーで 60 州を組�
 
       const afterFederate = await projectStats(page);
       // 新しい上位領域が **1 つだけ**増える（対象 1 件ごとに作られていない）。ただし
-      // **下位を全部失ったまとめ役は自動で消える**（FR-41）ので、差し引き 0 になりうる。
+      // **下位を全部失った集約地物は自動で消える**（FR-41）ので、差し引き 0 になりうる。
       const federateDelta = afterFederate.featureCount - statsBeforeLoop.featureCount;
       if (federateDelta !== 1 && federateDelta !== 0) {
         findings.push({
-          tag: '[異常] 連邦化で増減した地物が「+1（新しい上位領域）」か「0（元のまとめ役が自動消滅）」のどちらでもない',
+          tag: '[異常] 連邦化で増減した地物が「+1（新しい上位領域）」か「0（元の集約地物が自動消滅）」のどちらでもない',
           detail: `${String(statsBeforeLoop.featureCount)} → ${String(afterFederate.featureCount)}`,
         });
       }
       if (federateDelta === 0) {
         findings.push({
-          tag: '[観察] 全下位領域を移したので、元のまとめ役が自動で消えた（FR-41 のとおり）',
+          tag: '[観察] 全下位領域を移したので、元の集約地物が自動で消えた（FR-41 のとおり）',
           detail: `${AGGREGATE_NAME} は残っていない`,
         });
       }
@@ -321,7 +321,7 @@ test.describe('増分 7 の探索 — 実データのコピーで 60 州を組�
       const ddAfterFederate = await countByName(page, DIRECT_DOMAIN_SUFFIX);
       if (ddAfterFederate !== 0) {
         findings.push({
-          tag: '[異常] まとめ役を親にしたのに分け残しが生まれた',
+          tag: '[異常] 集約地物を親にしたのに分け残しが生まれた',
           detail: `${String(ddAfterFederate)} 件`,
         });
       }

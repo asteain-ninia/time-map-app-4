@@ -1,7 +1,7 @@
 // 増分 2 を **実データ（デーレ界 775 地物）のコピー** で押す。
 //
 // 合成した 1 地物では出ない条件が 2 つある。
-//   ① **まとめ役の子**（実データで 86 件 = 3 つのまとめ役の子ぜんぶ）は自分の歴史を持たず、
+//   ① **集約地物の下位領域**（実データで 86 件 = 3 つの集約地物の下位領域ぜんぶ）は自分の歴史を持たず、
 //      編集は親の系列に書かれる。素性欄はこれまで錨の欄ごと消えていた（設計書 §C.6 /
 //      裁定 §N-15）。合成データでこの形を作るのは骨が折れるうえ、**本物と同じ形である
 //      保証がない**。
@@ -27,7 +27,7 @@ const dataDir =
   resolve(dirname(fileURLToPath(import.meta.url)), '..', 'derle-import');
 const canonicalPath = join(dataDir, REAL_DATA_FILE);
 
-/** まとめ役「デーレ共和国」の子。設計書 §A.3 / §C.6 が名指ししている地物。 */
+/** 集約地物「デーレ共和国」の子。設計書 §A.3 / §C.6 が名指ししている地物。 */
 const CHILD_NAME = 'アアウェン州';
 const OWNER_NAME = 'デーレ共和国';
 
@@ -118,7 +118,7 @@ test.describe('増分 2 — 実データのコピーで押す', () => {
     expect(canonicalAfter.mtimeMs).toBe(canonicalBefore.mtimeMs);
   });
 
-  test('まとめ役の子の錨表には、**その子に関わる錨だけ**が出る（他人の変化を混ぜない）', async () => {
+  test('集約地物の下位領域の錨表には、**その子に関わる錨だけ**が出る（他人の変化を混ぜない）', async () => {
     test.setTimeout(180_000);
     const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-inc2-sibling-'));
     const workingCopy = join(workDir, REAL_DATA_FILE);

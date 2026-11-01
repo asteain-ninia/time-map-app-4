@@ -181,7 +181,7 @@ export interface BundleSource {
   /**
    * その地物が過去から現在までに名乗った名前と種別を、**古い順**に返す。
    * 式の束はこれを使って「当てはまったいちばん古い姿」を基準にする。
-   * 自分の系列を持たない地物（まとめ役の子）は空でよい ―― そのときは現在値を使う。
+   * 自分の系列を持たない地物（集約地物の下位領域）は空でよい ―― そのときは現在値を使う。
    */
   readonly historyOf: (featureId: FeatureId) => readonly {
     readonly name: string;

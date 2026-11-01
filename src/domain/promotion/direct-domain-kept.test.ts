@@ -1,11 +1,11 @@
 // B39 の手直しのうち、追加の後始末を戻したあとも **残したもの** を固定する（2026-10-04）。
 //
-//   1. まとめ役の下に面を足したとき、まとめ役の子の並び（`childIds`）を揃える
-//      （`syncAggregateChildrenAfterAdd`。居候のまとめ役は先に自分の系列へ起こす）。形も所属も変えない。
-//      後始末（集約化・分け残しの削り）とは切り離せる ―― 分け残しの無いまとめ役で確かめる。
+//   1. 集約地物の下に面を足したとき、集約地物の下位領域の並び（`childIds`）を揃える
+//      （`syncAggregateChildrenAfterAdd`。居候の集約地物は先に自分の系列へ起こす）。形も所属も変えない。
+//      後始末（集約化・分け残しの削り）とは切り離せる ―― 分け残しの無い集約地物で確かめる。
 //   2. 分け残しを作るとき、元の面の頂点 id を座標の一致で引き継ぐ（隣との共有を切らない。T 字 0）。
 //      所属変更（＝分け残しを作る経路）で確かめる。
-//   3. まとめ役が居なくなる区間では、印のある分け残しも一緒に居なくなる（最上位に残らない）。
+//   3. 集約地物が居なくなる区間では、印のある分け残しも一緒に居なくなる（最上位に残らない）。
 
 import { describe, expect, it } from 'vitest';
 
@@ -123,8 +123,8 @@ function reparentUnderLeaf(root: DomainProject, childId: FeatureId, parentId: Fe
 }
 
 describe('B39 の手直しのうち残したもの', () => {
-  it('居候のまとめ役の下に面を足すと、子の並びを揃える（自分の系列へ起こしてから）。形も所属も変えない', () => {
-    // 「国」K の錨に、まとめ役 P と その子 A が居候している（実データの州の形）。
+  it('居候の集約地物の下に面を足すと、子の並びを揃える（自分の系列へ起こしてから）。形も所属も変えない', () => {
+    // 「国」K の錨に、集約地物 P と その子 A が居候している（実データの州の形）。
     const country = asFeatureId('K');
     const a = square('A', 0, 0, 40, 40, P);
     const pAgg = createAggregateFeature(P, createBasicAttributes('P', 0, 3000), COLOR, [a.feature.id], {
@@ -184,12 +184,12 @@ describe('B39 の手直しのうち残したもの', () => {
     expect(report.inconsistencies, JSON.stringify(report.inconsistencies)).toHaveLength(0);
   });
 
-  it('まとめ役を「この年に終わった」にすると、印のある分け残しも一緒に終わる（昇格するのは本物の子だけ）', () => {
+  it('集約地物を「この年に終わった」にすると、印のある分け残しも一緒に終わる（昇格するのは本物の子だけ）', () => {
     let root = add(emptyProject(), square('P', 0, 0, 100, 100));
     root = add(root, square('C1', 10, 10, 30, 30));
     root = add(root, square('C2', 50, 10, 70, 30));
     root = reparentUnderLeaf(root, asFeatureId('C1'), P);
-    // 2 人目はまとめ役 P の下へ（分け残しと重ならないよう、分け残しを使わない所属変更で）。
+    // 2 人目は集約地物 P の下へ（分け残しと重ならないよう、分け残しを使わない所属変更で）。
     const eff = effectiveAt(root, T0);
     const built = buildAffiliationProposal(eff.features, asFeatureId('C2'), parentExisting(P), {
       idState: createIdGeneratorState(),

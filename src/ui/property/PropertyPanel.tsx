@@ -14,7 +14,7 @@
 //   - 保存の行き先（上書きか、新しい錨か、押せないか）を {@link decideEditPlan} が決め、
 //     **押す前に**編集時刻バッジと保存ボタンの文言で見せる。
 //   - 渡す時刻は年へ丸める（錨の開始に月日を焼き付けない、U-14）。
-//   - まとめ役の子は自分の系列を持たないので、**編集が実際に書き込まれる系列**
+//   - 集約地物の下位領域は自分の系列を持たないので、**編集が実際に書き込まれる系列**
 //     （親の系列）を `governingSeriesOf` で引いて判定する（設計書 §C.6 / §N-15）。
 //
 // 下書き（名前・種別ラベル・見た目・詳細文書）は **このパネルが 1 つだけ持つ**。保存列は
@@ -345,7 +345,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     [featureLookup, targetFeatureId, currentTime, domain],
   );
 
-  // 自分の系列（無いこともある = まとめ役の子）。`domain` が dep なのは上と同じ理由
+  // 自分の系列（無いこともある = 集約地物の下位領域）。`domain` が dep なのは上と同じ理由
   // （存続期間の編集は根を差し替えるが選択も時刻も動かさない、教訓 5.5）。
   const ownSeries = useMemo<AnchorSeries | null>(
     () => (targetFeatureId !== null ? anchorLookup.anchorSeriesOf(targetFeatureId) : null),
@@ -474,7 +474,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   // と「下書きをいつ作り直すか」の目印にだけ使う。
   const effectiveAnchorId = useMemo<AnchorId | null>(() => {
     if (displaySeries === null) return null;
-    // 目印を付ける相手は **錨表に出ている行** に限る（まとめ役の子では親の系列のうち
+    // 目印を付ける相手は **錨表に出ている行** に限る（集約地物の下位領域では親の系列のうち
     // その子に関わる錨だけが出る）。
     if (
       selectedAnchorId !== null &&
@@ -862,7 +862,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   const editable = decision.editable && editingAllowed;
 
   // 存続期間の編集は **自分の系列** のときだけ（借り物の親の系列を、子の画面から
-  // 書き換えさせない。§C.6 の「まとめ役の子の錨」は読むための表示である）。
+  // 書き換えさせない。§C.6 の「集約地物の下位領域の錨」は読むための表示である）。
   // 確認が出ているあいだは **背後の編集をすべて止める**（A4 (c) / GPT#2。教訓 5.14:
   // 重なる UI は入力を受ける層も同時に設計する）。存続期間の操作・地物の削除・保存の
   // 3 つはこの枝で、Ctrl+K と Delete などの鍵盤は下の `onDraftConfirmChange` で
@@ -886,7 +886,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   /**
    * 本物の存続期間（U-23: 正本は錨の並び）を 1 行にする（増分 2 の手直し B3）。
    *
-   * **親の系列そのものから出す。** 旧版は「錨表に出している並び」（まとめ役の子では
+   * **親の系列そのものから出す。** 旧版は「錨表に出している並び」（集約地物の下位領域では
    * 絞り込んだあと）の先頭と末尾だけを見ていたので、子の存在期間ではなく「その子に
    * 関わる錨の最初と最後」を出していた。さらに **途中に存在しない期間（穴）があっても
    * 1 本に見せていた**（設計 C4 / 反証 F7 / バグ狩り #7）。いまは
@@ -1147,7 +1147,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
               {...(endHereAction === null ? {} : endHereAction)}
             />
 
-            {/* まとめ役の子（実データで 86 件）は自分の歴史を持たない。**錨の欄ごと消す**の
+            {/* 集約地物の下位領域（実データで 86 件）は自分の歴史を持たない。**錨の欄ごと消す**の
                 をやめ、誰が持っているかを書いて、その子に関わる錨だけを出す（§C.6 / §N-15）。 */}
             {inherited && governing !== null && (
               <p className="property-panel__inherited" data-testid="inherited-anchor-notice">

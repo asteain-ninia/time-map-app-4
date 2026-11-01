@@ -35,7 +35,7 @@ export interface LeafReportEntry {
   readonly name: string;
   readonly kindLabel: string | null;
   readonly color: ColorInfo;
-  /** 自分の錨列の各区間の開始年（錨列を持たない＝まとめ役の系列に入っているなら null）。 */
+  /** 自分の錨列の各区間の開始年（錨列を持たない＝集約地物の系列に入っているなら null）。 */
   readonly anchorStartYears: readonly number[] | null;
   /** 面積（km²。外周 − 穴、プロジェクトの測地設定）。形が引けなければ null。 */
   readonly areaKm2: number | null;

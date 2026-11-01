@@ -133,7 +133,7 @@ export interface MountHitTestOptions {
    */
   readonly announceEditRefusalRef?: MutableRefObject<((reason: EditRefusalKind) => void) | null>;
   /**
-   * ［動かす］でまとめ役を引いて離したことを画面へ出す口。まとめ役は自分の頂点を持たないので、
+   * ［動かす］で集約地物を引いて離したことを画面へ出す口。集約地物は自分の頂点を持たないので、
    * 引いても形は変わらない。確定へ進めず（空の取り消しを積まない。教訓 5.24）、理由を言う。
    */
   readonly announceAggregateMoveRef?: MutableRefObject<(() => void) | null>;
@@ -571,7 +571,7 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
   // 増分 8A の手直し（反証 重 3）: 一覧から選んだ直後の左ドラッグ 1 回だけ、選んだ頂点を
   // 最寄りより優先して掴む（`preferListPick`。条件はそちらの注記）。印はこの押下の
   // `hitTest` で既に消えているので、2 回目の押下には効かない。
-  // この押下が［動かす］でまとめ役を掴んだか（離したときに理由を言う）。
+  // この押下が［動かす］で集約地物を掴んだか（離したときに理由を言う）。
   let pressedAggregateMove = false;
   const editSession: EditSessionPort = {
     begin: (hit, point, modifiers) => {

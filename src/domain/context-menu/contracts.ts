@@ -106,7 +106,7 @@ export const FLOW_KIND = {
    */
   SetFeatureMark: 'setFeatureMark',
   /**
-   * まとめ役の **全下位領域**に印をつける（FR-48 後半 / 増分 7 の中身 3）。
+   * 集約地物の **全下位領域**に印をつける（FR-48 後半 / 増分 7 の中身 3）。
    * 「対象は末端に限る」という制約は壊さない ―― 展開はドメインの
    * `resolveTargetLeaves` が行い、ここは相手の id だけを運ぶ。
    */
@@ -201,7 +201,7 @@ export type DispatchIntent =
     }
   | {
       readonly kind: typeof FLOW_KIND.MarkSubtree;
-      /** 全下位領域に印をつける、まとめ役の地物（FR-48 後半）。 */
+      /** 全下位領域に印をつける、集約地物（FR-48 後半）。 */
       readonly featureId: FeatureId;
     }
   | {

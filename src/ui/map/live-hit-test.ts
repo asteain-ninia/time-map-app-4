@@ -1368,7 +1368,7 @@ export function liveHitTestAt(
   // 増分 4 の手直し B7 / 現状.md B47）。選択中の地物と親までの道筋は、表示条件で
   // 隠れていても・FR-42 に畳まれていても描かれる ―― ところが当たり判定は
   // `resolved.shapes` と `visibleIds` しか見ていなかったので、**描かれている州の
-  // 真上を押すと親のまとめ役が選ばれ、州が選択から外れて消えた**（編集モードの
+  // 真上を押すと親の集約地物が選ばれ、州が選択から外れて消えた**（編集モードの
   // 選択は増分 4 で表に出たので、これは日常的に起きる）。描いたものは掴める、を
   // ここで閉じる（描画 ⊇ ヒット）。
   const raisedShapes = raisedAlwaysDrawnShapes(resolution, areas, activeFeature ?? null);

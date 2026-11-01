@@ -280,7 +280,7 @@ test.describe('増分 6 — V11（選んだ地物の変化年が軸から読め�
     }
   });
 
-  test('まとめ役の子を選んでもレーンが空にならない（裁定 §N-15 の (A)）', async () => {
+  test('集約地物の下位領域を選んでもレーンが空にならない（裁定 §N-15 の (A)）', async () => {
     const { app, page } = await launchApp();
     try {
       await loadSyntheticAnchors(page, 20, { asAggregateChild: true });
@@ -295,7 +295,7 @@ test.describe('増分 6 — V11（選んだ地物の変化年が軸から読め�
       expect(stats.inherited).toBe(true);
       expect(stats.anchorCount).toBeGreaterThan(0);
       // 借りていることを画面にも書く（設計書 §C.6）。
-      await expect(page.getByTestId('anchor-lane-owner')).toHaveText(/合成のまとめ役/);
+      await expect(page.getByTestId('anchor-lane-owner')).toHaveText(/合成の集約地物/);
     } finally {
       await app.close();
     }
@@ -341,7 +341,7 @@ test.describe('増分 6 — 規模（設計書 §F.2 の受け入れ条件）', 
     }
   });
 
-  test('まとめ役の子でも同じ（系列を引く経路が違うので別に測る）', async () => {
+  test('集約地物の下位領域でも同じ（系列を引く経路が違うので別に測る）', async () => {
     test.setTimeout(180_000);
     const { app, page } = await launchApp();
     try {
@@ -363,7 +363,7 @@ test.describe('増分 6 — 規模（設計書 §F.2 の受け入れ条件）', 
       expect(stats.shapeCount).toBeLessThanOrEqual(stats.width);
       expect(
         stats.lastAggregateMs,
-        `まとめ役の子の再集計 ${String(stats.lastAggregateMs)}ms`,
+        `集約地物の下位領域の再集計 ${String(stats.lastAggregateMs)}ms`,
       ).toBeLessThanOrEqual(16);
     } finally {
       await app.close();

@@ -118,7 +118,7 @@ describe('applyEditProposal — 辺に足した頂点を、その辺を共有す
     );
   });
 
-  it('同じ錨の写しの中の兄弟（まとめ役の子どうし）にも入る', () => {
+  it('同じ錨の写しの中の兄弟（集約地物の下位領域どうし）にも入る', () => {
     const root = project([
       singleAnchorHistory('G', [A, B], createVertexStore([...A_V, ...B_V]), 0),
     ]);

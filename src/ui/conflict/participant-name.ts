@@ -12,7 +12,7 @@
 // 増分 8D の修復ダイアログ（`src/ui/file-ops/repair-names.ts`）も、名前の取り出し・種類の語・
 // 「名前のない面（…年に作成）」の文をここから引く。8D と 8E が別々の worktree で同じ呼び方を
 // 作っていたので、取り込みのときに次の和でそろえた: 見えない文字を落とす（8E）・内部 ID と
-// 同じ名前は名前と見なさない（8D）・まとめ役も「面」と呼ぶ（8D。地図の上では面に見える）・
+// 同じ名前は名前と見なさない（8D）・集約地物も「面」と呼ぶ（8D。地図の上では面に見える）・
 // 年は `formatTimePoint` / `formatYear` で書く（8E。紀元前も「紀元前300年」）。
 
 import type { Calendar } from '../../domain/time/calendar';
@@ -26,7 +26,7 @@ import { formatTimePoint } from '../timeline/time-display';
 import { PARTICIPANT_KIND_TEXT, PARTICIPANT_NAME_STRINGS } from './strings';
 
 /**
- * 名前が空のときに呼ぶ「何であるか」の語。**まとめ役も「面」と呼ぶ**（地図の上では面に
+ * 名前が空のときに呼ぶ「何であるか」の語。**集約地物も「面」と呼ぶ**（地図の上では面に
  * 見える。設計書 §H.1 の例は「名前のない面（1500年に作成）」の 1 通り）。
  */
 export const UNNAMED_KIND_WORD: Readonly<Record<FeatureKind, string>> = {
@@ -75,7 +75,7 @@ export function featureCallName(
 /**
  * その地物が **最初に記録された時刻**（どの系列でも、その地物を載せたいちばん早い錨の開始）。
  *
- * 地物はまとめ役の系列の中に居候していることがある（子が自分の系列を持たない）ので、
+ * 地物は集約地物の系列の中に居候していることがある（子が自分の系列を持たない）ので、
  * 自分の id の系列だけでなく、**載せている錨を全系列から探す**。見つからなければ undefined。
  */
 export function createdAtOf(

@@ -1149,7 +1149,7 @@ describe('applyMergeProposal', () => {
 // --- 増分 2 の手直し: 保存の意味論 -------------------------------------------
 
 describe('applyEditProposal — 保存した属性を前へ引き継ぐ（A1 / 反証 F1）', () => {
-  // まとめ役（集約地物）の下では、兄弟を直すたびに **親の系列** に錨が立つ。その錨は
+  // 集約地物の下では、兄弟を直すたびに **親の系列** に錨が立つ。その錨は
   // 「その時点の全体の写し」なので、直していない子の **旧名** も一緒に写っている。
   // 引き継ぎが無いと「1000 年で改名 → 2000 年で旧名に戻る」が起きる。
   function aggregateProject(): {
@@ -1164,7 +1164,7 @@ describe('applyEditProposal — 保存した属性を前へ引き継ぐ（A1 / �
     const childB = { ...b.feature, parentId: asFeatureId('agg'), attributes: createBasicAttributes('兄弟', 0, 0) };
     const agg = createAggregateFeature(
       asFeatureId('agg'),
-      createBasicAttributes('まとめ役', 0, 0),
+      createBasicAttributes('集約地物', 0, 0),
       color,
       [childA.id, childB.id],
     );

@@ -541,7 +541,7 @@ test.describe('引いている最中の年 — 同じ確定の経路に乗る引
     }
   });
 
-  test('まとめ役の分岐: 引いている間 `.` は効かず、離すと動かない理由を言う', async () => {
+  test('集約地物の分岐: 引いている間 `.` は効かず、離すと動かない理由を言う', async () => {
     const { app, page } = await launchApp();
     try {
       await loadSyntheticNested(page, 6, [1000, 1200]);

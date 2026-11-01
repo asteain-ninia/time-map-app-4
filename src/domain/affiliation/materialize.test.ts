@@ -1,7 +1,7 @@
 // 記録の置き場（司令塔の決定 (1)(2)）の検査。
 //
 // 固定するのは 3 つ（終わる年から最上位にする検査は `interval-edit.test.ts` へ移した）。
-//   1. 居候（自分の系列を持たないまとめ役の子）の記録が、全部の年ぶん自分の系列へ移る。
+//   1. 居候（自分の系列を持たない集約地物の下位領域）の記録が、全部の年ぶん自分の系列へ移る。
 //   2. 親の錨からは外れ、頂点は「その地物が参照する分」だけ写る（共有は両方に残る）。
 //   3. 既に自分の系列を持つ地物は触らない（二重に起こさない）。
 
@@ -16,7 +16,7 @@ import { hasOwnSeries, materializeOwnSeries, residentFeatureIds } from './materi
 
 const calendar = getCalendar('gregorian');
 
-/** まとめ役 `agg` の 1 本の歴史に、子 a・b が居候している形（実データと同じ形）。 */
+/** 集約地物 `agg` の 1 本の歴史に、子 a・b が居候している形（実データと同じ形）。 */
 function nestedProject(years: readonly number[] = [1000]): readonly FeatureHistory[] {
   const a = leafTile('a', 0, 0, 10, 10, 'agg');
   const b = leafTile('b', 10, 0, 10, 10, 'agg');
@@ -33,7 +33,7 @@ function nestedProject(years: readonly number[] = [1000]): readonly FeatureHisto
   return [{ featureId: fid('agg'), series: { entries } }];
 }
 
-describe('residentFeatureIds — まとめ役の錨に居候している地物', () => {
+describe('residentFeatureIds — 集約地物の錨に居候している地物', () => {
   it('自分の系列を持たない子を数え上げる（持ち主自身は含まない）', () => {
     expect(residentFeatureIds(nestedProject(), fid('agg'))).toEqual([fid('a'), fid('b')]);
   });
@@ -44,7 +44,7 @@ describe('residentFeatureIds — まとめ役の錨に居候している地物',
     expect(residentFeatureIds(moved, fid('agg'))).toEqual([fid('b')]);
   });
 
-  it('居ないまとめ役なら空', () => {
+  it('居ない集約地物なら空', () => {
     expect(residentFeatureIds(nestedProject(), fid('nope'))).toEqual([]);
   });
 });

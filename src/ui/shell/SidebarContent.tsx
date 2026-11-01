@@ -112,9 +112,9 @@ function anchorLookupOf(getRoot: () => DomainProject, calendar: Calendar): Ancho
       return history?.series ?? null;
     },
     /**
-     * **編集が実際に書き込まれる系列**（設計書 §C.6「まとめ役の子の錨」/ 裁定 §N-15）。
+     * **編集が実際に書き込まれる系列**（設計書 §C.6「集約地物の下位領域の錨」/ 裁定 §N-15）。
      *
-     * 実データの 775 地物のうち **86 件（3 つのまとめ役の子ぜんぶ）は自分の履歴を持たない**。
+     * 実データの 775 地物のうち **86 件（3 つの集約地物の下位領域ぜんぶ）は自分の履歴を持たない**。
      * `anchorSeriesOf` は `histories.find(h => h.featureId === id)` なので、この 86 件は
      * 必ず null を返し、素性欄から錨の欄が丸ごと消えていた。ドメイン側の属性編集
      * （`applyEditProposal`）は `findHistoryContaining` で **その時刻に自分を含む履歴**
@@ -123,7 +123,7 @@ function anchorLookupOf(getRoot: () => DomainProject, calendar: Calendar): Ancho
      * 同じ関数**を呼ぶ（単一の真実源, 教訓 5.30）。
      *
      * **解き方そのものは `ui/time/governing-series.ts` に出した**（増分 6）。同じ問いを
-     * 時刻レールの錨レーンも持つので、写しを 2 枚にすると、まとめ役の子の扱いが
+     * 時刻レールの錨レーンも持つので、写しを 2 枚にすると、集約地物の下位領域の扱いが
      * 錨表とレーンで割れる（教訓 5.44）。
      */
     governingSeriesOf(featureId: FeatureId, at: TimePoint): GoverningAnchorSeries | null {

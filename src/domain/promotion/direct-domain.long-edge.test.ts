@@ -296,7 +296,7 @@ describe('B105 幅いっぱいの面の分け残し', () => {
     }
   });
 
-  it('まとめ役の派生の形にも長い辺が残らず、整列し直しても面積が同じ（子が 2 つのとき）', () => {
+  it('集約地物の派生の形にも長い辺が残らず、整列し直しても面積が同じ（子が 2 つのとき）', () => {
     const child1 = leafOf('C', CHILD_BOX);
     const child2 = leafOf('D', box(-100, -86, -98, -84));
     const parent = leafOf('P', WIDE);
@@ -311,7 +311,7 @@ describe('B105 幅いっぱいの面の分け残し', () => {
       ...features1.result.proposal.newVertices,
       ...child2.vertices,
     ]);
-    // 分け残しに子を 1 つ足した形のまとめ役: 分け残し（2 つの穴になる前の形）+ 子 1 + 子 2。
+    // 分け残しに子を 1 つ足した形の集約地物: 分け残し（2 つの穴になる前の形）+ 子 1 + 子 2。
     const aggregate = createAggregateFeature(P, parent.feature.attributes, COLOR, [
       dd.id,
       C,
