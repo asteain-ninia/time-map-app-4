@@ -258,6 +258,55 @@ describe('後の年にだけ生じる重なり', () => {
     expect(first.conflicts[0]!.time).toEqual({ kind: 'point', at: T });
   });
 
+  it('前の切れ目で形の変わった面から遠くても、引き継ぎで書き換えた面の重なりは見逃さない', () => {
+    // A と K は頂点 u を、A と N は頂点 s を引く。A は 1300 年に遠くへ移り、s も u も引かなくなる。N は 1500 年から
+    // 現れる。s と u を動かすと、1300 年からの形の変わった面は K だけで、1500 年の N は K から遠いが X に重なる。
+    const named = (id: string, ids: readonly string[]) =>
+      createLeafFeature(
+        asFeatureId(id),
+        createBasicAttributes(`${id}の名`, 0, 9999),
+        COLOR,
+        createShape([createTerritoryRing(asRingId(`r-${id}`), ids.map((v) => asVertexId(v)))]),
+      );
+    const a = named('A', ['a0', 's', 'u']);
+    const root = project([
+      history('A', [
+        { year: 1000, features: [a], vertices: [body('a0', 0, 0), body('s', 5, 0), body('u', 0, 5)] },
+        {
+          year: 1300,
+          features: [named('A', ['f0', 'f1', 'f2'])],
+          vertices: [body('f0', 100, 0), body('f1', 105, 0), body('f2', 100, 5)],
+        },
+      ]),
+      history('K', [
+        {
+          year: 1000,
+          features: [named('K', ['u', 'k1', 'k2'])],
+          vertices: [body('u', 0, 5), body('k1', -5, 5), body('k2', -5, 10)],
+        },
+      ]),
+      history('N', [
+        {
+          year: 1500,
+          features: [named('N', ['s', 'n1', 'n2'])],
+          vertices: [body('s', 5, 0), body('n1', 5, -5), body('n2', 0, -5)],
+        },
+      ]),
+      history('X', [{ year: 1500, features: [leaf('X')], vertices: square('x', 8, -5) }]),
+    ]);
+    const proposal = createEditProposal(
+      a.id,
+      T,
+      buildSnapshot({
+        feature: a,
+        vertices: [createVertex(asVertexId('s'), { lon: 12, lat: 0 }), createVertex(asVertexId('u'), { lon: 0, lat: 5.5 })],
+      }),
+    );
+    const result = paused(bindingOf(root).startProcess(proposal));
+    expect(result.conflicts.map((c) => [c.a.displayName, c.b.displayName])).toEqual([['Nの名', 'Xの名']]);
+    expect(result.conflicts[0]!.time).toEqual({ kind: 'point', at: timePointYear(1500) });
+  });
+
   it('引き継ぎが止まった年から先（その年に本当に動いた記録）は重なりと言わない', () => {
     const root = project([
       history('A', [
