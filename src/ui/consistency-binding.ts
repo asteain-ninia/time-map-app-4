@@ -400,11 +400,16 @@ function changedFeatureIdsAt(
 }
 
 /**
- * その編集の結果が効く、押した年より後の時刻の切れ目（読み込みの検査と同じ {@link distinctAnchorTimes}）。
- * 書き換えた錨の開始年だけでは足りない: 外の地物が後の年に現れるだけなら、押した年の錨がその年まで
- * 続いて重なる。書き換えた錨が効いている区間に入る切れ目を全部返す。
+ * 押した年より後の時刻の切れ目（読み込みの検査と同じ {@link distinctAnchorTimes}）と、その切れ目で
+ * その編集の結果が効いているか（`reached`）。書き換えた錨の開始年だけでは足りない: 外の地物が後の年に
+ * 現れるだけなら、押した年の錨がその年まで続いて重なる。効いていない切れ目では、どの履歴も確定済みと同じ
+ * 錨を見ているので調べない。増えた重なりはそこで終わる。
  */
-function laterSliceTimes(committed: DomainRoot, result: DomainRoot, time: TimePoint): readonly TimePoint[] {
+function laterSlices(
+  committed: DomainRoot,
+  result: DomainRoot,
+  time: TimePoint,
+): readonly { readonly at: TimePoint; readonly reached: boolean }[] {
   const priorById = new Map(committed.histories.map((h) => [h.featureId, h]));
   const reach: { readonly from: TimePoint; readonly to: TimePoint | null }[] = [];
   for (const history of result.histories) {
@@ -417,14 +422,14 @@ function laterSliceTimes(committed: DomainRoot, result: DomainRoot, time: TimePo
     });
   }
   if (reach.length === 0) return [];
-  return distinctAnchorTimes(result.histories, calendar).filter(
-    (t) =>
-      compareTime(t, time, calendar) > 0 &&
-      reach.some(
-        (r) =>
-          compareTime(t, r.from, calendar) >= 0 && (r.to === null || compareTime(t, r.to, calendar) < 0),
+  return distinctAnchorTimes(result.histories, calendar)
+    .filter((t) => compareTime(t, time, calendar) > 0)
+    .map((at) => ({
+      at,
+      reached: reach.some(
+        (r) => compareTime(at, r.from, calendar) >= 0 && (r.to === null || compareTime(at, r.to, calendar) < 0),
       ),
-  );
+    }));
 }
 
 /**
@@ -446,17 +451,27 @@ function introducedOverlapsDetector(committedCache: TerminalShapeCache): Spatial
     const anchor = proposal.anchorTime;
     const committed = access.getRoot();
     const found = new Map<string, FoundOverlap>();
+    /** `keep` に無い組の、続いている期間をこの切れ目で閉じる。 */
+    const closeExcept = (keep: ReadonlySet<string>, time: TimePoint): void => {
+      for (const [id, overlap] of found) {
+        const last = overlap.spans[overlap.spans.length - 1]!;
+        if (last.until === null && !keep.has(id)) last.until = time;
+      }
+    };
     // 前の切れ目の形と重なり。どちらの形も変わっていない組は調べ直さない（実データの切れ目はほとんどが
     // 遠くの地物の改名なので、切れ目ごとに全部の組を調べると確定が固まる）。
     let previous: SliceOverlaps | undefined;
     let previousTime = anchor;
-    let lastIntroduced: readonly string[] = [];
-    const later = laterSliceTimes(committed, resultState, anchor);
+    const later = laterSlices(committed, resultState, anchor);
     const quiet = later.length === 0 ? undefined : quietSliceTest(committed, resultState);
-    for (const time of [anchor, ...later]) {
+    for (const { at: time, reached } of [{ at: anchor, reached: true }, ...later]) {
+      if (!reached) {
+        // 次に効く切れ目は書き換えた履歴の錨の始まりなので、静かな切れ目とは読まれず、全部を調べ直す。
+        closeExcept(new Set(), time);
+        continue;
+      }
       // 重なりが変わりえない切れ目は、全部の地物を組み立てない。前の切れ目の重なりが続いている。
       if (previous !== undefined && quiet?.(time, previousTime, previous) === true) {
-        for (const id of lastIntroduced) found.get(id)!.to = time;
         previousTime = time;
         continue;
       }
@@ -469,9 +484,11 @@ function introducedOverlapsDetector(committedCache: TerminalShapeCache): Spatial
       );
       const slice = overlapsAtSlice(terminals, involved, previous);
       previous = slice;
-      lastIntroduced = [];
       // ふつうは重なりが無い。そのときは確定済みの形を調べない。
-      if (slice.pairs.length === 0) continue;
+      if (slice.pairs.length === 0) {
+        closeExcept(new Set(), time);
+        continue;
+      }
       const before = detectTerminalOverlaps(
         extractTerminalShapes(buildForest(featuresAt(committed, time)), verticesAt(committed, time), committedCache),
         { onlyInvolving: involved },
@@ -483,33 +500,41 @@ function introducedOverlapsDetector(committedCache: TerminalShapeCache): Spatial
         // 比べられないなら止める側へ倒す（重なりを黙って通さない）。
         return !isOk(grown) || !isMultiPolygonEmpty(grown.result);
       });
-      lastIntroduced = introduced.map((pair) => conflictIdFor(pair.a, pair.b));
+      closeExcept(new Set(introduced.map((pair) => conflictIdFor(pair.a, pair.b))), time);
       for (const pair of introduced) {
         const id = conflictIdFor(pair.a, pair.b);
         const known = found.get(id);
         if (known === undefined) {
-          found.set(id, { pair, names: displayNamesAt(resultState, time), from: time, to: time, slices: [time] });
+          found.set(id, {
+            pair,
+            names: displayNamesAt(resultState, time),
+            spans: [{ from: time, until: null }],
+            slices: [time],
+          });
           continue;
         }
-        known.to = time;
-        if (slice.fresh.has(id)) known.slices.push(time);
+        if (known.spans[known.spans.length - 1]!.until !== null) {
+          // いったん終わった重なりがまた始まった。
+          known.spans.push({ from: time, until: null });
+          known.slices.push(time);
+        } else if (slice.fresh.has(id)) {
+          known.slices.push(time);
+        }
       }
     }
-    return [...found.values()].map(({ pair, names, from, to, slices }) => ({
-      ...conflictFromOverlapPair(pair, names, () =>
-        from === to ? { kind: 'point', at: from } : { kind: 'range', from, to },
-      ),
+    return [...found.values()].map(({ pair, names, spans, slices }) => ({
+      ...conflictFromOverlapPair(pair, names, () => ({ kind: 'range', from: spans[0]!.from, spans })),
       slices,
     }));
   };
 }
 
-/** 検出の途中の、組ごとの覚え。`from` の年の重なりと名前を板に見せる。 */
+/** 検出の途中の、組ごとの覚え。最初の年の重なりと名前を板に見せる。 */
 interface FoundOverlap {
   readonly pair: OverlapPair;
   readonly names: (id: FeatureId) => string;
-  readonly from: TimePoint;
-  to: TimePoint;
+  /** 重なりが増えている期間（途切れたら次の期間）。`until` はその年から重ならない。 */
+  readonly spans: { readonly from: TimePoint; until: TimePoint | null }[];
   readonly slices: TimePoint[];
 }
 
@@ -660,9 +685,11 @@ function quietSliceTest(
         if (feature.parentId !== undefined && previous.involved.has(feature.parentId)) return false;
         const a = beforeById.get(feature.id);
         const b = nowById.get(feature.id);
-        // 面でないものは面積を持たない。親が変わると末端かどうかが変わるので調べる。
+        // 子が来る・去ると親が末端かどうかが変わり、親の形の重なりが消える・現れる（子は遠くてもよい）。
+        if (a?.parentId !== b?.parentId) return false;
+        // 面でないものは面積を持たない。
         if (a?.kind !== 'leaf' && b?.kind !== 'leaf') {
-          if (a !== undefined && b !== undefined && a.parentId === b.parentId) continue;
+          if (a !== undefined && b !== undefined) continue;
           if (feature.kind !== 'aggregate') continue;
           return false;
         }
@@ -972,6 +999,11 @@ function applyResolutionAt(
     //       the adjust already had (the FR-95 継続規則, extended to resolution).
     // Deliberately NOT a third feature: welding against an unrelated neighbour that
     // merely touches the result would manufacture linkage the user never asked for.
+    //
+    // 相手の頂点が後の年に本当に動くなら、その id を持ち込まない。削った面の写しはこの年の座標のまま後の年へ
+    // 続くので、同じ id の体がその年で食い違う（読み込みの `vertex-coordinate-divergence`）。相手の動きに
+    // 合わせて削った面を書き換えると、利用者が触っていない後の年の形が変わる。だからこの面だけ別の id で
+    // 同じ場所に置く。吸着の付け替え（`carryShareIntoLaterAnchors` の `until`）と同じ考え方。
     const weld = buildWeldIndex([
       withoutVerticesMovingAfter(state, time, vertexBodiesOf(priority, vertices)),
       vertexBodiesOf(adjust, vertices),
@@ -997,13 +1029,24 @@ function applyResolutionAt(
   };
 }
 
+/** `bodies` のうち、`time` より後ろのどの錨でも同じ座標でいる頂点（その錨に無いのは動いたことにしない）。 */
+function withoutVerticesMovingAfter(state: DomainRoot, time: TimePoint, bodies: readonly Vertex[]): readonly Vertex[] {
+  const byId = new Map<VertexId, Vertex>(bodies.map((v) => [v.id, v]));
+  const moving = new Set<VertexId>();
+  for (const history of state.histories) {
+    for (const entry of history.series.entries) {
+      if (compareTime(entry.start, time, calendar) <= 0) continue;
+      for (const later of entry.anchor.snapshot.vertices.byId.values()) {
+        const body = byId.get(later.id);
+        if (body !== undefined && !quantizedEqual(later.coordinate, body.coordinate)) moving.add(later.id);
+      }
+    }
+  }
+  return moving.size === 0 ? bodies : bodies.filter((v) => !moving.has(v.id));
+}
+
 /**
  * Write the trimmed `feature` (carrying its new vertices) into `featureId`'s
-    //
-    // 相手の頂点が後の年に本当に動くなら、その id を持ち込まない。削った面の写しはこの年の座標のまま後の年へ
-    // 続くので、同じ id の体がその年で食い違う（読み込みの `vertex-coordinate-divergence`）。相手の動きに
-    // 合わせて削った面を書き換えると、利用者が触っていない後の年の形が変わる。だからこの面だけ別の id で
-    // 同じ場所に置く。吸着の付け替え（`carryShareIntoLaterAnchors` の `until`）と同じ考え方。
  * history AT the resolution `anchorTime`, returning a new project.
  *
  * WHY applyPastEdit, NOT an in-place effective-entry swap (temporal-correctness
@@ -1029,22 +1072,6 @@ function rewriteFeatureAtTime(
   // history.featureId — otherwise a resolvable spatial conflict on such a leaf
   // would fall through to an internal rejection instead of being trimmed (shares
   // the U44 containment lookup so apply-proposal and the U06 write-back agree).
-/** `bodies` のうち、`time` より後ろのどの錨でも同じ座標でいる頂点（その錨に無いのは動いたことにしない）。 */
-function withoutVerticesMovingAfter(state: DomainRoot, time: TimePoint, bodies: readonly Vertex[]): readonly Vertex[] {
-  const byId = new Map<VertexId, Vertex>(bodies.map((v) => [v.id, v]));
-  const moving = new Set<VertexId>();
-  for (const history of state.histories) {
-    for (const entry of history.series.entries) {
-      if (compareTime(entry.start, time, calendar) <= 0) continue;
-      for (const later of entry.anchor.snapshot.vertices.byId.values()) {
-        const body = byId.get(later.id);
-        if (body !== undefined && !quantizedEqual(later.coordinate, body.coordinate)) moving.add(later.id);
-      }
-    }
-  }
-  return moving.size === 0 ? bodies : bodies.filter((v) => !moving.has(v.id));
-}
-
   const found = findHistoryContaining(state, featureId, anchorTime, calendar);
   if (found === undefined) return undefined;
   const { index, history } = found;
@@ -1219,6 +1246,8 @@ export const createLiveAddBinding: CreateLiveAddBinding = (access) => {
   // every confirm / apply-resolutions over this binding so an edit re-resolves
   // only the touched terminals (NFR 5.x — 5,000-terminal scale stays O(touched)).
   const spatialCache = createTerminalShapeCache();
+  // 足した面の重なりを、その面が効く後の年まで見る（B129）。形を変える編集と同じ検出。
+  const detector = introducedOverlapsDetector(createTerminalShapeCache());
   return {
     ports,
     startProcess: (proposal) =>
@@ -1246,8 +1275,6 @@ export const createLiveAddBinding: CreateLiveAddBinding = (access) => {
  * detection / U06 difference write-back / U12 single-undo ports are the SAME shared
  * adapters the add / split bindings use, bound per-proposal so a confirm and any
  * later apply-resolutions over the same proposal see identical detection (no 二重
-  // 足した面の重なりを、その面が効く後の年まで見る（B129）。形を変える編集と同じ検出。
-  const detector = introducedOverlapsDetector(createTerminalShapeCache());
  * 真実源). The binding reads the current root via getRoot at process-start (never a
  * stale capture, 教訓 5.6) and never writes the store — the host's onCommitted owns
  * the single store-write path.
@@ -1341,6 +1368,7 @@ export const createLiveKnifeBinding: CreateLiveKnifeBinding = (access) => {
     makeCommand: labelledMakeCommand(UI_COMMAND_LABEL.Split),
   };
   const spatialCache = createTerminalShapeCache();
+  const detector = introducedOverlapsDetector(createTerminalShapeCache());
   return {
     ports,
     startProcess: (proposal) =>
@@ -1368,7 +1396,6 @@ export const createLiveKnifeBinding: CreateLiveKnifeBinding = (access) => {
  * merge binding avoids does not arise here. The new feature is nonetheless promoted to
  * `created` by {@link makeCommand}'s baseline↔final history-id delta (finding5), so its
  * selection re-resolution is correct even though it is not in touchedFeatureIds.
-  const detector = introducedOverlapsDetector(createTerminalShapeCache());
  */
 export const createLiveDrillBinding: CreateLiveDrillBinding = (access) => {
   const ports: ConsistencyPorts<DomainRoot, DrillSnapshot> = {
@@ -1380,6 +1407,7 @@ export const createLiveDrillBinding: CreateLiveDrillBinding = (access) => {
     makeCommand: labelledMakeCommand(UI_COMMAND_LABEL.Drill),
   };
   const spatialCache = createTerminalShapeCache();
+  const detector = introducedOverlapsDetector(createTerminalShapeCache());
   return {
     ports,
     startProcess: (proposal) =>
@@ -1407,7 +1435,6 @@ export const createLiveDrillBinding: CreateLiveDrillBinding = (access) => {
  */
 export const createLiveMergeBinding: CreateLiveMergeBinding = (access) => {
   const ports: ConsistencyPorts<DomainRoot, MergeSnapshot> = {
-  const detector = introducedOverlapsDetector(createTerminalShapeCache());
     applyProposal: (current, proposal) => applyMergeProposal(current, proposal, calendar),
     // The proposal anchors on the NEW result feature (createdIds), which is not yet
     // effective at the anchor time — so the time gate is calendar-validity only (like
@@ -1421,6 +1448,7 @@ export const createLiveMergeBinding: CreateLiveMergeBinding = (access) => {
     makeCommand: labelledMakeCommand(UI_COMMAND_LABEL.Merge),
   };
   const spatialCache = createTerminalShapeCache();
+  const detector = introducedOverlapsDetector(createTerminalShapeCache());
   return {
     ports,
     startProcess: (proposal) =>
@@ -1448,7 +1476,6 @@ export const createLiveMergeBinding: CreateLiveMergeBinding = (access) => {
  * WHY checkTime (not checkTimeOverExisting): the proposal anchors on a continuing leaf
  * target that IS effective at the time, but a `create`-decision may also introduce a
  * not-yet-born aggregate; the targets' presence at the time is already enforced by
-  const detector = introducedOverlapsDetector(createTerminalShapeCache());
  * buildAffiliationProposal, so the live gate is calendar-validity only (like merge),
  * avoiding a spurious featureNotEffectiveAtTime on the new aggregate. The binding reads
  * the current root via getRoot at process-start (never a stale capture, 教訓 5.6) and
@@ -1464,6 +1491,7 @@ export const createLiveAffiliationBinding: CreateLiveAffiliationBinding = (acces
     makeCommand: labelledMakeCommand(UI_COMMAND_LABEL.Affiliation),
   };
   const spatialCache = createTerminalShapeCache();
+  const detector = introducedOverlapsDetector(createTerminalShapeCache());
   return {
     ports,
     startProcess: (proposal) =>
@@ -1491,7 +1519,6 @@ export function createChildIdsSyncAfterAddCommandForRoot(
   at: TimePoint,
 ): Command<DomainRoot> | null {
   const features = featuresAt(root, at);
-  const detector = introducedOverlapsDetector(createTerminalShapeCache());
   const parentId = features.find((f) => f.id === newFeatureId)?.parentId;
   if (parentId === undefined) return null;
   const parent = features.find((f) => f.id === parentId);

@@ -63,14 +63,24 @@ describe('formatConflictTime (FR-65 / FR-72)', () => {
     expect(formatConflictTime({ kind: 'point', at: timePointYear(-44) })).toBe('紀元前44年');
   });
 
-  it('時間範囲を波ダッシュで結合する', () => {
+  it('続く重なりは終わりを言わず、終わった重なりはいつ終わるかを言い、途切れたら期間を並べる', () => {
+    const y = timePointYear;
+    expect(
+      formatConflictTime({ kind: 'range', from: y(-100), spans: [{ from: y(-100), until: null }] }),
+    ).toBe('紀元前100年から');
+    expect(
+      formatConflictTime({ kind: 'range', from: y(-100), spans: [{ from: y(-100), until: y(50) }] }),
+    ).toBe('紀元前100年から50年になるまで');
     expect(
       formatConflictTime({
         kind: 'range',
-        from: timePointYear(-100),
-        to: timePointYear(50),
+        from: y(1000),
+        spans: [
+          { from: y(1000), until: y(1200) },
+          { from: y(1500), until: null },
+        ],
       }),
-    ).toBe('紀元前100年〜50年');
+    ).toBe('1000年から1200年になるまで、1500年から');
   });
 });
 

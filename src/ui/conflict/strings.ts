@@ -175,7 +175,9 @@ export const PARTICIPANT_KIND_TEXT = {
 
 /** 重なりの一覧の 1 行（`model.ts` / `ConflictResolutionModal.tsx`）。 */
 export const CONFLICT_ROW_TEXT = {
-  timeRange: (from: string, to: string): string => `${from}〜${to}`,
+  timeSince: (from: string): string => `${from}から`,
+  timeBetween: (from: string, until: string): string => `${from}から${until}になるまで`,
+  timeSpanSeparator: '、',
   /** 2 件の名前のあいだ（前の空白も値に含む。後ろの空白は部品の側の {' '}）。 */
   participantSeparator: ' ／',
 } as const;

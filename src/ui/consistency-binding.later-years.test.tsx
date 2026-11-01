@@ -13,6 +13,7 @@ import { createBasicAttributes, createColorInfo } from '../domain/attributes';
 import {
   PROCESS_STATUS,
   createEditProposal,
+  type ConflictTime,
   type ConflictsPendingResult,
   type ProcessResult,
 } from '../domain/consistency/index';
@@ -28,6 +29,7 @@ import { getCalendar } from '../domain/time/calendar';
 import { timePointYear } from '../domain/time/time-point';
 import { createVertex, createVertexStore, type Vertex } from '../domain/vertex';
 import { createLiveShapeEditBinding, type DomainRoot } from './consistency-binding';
+import { formatConflictTime } from './conflict/model';
 import { featuresAt, verticesAt } from './live-lookup';
 
 const calendar = getCalendar('gregorian');
@@ -51,7 +53,12 @@ const leaf = (id: string, parent?: string, name = id, p = id.toLowerCase()) =>
   );
 const history = (
   owner: string,
-  entries: ReadonlyArray<{ readonly year: number; readonly features: readonly Feature[]; readonly vertices: readonly Vertex[] }>,
+  entries: ReadonlyArray<{
+    readonly year: number;
+    readonly end?: number;
+    readonly features: readonly Feature[];
+    readonly vertices: readonly Vertex[];
+  }>,
 ): FeatureHistory => ({
   featureId: asFeatureId(owner),
   series: {
@@ -62,6 +69,7 @@ const history = (
           vertices: createVertexStore(e.vertices),
         }),
         timePointYear(e.year),
+        e.end === undefined ? null : timePointYear(e.end),
       ),
     ),
   },
@@ -119,6 +127,21 @@ function resolveKeeping(
 }
 const anchorYears = (root: DomainRoot, owner: string) =>
   root.histories.find((h) => h.featureId === asFeatureId(owner))!.series.entries.map((e) => e.start.year);
+/** その年から記録の終わりまで続く重なり。 */
+const since = (year: number): ConflictTime => ({
+  kind: 'range',
+  from: timePointYear(year),
+  spans: [{ from: timePointYear(year), until: null }],
+});
+/** 期間を並べた重なり。`[始まり, この年から重ならない]`（終わらないなら null）。 */
+const spansOf = (...list: ReadonlyArray<readonly [number, number | null]>): ConflictTime => ({
+  kind: 'range',
+  from: timePointYear(list[0]![0]),
+  spans: list.map(([from, until]) => ({
+    from: timePointYear(from),
+    until: until === null ? null : timePointYear(until),
+  })),
+});
 const overlapsOnLoad = (root: DomainRoot) =>
   checkConsistency(root, calendar).inconsistencies.filter((i) => i.kind === INCONSISTENCY.TerminalExclusion);
 
@@ -136,7 +159,7 @@ describe('後の年にだけ生じる重なり', () => {
     expect(overlapsOnLoad(root)).toEqual([]);
     const result = paused(bindingOf(root).startProcess(moveFace(root, 'A', 10)));
     expect(result.conflicts).toHaveLength(1);
-    expect(result.conflicts[0]!.time).toEqual({ kind: 'point', at: timePointYear(1500) });
+    expect(result.conflicts[0]!.time).toEqual(since(1500));
     expect(result.conflicts[0]!.a.displayName).toBe('Aの名');
     expect(result.conflicts[0]!.b.displayName).toBe('Xの名');
   });
@@ -148,7 +171,7 @@ describe('後の年にだけ生じる重なり', () => {
       history('X', [{ year: 1500, features: [leaf('X')], vertices: square('x', 10) }]),
     ]);
     const result = paused(bindingOf(root).startProcess(moveAggregate(root, 'G', 10)));
-    expect(result.conflicts[0]!.time).toEqual({ kind: 'point', at: timePointYear(1500) });
+    expect(result.conflicts[0]!.time).toEqual(since(1500));
   });
 
   it('動かした面を削る解決: 重なる相手が居ない年は動いた形のまま、1500 年から削り、読み込みは重なりを言わない', () => {
@@ -190,7 +213,7 @@ describe('後の年にだけ生じる重なり', () => {
     expect(checkConsistency(result.state, calendar).inconsistencies).toEqual([]);
   });
 
-  it('押した年と後の年の両方で重なる組は 1 件で、範囲を言う。削った形が続く年に錨を増やさない', () => {
+  it('押した年と後の年の両方で重なる組は 1 件で、終わりを言わない。削った形が続く年に錨を増やさない', () => {
     const root = project([
       history('A', [{ year: 1000, features: [leaf('A')], vertices: square('a', 0) }]),
       // Y は 1500 年に改名しただけ（形は同じ）。
@@ -201,7 +224,7 @@ describe('後の年にだけ生じる重なり', () => {
     ]);
     const first = paused(bindingOf(root).startProcess(moveFace(root, 'A', 8)));
     expect(first.conflicts).toHaveLength(1);
-    expect(first.conflicts[0]!.time).toEqual({ kind: 'range', from: T, to: timePointYear(1500) });
+    expect(first.conflicts[0]!.time).toEqual(since(1000));
     const result = resolveKeeping(root, moveFace(root, 'A', 8), asFeatureId('Y'), asFeatureId('A'));
     expect(result.status).toBe(PROCESS_STATUS.Committed);
     if (result.status !== PROCESS_STATUS.Committed) return;
@@ -209,7 +232,7 @@ describe('後の年にだけ生じる重なり', () => {
     expect(overlapsOnLoad(result.state)).toEqual([]);
   });
 
-  it('関係の無い地物の切れ目では組を調べ直さず、続く重なりとして範囲を伸ばす。解決は押した年の 1 回', () => {
+  it('関係の無い地物の切れ目では組を調べ直さず、重なりは続いていると言う。解決は押した年の 1 回', () => {
     const root = project([
       history('A', [{ year: 1000, features: [leaf('A')], vertices: square('a', 0) }]),
       history('Y', [{ year: 1000, features: [leaf('Y')], vertices: square('y', 10) }]),
@@ -221,11 +244,11 @@ describe('後の年にだけ生じる重なり', () => {
     ]);
     const first = paused(bindingOf(root).startProcess(moveFace(root, 'A', 8)));
     expect(first.conflicts).toHaveLength(1);
-    expect(first.conflicts[0]!.time).toEqual({ kind: 'range', from: T, to: timePointYear(1500) });
+    expect(first.conflicts[0]!.time).toEqual(since(1000));
     expect(first.conflicts[0]!.slices).toEqual([T]);
   });
 
-  it('遠くの面の切れ目を飛ばしても、その後に近くへ現れる面を見逃さない。続く重なりは遠くの切れ目まで伸びる', () => {
+  it('遠くの面の切れ目を飛ばしても、その後に近くへ現れる面を見逃さない。遠くの切れ目を重なりの終わりと言わない', () => {
     const root = project([
       history('A', [{ year: 1000, features: [leaf('A')], vertices: square('a', 0) }]),
       history('Z', [{ year: 1200, features: [leaf('Z')], vertices: square('z', 100) }]),
@@ -234,7 +257,7 @@ describe('後の年にだけ生じる重なり', () => {
     ]);
     const first = paused(bindingOf(root).startProcess(moveFace(root, 'A', 8)));
     expect(first.conflicts).toHaveLength(1);
-    expect(first.conflicts[0]!.time).toEqual({ kind: 'range', from: timePointYear(1500), to: timePointYear(1800) });
+    expect(first.conflicts[0]!.time).toEqual(since(1500));
     expect(first.conflicts[0]!.slices).toEqual([timePointYear(1500)]);
   });
 
@@ -244,7 +267,7 @@ describe('後の年にだけ生じる重なり', () => {
       history('X', [{ year: 1500, features: [leaf('X')], vertices: square('x', 174) }]),
     ]);
     const result = paused(bindingOf(root).startProcess(moveFace(root, 'A', -13)));
-    expect(result.conflicts[0]!.time).toEqual({ kind: 'point', at: timePointYear(1500) });
+    expect(result.conflicts[0]!.time).toEqual(since(1500));
   });
 
   it('形の変わった面の子が後の年に現れたら、遠くても切れ目を飛ばさない', () => {
@@ -253,9 +276,9 @@ describe('後の年にだけ生じる重なり', () => {
       history('C', [{ year: 1500, features: [leaf('C', 'A')], vertices: square('c', 100) }]),
       history('X', [{ year: 1000, features: [leaf('X')], vertices: square('x', 10) }]),
     ]);
-    // 1500 年から A は親になり末端でなくなるので、A と X の重なりは 1000〜1499 年だけ。
+    // 1500 年から A は親になり末端でなくなるので、A と X の重なりは 1500 年になるまで。
     const first = paused(bindingOf(root).startProcess(moveFace(root, 'A', 8)));
-    expect(first.conflicts[0]!.time).toEqual({ kind: 'point', at: T });
+    expect(first.conflicts[0]!.time).toEqual(spansOf([1000, 1500]));
   });
 
   it('前の切れ目で形の変わった面から遠くても、引き継ぎで書き換えた面の重なりは見逃さない', () => {
@@ -304,7 +327,7 @@ describe('後の年にだけ生じる重なり', () => {
     );
     const result = paused(bindingOf(root).startProcess(proposal));
     expect(result.conflicts.map((c) => [c.a.displayName, c.b.displayName])).toEqual([['Nの名', 'Xの名']]);
-    expect(result.conflicts[0]!.time).toEqual({ kind: 'point', at: timePointYear(1500) });
+    expect(result.conflicts[0]!.time).toEqual(since(1500));
   });
 
   it('引き継ぎが止まった年から先（その年に本当に動いた記録）は重なりと言わない', () => {
@@ -349,5 +372,120 @@ describe('後の年にだけ生じる重なり', () => {
     ]);
     expect(bindingOf(root).startProcess(moveFace(root, 'A', 10)).status).toBe(PROCESS_STATUS.Committed);
     expect(resolveAt(root.histories[0]!.series, T, calendar).kind).toBe('present');
+  });
+});
+
+describe('重なりの期間（記録は切れ目ごとに正しく、板の文が実態を言う）', () => {
+  const movedA = () => history('A', [{ year: 1000, features: [leaf('A')], vertices: square('a', 0) }]);
+  const conflictOf = (root: DomainRoot) => paused(bindingOf(root).startProcess(moveFace(root, 'A', 8))).conflicts;
+
+  it('相手が居ない期間を挟むと、期間を分けて言う。解決は両方の期間に効く', () => {
+    const root = project([
+      movedA(),
+      history('X', [
+        { year: 1000, end: 1200, features: [leaf('X')], vertices: square('x', 10) },
+        { year: 1500, features: [leaf('X')], vertices: square('x', 10) },
+      ]),
+    ]);
+    const [conflict] = conflictOf(root);
+    expect(conflict!.time).toEqual(spansOf([1000, 1200], [1500, null]));
+    expect(formatConflictTime(conflict!.time)).toBe('1000年から1200年になるまで、1500年から');
+    expect(conflict!.slices).toEqual([T, timePointYear(1500)]);
+    const result = resolveKeeping(root, moveFace(root, 'A', 8), asFeatureId('X'), asFeatureId('A'));
+    expect(result.status).toBe(PROCESS_STATUS.Committed);
+    if (result.status === PROCESS_STATUS.Committed) expect(overlapsOnLoad(result.state)).toEqual([]);
+  });
+
+  it('相手に遠くの子が来て末端でなくなると、その年に重なりは終わる', () => {
+    const root = project([
+      movedA(),
+      history('X', [{ year: 1000, features: [leaf('X')], vertices: square('x', 10) }]),
+      history('K', [{ year: 1500, features: [leaf('K', 'X')], vertices: square('k', 120) }]),
+    ]);
+    const [conflict] = conflictOf(root);
+    expect(conflict!.time).toEqual(spansOf([1000, 1500]));
+    expect(formatConflictTime(conflict!.time)).toBe('1000年から1500年になるまで');
+    expect(conflict!.slices).toEqual([T]);
+  });
+
+  it('相手の遠くの子が去って末端に戻ると、その年からの重なりを見逃さない', () => {
+    const root = project([
+      movedA(),
+      history('X', [{ year: 1000, features: [leaf('X')], vertices: square('x', 10) }]),
+      history('K', [{ year: 1000, end: 1500, features: [leaf('K', 'X')], vertices: square('k', 120) }]),
+    ]);
+    const [conflict] = conflictOf(root);
+    expect(conflict!.id).toBe('A__X');
+    expect(conflict!.time).toEqual(since(1500));
+    expect(conflict!.slices).toEqual([timePointYear(1500)]);
+  });
+
+  it('相手が同じ形の錨を後の年に持つだけなら、重なりは続いている。その年を終わりと言わない', () => {
+    const root = project([
+      movedA(),
+      history('X', [
+        { year: 1000, features: [leaf('X')], vertices: square('x', 10) },
+        { year: 1800, features: [leaf('X')], vertices: square('x', 10) },
+      ]),
+    ]);
+    const [conflict] = conflictOf(root);
+    expect(conflict!.time).toEqual(since(1000));
+    expect(formatConflictTime(conflict!.time)).toBe('1000年から');
+  });
+
+  it('相手が後の年に自分の錨で遠くへ移ると、重なりは移るまで。前の切れ目の組を持ち越さない', () => {
+    const root = project([
+      movedA(),
+      history('X', [
+        { year: 1000, features: [leaf('X')], vertices: square('x', 10) },
+        { year: 1500, features: [leaf('X')], vertices: square('x', 100) },
+      ]),
+    ]);
+    const [conflict] = conflictOf(root);
+    expect(conflict!.time).toEqual(spansOf([1000, 1500]));
+    expect(conflict!.slices).toEqual([T]);
+  });
+
+  it('動かした面が後の年に自分の錨で別の場所へ動いているなら、重なりはその年まで', () => {
+    const root = project([
+      history('A', [
+        { year: 1000, features: [leaf('A')], vertices: square('a', 0) },
+        { year: 1500, features: [leaf('A')], vertices: square('a', -60) },
+      ]),
+      history('X', [{ year: 1000, features: [leaf('X')], vertices: square('x', 10) }]),
+    ]);
+    const [conflict] = conflictOf(root);
+    expect(conflict!.time).toEqual(spansOf([1000, 1500]));
+  });
+
+  it('編集の効かない期間を飛び越えた先でも、その間の変化を見落とさない', () => {
+    // A の 1000 年と 1600 年の錨は同じ頂点で書き換わる。1400 年の錨だけ別の場所へ動いていて、効かない。
+    const root = project([
+      history('A', [
+        { year: 1000, features: [leaf('A')], vertices: square('a', 0) },
+        { year: 1400, features: [leaf('A', undefined, 'A', 'c')], vertices: square('c', -60) },
+        { year: 1600, features: [leaf('A')], vertices: square('a', 0) },
+      ]),
+      history('X', [
+        { year: 1000, features: [leaf('X')], vertices: square('x', 100) },
+        // X は効かない期間のあいだに、動かした先へ来る。
+        { year: 1500, features: [leaf('X')], vertices: square('x', 10) },
+      ]),
+    ]);
+    const conflicts = conflictOf(root);
+    expect(conflicts.map((c) => c.time)).toEqual([since(1600)]);
+  });
+
+  it('組ごとに年が違えば、それぞれの期間を言う', () => {
+    const root = project([
+      movedA(),
+      history('Y', [{ year: 1000, features: [leaf('Y')], vertices: square('y', 10) }]),
+      history('X', [{ year: 1500, features: [leaf('X')], vertices: square('x', 10, 3) }]),
+    ]);
+    const conflicts = conflictOf(root);
+    expect(conflicts.map((c) => [c.id, c.time])).toEqual([
+      ['A__Y', since(1000)],
+      ['A__X', since(1500)],
+    ]);
   });
 });

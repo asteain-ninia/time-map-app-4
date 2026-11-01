@@ -61,10 +61,19 @@ export const CONFLICT_KIND = {
 
 export type ConflictKind = (typeof CONFLICT_KIND)[keyof typeof CONFLICT_KIND];
 
-/** A conflicting time span: a single point, or a closed range. */
+/** 重なりが続く 1 つの期間。`until` の年からは重ならない（`null` は記録の終わりまで続く）。 */
+export interface ConflictSpan {
+  readonly from: TimePoint;
+  readonly until: TimePoint | null;
+}
+
+/**
+ * 重なりの時刻。`point` はその年だけを調べた検出（後の年を見ていないので、終わりを言わない）。
+ * `range` は後の年まで調べた検出で、途切れたら期間が複数になる。`from` は最初の期間の始まり。
+ */
 export type ConflictTime =
   | { readonly kind: 'point'; readonly at: TimePoint }
-  | { readonly kind: 'range'; readonly from: TimePoint; readonly to: TimePoint };
+  | { readonly kind: 'range'; readonly from: TimePoint; readonly spans: readonly ConflictSpan[] };
 
 /** One participant in a conflict: the feature id plus its display name. */
 export interface ConflictParticipant {

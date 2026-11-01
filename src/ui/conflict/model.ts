@@ -24,7 +24,7 @@ import { CONFLICT_ROW_TEXT, CONFLICT_STRINGS } from './strings';
 /**
  * Format a {@link ConflictTime} as a Japanese label. A `point` reuses the
  * timeline's single time-formatting source (年/年月/年月日, 紀元前 included —
- * 単一の真実源, 教訓 5.30); a `range` joins the two endpoints with a wave dash.
+ * 単一の真実源, 教訓 5.30); a `range` says each span（「1000年から1200年になるまで、1500年から」）.
  * Pure and total.
  */
 export function formatConflictTime(time: ConflictTime): string {
@@ -32,7 +32,13 @@ export function formatConflictTime(time: ConflictTime): string {
     case 'point':
       return formatTimePoint(time.at);
     case 'range':
-      return CONFLICT_ROW_TEXT.timeRange(formatTimePoint(time.from), formatTimePoint(time.to));
+      return time.spans
+        .map(({ from, until }) =>
+          until === null
+            ? CONFLICT_ROW_TEXT.timeSince(formatTimePoint(from))
+            : CONFLICT_ROW_TEXT.timeBetween(formatTimePoint(from), formatTimePoint(until)),
+        )
+        .join(CONFLICT_ROW_TEXT.timeSpanSeparator);
   }
 }
 
