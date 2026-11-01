@@ -1,4 +1,4 @@
-// UI layer (U32 / property panel): the 時間バー表示 pure mapping (FR-60).
+// UI layer: 時刻レール（Timeline・AnchorLane）が使う、時刻と画素の写像の計算 (FR-60).
 //
 // All time↔screen math routes through U02 (domain/time): a view is a normalized
 // [min, max) window in WHOLE DAYS, mapped to screen pixels. Calendar constants /
