@@ -288,6 +288,31 @@ describe('余白の体系（N-26）', () => {
   });
 });
 
+describe('升目とラジオ（N-26）', () => {
+  it('土台は 24×24 の当たり判定で、透明な枠と負の余白で見た目を 16×16 にする', () => {
+    const base = ruleBody(":where(input[type='checkbox'], input[type='radio'])");
+    expect(decl(base, 'appearance')).toBe('none');
+    expect(decl(base, 'width')).toBe('24px');
+    expect(decl(base, 'height')).toBe('24px');
+    expect(decl(base, 'border')).toBe('4px solid transparent');
+    expect(decl(base, 'margin')).toBe('-4px -1px -4px -4px');
+  });
+
+  it('一覧の印の升目も土台の寸法のまま', () => {
+    expect(decl(ruleBody('.ledger__mark'), 'width')).toBeUndefined();
+    expect(decl(ruleBody('.ledger__mark'), 'margin')).toBeUndefined();
+  });
+
+  it('部品の規則で升目の寸法を上書きしない', () => {
+    const offenders = allRules()
+      .filter(({ selector }) => /type='(?:checkbox|radio)'/.test(selector) && !selector.includes(':where('))
+      .filter(({ selector }) => !selector.includes(':not('))
+      .filter(({ body }) => decl(body, 'width') !== undefined || decl(body, 'height') !== undefined)
+      .map(({ path, selector }) => `${path}: ${selector}`);
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe('文字の大きさの直値', () => {
   it('補助の文字は変数から引く（11px を直に書かない）', () => {
     const offenders = allCss.filter(({ css }) => /font-size:\s*11px/.test(css)).map(({ path }) => path);

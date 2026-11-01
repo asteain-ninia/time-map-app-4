@@ -149,6 +149,80 @@ html button[aria-pressed='true']:disabled {
   border-color: var(--c-accent-weak);
 }
 
+/* 升目とラジオ（N-26）: 見える大きさは 16×16、押せる範囲は 24×24。
+ * ブラウザ既定の部品は 13×13 に固定されて広げられないので、自分で描く。透明な 4px の枠が当たり判定を広げ、
+ * 負の余白が並びの中の場所を 16px ＋右の隙間 3px（既定の余白と同じ）に戻すので、行の高さも文字の位置も
+ * 変わらない。行全体を押せる `label` はそのまま効く。 */
+:where(input[type='checkbox'], input[type='radio']) {
+  appearance: none;
+  position: relative;
+  box-sizing: border-box;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin: -4px -1px -4px -4px;
+  border: 4px solid transparent;
+  background-color: var(--c-surface);
+  background-clip: padding-box;
+  box-shadow: inset 0 0 0 1px var(--c-border-strong);
+  vertical-align: middle;
+  cursor: pointer;
+}
+
+:where(input[type='checkbox']) {
+  border-radius: 6px;
+}
+
+:where(input[type='radio']) {
+  border-radius: 50%;
+}
+
+:where(input[type='checkbox'], input[type='radio']):checked {
+  background-color: var(--c-accent);
+  box-shadow: inset 0 0 0 1px var(--c-accent);
+}
+
+:where(input[type='checkbox']):checked::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 2px;
+  width: 4px;
+  height: 8px;
+  border: solid var(--c-surface);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+:where(input[type='radio']):checked::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--c-surface);
+}
+
+html input[type='checkbox']:disabled,
+html input[type='radio']:disabled {
+  background-color: var(--c-disabled-bg);
+  box-shadow: inset 0 0 0 1px var(--c-disabled-border);
+  cursor: default;
+}
+
+html input[type='checkbox']:disabled:checked,
+html input[type='radio']:disabled:checked {
+  background-color: var(--c-border-strong);
+  box-shadow: inset 0 0 0 1px var(--c-border-strong);
+}
+
+:where(input[type='checkbox'], input[type='radio']):focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: -3px;
+}
+
 :where(input:not([type='checkbox'], [type='radio'], [type='range'], [type='color']), select, textarea) {
   box-sizing: border-box;
   min-height: var(--control-h-sm);
@@ -161,7 +235,7 @@ html button[aria-pressed='true']:disabled {
   border-radius: var(--radius);
 }
 
-/* 入力欄の無効も同じ組（升目・ラジオ・色・つまみはブラウザの描き方のまま）。`opacity: 1` は、Chromium が
+/* 入力欄の無効も同じ組（升目・ラジオは上で描く。色・つまみはブラウザの描き方のまま）。`opacity: 1` は、Chromium が
  * 無効な select に既定で掛ける 0.7 を消す。 */
 html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='color']), select, textarea):disabled {
   color: var(--c-disabled-text);
@@ -3684,12 +3758,22 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 .ledger__mark {
   flex: 0 0 auto;
 }
+.ledger__marks > span {
+  white-space: nowrap;
+}
+.ledger__marks button {
+  min-height: var(--control-h-sm);
+  padding: 2px 6px;
+  font-size: var(--font-size-small);
+}
 .ledger__row[data-marked='true'] {
   background: rgba(255, 214, 0, 0.18);
 }
 .ledger__marks {
   display: flex;
-  gap: 6px;
+  /* 窓幅 279px の欄に 1 行では入らない。折り返さないと 3 つ目のボタンが窓の外へ出て、件数が縦に潰れた。 */
+  flex-wrap: wrap;
+  gap: 4px 6px;
   align-items: center;
   padding: 2px 4px;
   color: #664d00;

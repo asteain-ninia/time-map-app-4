@@ -155,6 +155,54 @@ test.describe('見た目の統一（N-24 / N-25 / N-26 / N-28）', () => {
       }
     });
 
+    test(`${label}: 升目は 16×16 に見えて、24×24 を押せる（N-26）`, async () => {
+      const { app, page } = await launchApp();
+      try {
+        await page.setViewportSize(size);
+        await page.getByTestId('menu-tools').click();
+        await page.getByTestId('menu-items-tools').locator('[data-command="tools.settings"]').click();
+        await expect(page.getByTestId('settings-dialog')).toBeVisible();
+        let measured = 0;
+        for (const tab of ['project', 'app', 'backup']) {
+          await page.getByTestId(`settings-tab-${tab}`).click();
+          const boxes = await page.getByTestId('settings-dialog').evaluate((dialog) =>
+            Array.from(dialog.querySelectorAll<HTMLInputElement>('input[type="checkbox"], input[type="radio"]'))
+              .filter((input) => input.getBoundingClientRect().width > 0)
+              .map((input) => {
+                input.scrollIntoView({ block: 'center' });
+                const r = input.getBoundingClientRect();
+                const cs = getComputedStyle(input);
+                const hits = (x: number, y: number): boolean => {
+                  const found = document.elementFromPoint(x, y);
+                  return found !== null && (found === input || found.contains(input));
+                };
+                return {
+                  w: r.width,
+                  h: r.height,
+                  border: cs.borderTopWidth,
+                  edges: [
+                    hits(r.left + r.width / 2, r.top + 1),
+                    hits(r.left + r.width / 2, r.bottom - 1),
+                    hits(r.left + 1, r.top + r.height / 2),
+                    hits(r.right - 1, r.top + r.height / 2),
+                  ],
+                };
+              }),
+          );
+          for (const box of boxes) {
+            measured += 1;
+            expect(box.w, `${tab}: 当たりの幅`).toBe(24);
+            expect(box.h, `${tab}: 当たりの高さ`).toBe(24);
+            expect(box.border, `${tab}: 見た目を 16px にする枠`).toBe('4px');
+            expect(box.edges, `${tab}: 上下左右の端まで押せる`).toEqual([true, true, true, true]);
+          }
+        }
+        expect(measured, '測った升目の数').toBeGreaterThan(0);
+      } finally {
+        await app.close();
+      }
+    });
+
     test(`${label}: 保存の前の確認の板の確定の列は、窓の中に収まる`, async () => {
       const { app, page } = await launchApp();
       try {
