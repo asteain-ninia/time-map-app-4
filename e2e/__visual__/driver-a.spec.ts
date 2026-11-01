@@ -33,8 +33,11 @@ import {
   listedFeatureCount,
   openDepthOptions,
   placeVertices,
+  committedVertices,
+  worldToClient,
 } from '../helpers';
 import { placeSquareScene, assertClickable, type SceneBox, fitHalf } from '../__bughunt__/scene-layout';
+import { APP_STRINGS } from '../../src/ui/shell/strings';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__visual__');
@@ -1392,6 +1395,15 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
         name: 'a9-face',
       });
       const { cx, cy } = scene;
+      // 一覧で選び直す相手（面が隠れたあとの手放しを (4) で見る）。
+      const otherHalf = 40;
+      const otherX = cx - half - 120;
+      const otherId = await commitFace(page, [
+        [otherX - otherHalf, cy - otherHalf],
+        [otherX + otherHalf, cy - otherHalf],
+        [otherX + otherHalf, cy + otherHalf],
+        [otherX - otherHalf, cy + otherHalf],
+      ]);
       const faceId = await commitFace(page, [
         [cx - half, cy - half],
         [cx + half, cy - half],
@@ -1399,6 +1411,11 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
         [cx - half, cy + half],
       ]);
       record('a9-face', `faceId="${faceId}"`);
+      const faceCorners = [...(await committedVertices(page, faceId)).values()];
+      const faceCenter = {
+        lon: faceCorners.reduce((sum, v) => sum + v.lon, 0) / faceCorners.length,
+        lat: faceCorners.reduce((sum, v) => sum + v.lat, 0) / faceCorners.length,
+      };
       const drawnWithFace = await drawnFeatureIds(page);
       expect(drawnWithFace).toContain(faceId);
 
@@ -1476,15 +1493,28 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       expect(await knifeFlow(page)).toBe('drawing-cut');
       expect(await activeFeature(page)).toBe(faceId);
 
-      // --- (3) 取得後に FR-113 で対象が消える → 対象選択へ戻る ---------------------
-      // 個別非表示と同じ単一の可視判定 (isFeatureVisibleUnderFilter) を、ドラフト中でも
-      // 到達できる 種別オフ 経路で駆動する (右クリックは上記のとおり抑止されている)。
+      // --- (3) 取得後に隠れても、選んでいるあいだは描いているので掴んだまま ---------
+      // B118 (2) で分ける・穴あけ・輪郭の関門を「描いているか」に揃えた（§D.6 規則 1。選んでいる面は
+      // 表示条件に関わらず描く）。種別オフの経路は、ドラフト中でも到達できるので残す。
       // 増分 4: 表示制御は **ポップオーバー** になったので、外を押すと閉じる（K-2 の
       // 作法）。上の右クリックで閉じているから、開き直してから触る。
       await revealFilterPanel(page);
       const areaToggle = page.getByTestId('display-filter-kind-area');
       await expect(areaToggle).toBeChecked();
       await areaToggle.uncheck();
+      await page.waitForTimeout(600);
+      record(
+        'a9-hidden-while-selected',
+        `flow=${await knifeFlow(page)} active="${await activeFeature(page)}"`,
+      );
+      expect(await knifeFlow(page)).toBe('drawing-cut');
+      expect(await activeFeature(page)).toBe(faceId);
+      expect(await drawnFeatureIds(page)).toContain(faceId);
+
+      // --- (4) 選択が動いて描かれなくなる → 対象選択へ戻り、隠れたからと言う -------
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId(`feature-list-item-${otherId}`)).toBeVisible();
+      await page.getByTestId(`feature-list-item-${otherId}`).click();
       await page.waitForTimeout(600);
       const gone = await textOf(page, 'knife-message');
       record(
@@ -1496,10 +1526,27 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       expect(await knifeFlow(page)).toBe('selecting-target');
       expect(gone).toContain('表示されなくなった');
       expect(gone).toContain('対象選択に戻りました');
+      await expect(page.getByTestId('statusbar-result')).toContainText(APP_STRINGS.toolTargetReleasedHidden);
+      expect(await drawnFeatureIds(page)).not.toContain(faceId);
       // キャンセルではない: ツールはアームされたまま、入力ブリッジも生きている。
       await expect(page.getByTestId('tool-edit.knife')).toHaveAttribute('aria-pressed', 'true');
       await expect(page.getByTestId('knife-input-layer')).toBeVisible();
-      const bodyAfterGone = await probeAmber(page, cx, cy, 80);
+      // 一覧で選ぶと視点が相手へ寄るので、面が窓に入るまで引いて、今の画面の位置で測る。
+      const mapBox = (await page.getByTestId('map-input-layer').boundingBox())!;
+      let faceNow = await worldToClient(page, faceCenter);
+      const inMap = (p: { x: number; y: number }): boolean =>
+        p.x - 40 > mapBox.x &&
+        p.x + 40 < mapBox.x + mapBox.width &&
+        p.y - 40 > mapBox.y &&
+        p.y + 40 < mapBox.y + mapBox.height;
+      await page.mouse.move(mapBox.x + mapBox.width / 2, mapBox.y + mapBox.height / 2);
+      for (let i = 0; i < 20 && !inMap(faceNow); i += 1) {
+        await page.mouse.wheel(0, 240);
+        await page.waitForTimeout(50);
+        faceNow = await worldToClient(page, faceCenter);
+      }
+      expect(inMap(faceNow)).toBe(true);
+      const bodyAfterGone = await probeAmber(page, faceNow.x, faceNow.y, 80);
       record(
         'a9-emphasis-off',
         `amber target ${bodyEmphasized.toFixed(2)} → ${bodyAfterGone.toFixed(2)} ` +
@@ -1511,10 +1558,13 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       ).toBeGreaterThan(20);
 
       // 面を戻しても対象は勝手に復活しない (対象選択のまま) が、再クリックで取り直せる。
+      await revealFilterPanel(page);
       await areaToggle.check();
       await page.waitForTimeout(500);
       expect(await knifeFlow(page)).toBe('selecting-target');
-      await page.mouse.click(cx, cy);
+      await page.keyboard.press('Escape');
+      const faceAgain = await worldToClient(page, faceCenter);
+      await page.mouse.click(faceAgain.x, faceAgain.y);
       await page.waitForTimeout(400);
       record('a9-reacquire', `flow=${await knifeFlow(page)} active="${await activeFeature(page)}"`);
       expect(await knifeFlow(page)).toBe('drawing-cut');

@@ -659,7 +659,8 @@ test.describe('増分 8C の手直し — 細部（反証 #4、GPT #2・#4、設
       for (const s of [eq, gc]) {
         expect(s.image).toContain('linear-gradient');
         expect(s.image).toContain(s.rgb);
-        expect(s.paddingBottom).toBe('3px');
+        // 見本の線の下の余白（B103 の余白の体系 4 / 6 / 8 / 10 / 12 / 16px に寄せた）。
+        expect(s.paddingBottom).toBe('4px');
         expect(s.width).toMatch(/^\d+(\.\d+)?px$/);
       }
       // 正距円筒は横いっぱいの実線、大円は刻みを横に繰り返す破線。
