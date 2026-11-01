@@ -23,6 +23,7 @@ export const E2E_SCRATCH_PREFIXES: readonly string[] = [
   'gimoza-basemap-seam-',
   'gimoza-drag-conflict-',
   'gimoza-drag-year-',
+  'gimoza-later-year-',
   'gimoza-load-gate-',
   'gimoza-move-tool-',
   'gimoza-ring-conflict-',

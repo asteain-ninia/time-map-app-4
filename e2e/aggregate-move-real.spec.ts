@@ -208,7 +208,10 @@ test.describe('実データの集約地物を［動かす］で引く', () => {
       }
       await page.getByTestId('conflict-apply').click();
       await expect(dialog).toHaveCount(0, { timeout: 20_000 });
-      await expect(page.getByTestId(STATUS)).toContainText(APP_STRINGS.moveAggregateDone(60, 452));
+      // 動かした州から、外の地物を残す解決で削られた州を除いた数を言う。
+      await expect(page.getByTestId(STATUS)).toContainText(
+        `${APP_STRINGS.moveAggregateDone(56, 452)}${APP_STRINGS.moveAggregateTrimmed(4)}`,
+      );
 
       const movedState = Object.fromEntries(
         await committedVertices(page, (await leafReport(page, { names: [STATE_NAME] })).entries[0]!.id),

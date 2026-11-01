@@ -344,7 +344,11 @@ test.describe('［動かす］で集約地物を引く', () => {
       }
       await page.getByTestId('conflict-apply').click();
       await expect(dialog).toHaveCount(0);
-      await expect(page.getByTestId(STATUS)).toContainText(APP_STRINGS.moveAggregateDone(3, 3));
+      // 実際の結果の数と、直接の確定と同じ引き継ぎの文を言う（州 B は板で削られたので動かした数に入らない）。
+      await expect(page.getByTestId(STATUS)).toContainText(
+        `${APP_STRINGS.moveAggregateDone(2, 3)}${APP_STRINGS.moveAggregateTrimmed(1)}`,
+      );
+      await expect(page.getByTestId(STATUS)).toContainText(APP_STRINGS.vertexCarriedForward(1000, 1500, 2));
       expect(await shapes(page)).not.toEqual(before);
       await page.getByTestId(STATUS).click();
       await page.keyboard.press('Control+z');

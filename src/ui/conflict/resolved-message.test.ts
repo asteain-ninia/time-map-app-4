@@ -21,7 +21,7 @@ function conflict(id: string, a: string, b: string): Conflict {
 describe('conflictResolvedMessage', () => {
   it('1 件なら「AとBの重なりを解消しました（1200年）」', () => {
     expect(
-      conflictResolvedMessage([conflict('c1', 'アルラーク国', 'バアカ')], timePointYear(1200)),
+      conflictResolvedMessage([conflict('c1', 'アルラーク国', 'バアカ')]),
     ).toBe('アルラーク国とバアカの重なりを解消しました（1200年）');
   });
 
@@ -29,7 +29,6 @@ describe('conflictResolvedMessage', () => {
     expect(
       conflictResolvedMessage(
         [conflict('c1', 'アルラーク国', 'バアカ'), conflict('c2', 'X', 'Y'), conflict('c3', 'P', 'Q')],
-        timePointYear(1200),
       ),
     ).toBe('アルラーク国とバアカほか 2 件の重なりを解消しました（1200年）');
   });
@@ -38,12 +37,19 @@ describe('conflictResolvedMessage', () => {
     expect(
       conflictResolvedMessage(
         [conflict('c1', '名前のない面（1200年に作成）', 'バアカ')],
-        timePointYear(1200),
       ),
     ).toBe('名前のない面（1200年に作成）とバアカの重なりを解消しました（1200年）');
   });
 
   it('何も無ければ null（解消していないのに「解消しました」と言わない）', () => {
-    expect(conflictResolvedMessage([], timePointYear(1200))).toBeNull();
+    expect(conflictResolvedMessage([])).toBeNull();
+  });
+
+  it('年は重なりの年。後の年にだけ重なったならその年、範囲なら始まり', () => {
+    const later = {
+      ...conflict('c1', 'A', 'B'),
+      time: { kind: 'range', from: timePointYear(1500), to: timePointYear(2000) },
+    } as unknown as Conflict;
+    expect(conflictResolvedMessage([later])).toBe('AとBの重なりを解消しました（1500年）');
   });
 });

@@ -9,22 +9,18 @@
 // （`Conflict` の `displayName`。名前が空なら「名前のない面（…年に作成）」＝N-18）を使う。
 
 import type { Conflict } from '../../domain/consistency/index';
-import type { TimePoint } from '../../domain/time/time-point';
 import { formatTimePoint } from '../timeline/time-display';
 
 import { RESOLVED_STRINGS } from './strings';
 
 /**
- * 解消した重なりの一覧と、解消した年から状態行の文を作る。一覧が空なら null
- * （何も解消していないのに「解消しました」とは言わない）。
+ * 解消した重なりの一覧から状態行の文を作る。年は最初の 1 件の重なりの年（後の年にだけ重なったなら
+ * その年。範囲なら始まり）。一覧が空なら null（何も解消していないのに「解消しました」とは言わない）。
  */
-export function conflictResolvedMessage(
-  conflicts: readonly Conflict[],
-  at: TimePoint,
-): string | null {
+export function conflictResolvedMessage(conflicts: readonly Conflict[]): string | null {
   const first = conflicts[0];
   if (first === undefined) return null;
-  const when = formatTimePoint(at);
+  const when = formatTimePoint(first.time.kind === 'point' ? first.time.at : first.time.from);
   return conflicts.length === 1
     ? RESOLVED_STRINGS.one(first.a.displayName, first.b.displayName, when)
     : RESOLVED_STRINGS.many(first.a.displayName, first.b.displayName, conflicts.length - 1, when);

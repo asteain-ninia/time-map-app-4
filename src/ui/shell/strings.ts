@@ -98,6 +98,12 @@ export const APP_STRINGS = {
   /** ［動かす］で集約地物を動かしたとき（動かした数と、動かさなかった共有頂点の数）。 */
   moveAggregateDone: (leafCount: number, fixedCount: number): string =>
     `下位領域 ${String(leafCount)} 件を動かしました。外の地物と共有している頂点 ${String(fixedCount)} 個は動かしていません。`,
+  /** 集約地物を動かした確定で、重なりの解決が下位領域を削ったとき。 */
+  moveAggregateTrimmed: (leafCount: number): string =>
+    `下位領域 ${String(leafCount)} 件は重なりの解決で削りました。`,
+  /** 文の続きに置く形（{@link vertexCarriedForward} に句点を足す）。 */
+  vertexCarriedForwardSentence: (fromYear: number, toYear: number, count: number): string =>
+    `${String(fromYear)}年の頂点の移動を、${String(toYear)}年以降の記録 ${String(count)} 件にも反映しました。`,
   /** 頂点や面を引いている最中に、年を動かす操作が来たとき（押した年に記録するので効かない）。 */
   dragHoldsTime: '引いている間は年を動かせません。離してから動かしてください。',
   /** 再生中に頂点や面を引き始めたとき。 */

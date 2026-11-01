@@ -24,7 +24,14 @@ import { TOOL_ID, isSelectTool } from './shell/tools';
 import { APP_STRINGS, DRAFT_DISCARD_STRINGS, MENU_ITEM_LABELS, SENTENCE_END } from './shell/strings';
 import { DRAFT_LOSS_CAUSE, type DraftLossCause } from './shell/useDraftTimeGate';
 import { DRAG_CANCEL_CAUSE, type DragYearHost } from './map/drag-year';
-import { AGGREGATE_MOVE_BLOCK, aggregateMoveAt, type AggregateMoveBlock } from './map/aggregate-move';
+import {
+  AGGREGATE_MOVE_BLOCK,
+  aggregateMoveAt,
+  directAggregateMoveResult,
+  editCommitNote,
+  resolvedAggregateMoveResult,
+  type AggregateMoveBlock,
+} from './map/aggregate-move';
 import { AppShell, SIDEBAR_SECTION, isEditingCommand } from './shell';
 import { buildSidebarContent } from './shell/SidebarContent';
 import { keepPanelsPresent } from './property/detail-panels';
@@ -247,7 +254,7 @@ import { planEnding } from '../domain/affiliation/interval-edit';
 import { deletionStateFromHistories, describeDeletionImpact } from '../domain/deletion/index';
 import { maxDerivedDepth } from '../domain/hierarchy/depth';
 import { FEATURE_KIND, featureDisplayName } from '../domain/feature';
-import { findHistoryContaining } from '../domain/editing/apply-proposal';
+import { findHistoryContaining, reportVertexCarryForward } from '../domain/editing/apply-proposal';
 import { compare as compareTimePoints } from '../domain/time/normalized';
 import { toYearPoint } from '../domain/time/time-point';
 import {
@@ -1744,12 +1751,7 @@ export function App(): JSX.Element {
     );
   };
   announceAggregateMovedRef.current = (plan, carried): void => {
-    const done = APP_STRINGS.moveAggregateDone(plan.movedLeafCount, plan.fixedVertexIds.length);
-    announceResult(
-      carried === null
-        ? done
-        : `${done}${APP_STRINGS.vertexCarriedForward(carried.fromYear, carried.toYear, carried.anchorCount)}`,
-    );
+    announceResult(editCommitNote(directAggregateMoveResult(plan), carried));
   };
   announceEditRefusalRef.current = (reason: EditRefusalKind): void => {
     statusMessageStore.failure(
@@ -1765,23 +1767,31 @@ export function App(): JSX.Element {
   // 無い（離した瞬間に一時状態は捨ててある）ので、止まっている局面の印は要らない。
   openEditConflictRef.current = (pending, applyResolutions, proposal): void => {
     const fid = proposal.snapshot.feature?.id;
-    // 集約地物を動かす確定が止まったなら、解決のあとにも動かした数を言う（直接の確定と同じ）。
-    const s = store.getState();
+    // 確定の前の根。止まっている間は根が変わらない（板は本物のモーダル）。文は確定の結果から作る。
+    const before = store.getState().domain;
     const aggregateMove =
-      fid === undefined ? undefined : aggregateMoveAt(s.domain, proposal.anchorTime, fid);
+      fid === undefined ? undefined : aggregateMoveAt(before, proposal.anchorTime, fid);
+    const report = reportVertexCarryForward(before, proposal, getCalendar(before.settings.calendarId));
+    const carried =
+      report.anchorCount > 0 && report.firstYear !== null
+        ? {
+            fromYear: proposal.anchorTime.year,
+            toYear: report.firstYear,
+            anchorCount: report.anchorCount,
+          }
+        : null;
     setConflictState({
       pending,
       applyResolutions,
       anchorTime: proposal.anchorTime,
       ...(fid !== undefined ? { preference: { featureId: fid } } : {}),
-      ...(aggregateMove !== undefined
-        ? {
-            resolvedNote: APP_STRINGS.moveAggregateDone(
-              aggregateMove.plan.movedLeafCount,
-              aggregateMove.plan.fixedVertexIds.length,
-            ),
-          }
-        : {}),
+      resolvedNote: (after) =>
+        editCommitNote(
+          aggregateMove === undefined
+            ? null
+            : resolvedAggregateMoveResult(before, after, proposal.anchorTime, aggregateMove.plan),
+          carried,
+        ),
     });
   };
 
@@ -3636,13 +3646,10 @@ export function App(): JSX.Element {
       // 文で上書きする ―― 利用者が最後に答えたのは重なりの解決だからである。年は止まって
       // いた編集の錨の年（重なりを見つけた年）を言う。状態行は時間では消えない（K-7）。
       if (result.status === PROCESS_STATUS.Committed && conflictState !== null) {
-        const resolvedText = conflictResolvedMessage(
-          conflictState.pending.conflicts,
-          conflictState.anchorTime ?? store.getState().currentTime,
-        );
+        const resolvedText = conflictResolvedMessage(conflictState.pending.conflicts);
         if (resolvedText !== null) {
           statusMessageStoreRef.current?.success(
-            `${conflictState.resolvedNote ?? ''}${resolvedText}`,
+            `${conflictState.resolvedNote?.(result.state) ?? ''}${resolvedText}`,
           );
         }
       }
@@ -5316,8 +5323,8 @@ type OpenEditConflict = (
 interface ConflictPending {
   readonly pending: ConflictsPendingResult<DomainRoot>;
   readonly applyResolutions: ApplyResolutions<DomainRoot>;
-  /** 解決して確定したときに、解決の文の前に添える文（集約地物を動かした数）。 */
-  readonly resolvedNote?: string;
+  /** 解決して確定したときに、解決の文の前に添える文（確定した根から作る）。 */
+  readonly resolvedNote?: (after: DomainRoot) => string;
   /**
    * fr100: the PAUSED proposal's anchor time, stashed so the eventual modal commit
    * recolors at the SAME time the edit anchors at (コマンドの anchorTime — the view

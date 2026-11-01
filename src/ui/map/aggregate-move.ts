@@ -6,12 +6,13 @@
 // 配列の同一性を鍵にすれば古い計画を返さない（読み方は `live-lookup.ts` の覚えと同じ）。
 
 import { planAggregateMove, type AggregateMovePlan } from '../../domain/editing/move';
-import { FEATURE_KIND } from '../../domain/feature';
-import type { FeatureId } from '../../domain/ids';
+import { FEATURE_KIND, referencedVertexIds } from '../../domain/feature';
+import type { FeatureId, VertexId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
 import type { TimePoint } from '../../domain/time/time-point';
 import { createVertexStore, getVertex, type Vertex, type VertexStore } from '../../domain/vertex';
 import { featuresAt, verticesAt } from '../live-lookup';
+import { APP_STRINGS } from '../shell/strings';
 
 /** 引いている間の計画と、下書きを描くのに要る頂点だけの表（全部の頂点を毎コマ写さない）。 */
 export interface LiveAggregateMove {
@@ -56,6 +57,88 @@ function build(
     if (body !== undefined) bodies.push(body);
   }
   return { plan, vertices: createVertexStore(bodies) };
+}
+
+/** 集約地物を動かした確定の、実際の結果の数。 */
+export interface AggregateMoveResult {
+  /** 動いて、重なりの解決で削られなかった下位領域の数。 */
+  readonly movedLeafCount: number;
+  /** 重なりの解決で形を削られた下位領域の数。 */
+  readonly trimmedLeafCount: number;
+  /** 動かさなかった共有頂点のうち、確定の形がまだ引いている数。 */
+  readonly fixedVertexCount: number;
+}
+
+/** 重なりの解決を通らない確定の結果（計画のとおり）。 */
+export function directAggregateMoveResult(plan: AggregateMovePlan): AggregateMoveResult {
+  return {
+    movedLeafCount: plan.movedLeafCount,
+    trimmedLeafCount: 0,
+    fixedVertexCount: plan.fixedVertexIds.length,
+  };
+}
+
+/**
+ * 重なりの解決を通った確定の結果を、確定の前後の根から数える。頂点が動くだけなら面の `shape` は同じ
+ * オブジェクトのままで、解決が削ると新しい `shape` になる。押した年だけでなく、書き換わった後の年の
+ * 錨も見る（後の年にだけ重なる相手のために、その年から削ることがある）。
+ */
+export function resolvedAggregateMoveResult(
+  before: DomainProject,
+  after: DomainProject,
+  time: TimePoint,
+  plan: AggregateMovePlan,
+): AggregateMoveResult {
+  const leafIds = new Set<FeatureId>(plan.leaves.map((leaf) => leaf.id));
+  const trimmed = new Set<FeatureId>();
+  const beforeById = new Map(before.histories.map((h) => [h.featureId, h]));
+  for (const history of after.histories) {
+    const priorHistory = beforeById.get(history.featureId);
+    if (priorHistory === history) continue;
+    const priorAnchors = new Set(priorHistory?.series.entries.map((e) => e.anchor) ?? []);
+    for (const entry of history.series.entries) {
+      if (priorAnchors.has(entry.anchor)) continue;
+      for (const feature of entry.anchor.snapshot.features) {
+        if (!leafIds.has(feature.id) || feature.kind !== FEATURE_KIND.Leaf || trimmed.has(feature.id)) continue;
+        const prior = featuresAt(before, entry.start).find((f) => f.id === feature.id);
+        if (prior === undefined || prior.kind !== FEATURE_KIND.Leaf || prior.shape !== feature.shape) {
+          trimmed.add(feature.id);
+        }
+      }
+    }
+  }
+  const moving = new Set<VertexId>(plan.movingVertexIds);
+  const movedLeafCount = plan.leaves.filter(
+    (leaf) => !trimmed.has(leaf.id) && referencedVertexIds(leaf).some((id) => moving.has(id)),
+  ).length;
+  const cited = new Set<VertexId>();
+  for (const feature of featuresAt(after, time)) {
+    if (leafIds.has(feature.id)) for (const id of referencedVertexIds(feature)) cited.add(id);
+  }
+  return {
+    movedLeafCount,
+    trimmedLeafCount: trimmed.size,
+    fixedVertexCount: plan.fixedVertexIds.filter((id) => cited.has(id)).length,
+  };
+}
+
+/**
+ * 頂点や面を動かした確定に添える文。直接の確定と重なりの解決を通った確定が同じ 1 本を通るので、言うことが
+ * 揃う。`carried` は後の年の記録へ引き継いだ本数（無ければ null）。
+ */
+export function editCommitNote(
+  aggregate: AggregateMoveResult | null,
+  carried: { readonly fromYear: number; readonly toYear: number; readonly anchorCount: number } | null,
+): string {
+  const parts: string[] = [];
+  if (aggregate !== null) {
+    parts.push(APP_STRINGS.moveAggregateDone(aggregate.movedLeafCount, aggregate.fixedVertexCount));
+    if (aggregate.trimmedLeafCount > 0) parts.push(APP_STRINGS.moveAggregateTrimmed(aggregate.trimmedLeafCount));
+  }
+  if (carried !== null) {
+    parts.push(APP_STRINGS.vertexCarriedForwardSentence(carried.fromYear, carried.toYear, carried.anchorCount));
+  }
+  return parts.join('');
 }
 
 /** 引いて離したのに動かせないときの理由。動かせるなら null。 */
