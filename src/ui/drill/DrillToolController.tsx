@@ -150,6 +150,11 @@ export interface DrillToolControllerProps<S> {
   readonly onFocusSelection?: (() => void) | undefined;
   /** 選択を動かすと聞く下書きを持っているかの変化を伝える口（B118。板のあいだ視点を止める）。 */
   readonly onDraftHeldChange?: ((held: boolean) => void) | undefined;
+  /**
+   * いま Ctrl+Z で戻す相手（打った点）を道具が持っているか（B64）。対象を掴んだだけで点が無い
+   * あいだは偽を報せ、ホストが取り消し・やり直しを大域へ通す。
+   */
+  readonly onUndoPointChange?: ((hasPoint: boolean) => void) | undefined;
   /** 掴んでいた面がいまの年に居なくなり、手放したことを伝える口（B112）。 */
   readonly onTargetGone?: (() => void) | undefined;
   /**
@@ -499,6 +504,16 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
     // suspended (教訓 5.2 全経路で破棄).
     return () => onDrawingChange(false);
   }, [drill.flow, drill.targetId, onDrawingChange]);
+
+  // B64: 穴の形に点が無いあいだだけ、戻す相手が無い。素性の入力へ進んだあとは形が下書きなので
+  // 「ある」側に数える。
+  const onUndoPointChange = props.onUndoPointChange;
+  const drillHasUndoPoint = !(drill.flow === DRILL_FLOW.DrawingRegion && drill.region.length === 0);
+  useEffect(() => {
+    if (onUndoPointChange === undefined) return;
+    onUndoPointChange(drillHasUndoPoint);
+    return () => onUndoPointChange(true);
+  }, [drillHasUndoPoint, onUndoPointChange]);
 
   // --- 新しい地物の素性入力は **右パネルの「新規の姿」**で受ける（司令塔の決定 (5) /
   // 設計書 §B.5 の台帳 #9 / §C.2 の 27）------------------------------------------------

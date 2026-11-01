@@ -38,6 +38,7 @@ import { YearMonthDayInput } from '../timeline/YearMonthDayInput';
 
 import { diffSentence, featureInSnapshot, type AnchorRow } from './anchor-diff';
 import type { AnchorIntervalEditIntent } from './contracts';
+import { cascadedImpactLines, type CascadedImpact } from './end-here-impact';
 import {
   buildChangeStartIntent,
   buildDeleteAnchorIntent,
@@ -126,6 +127,8 @@ export interface AnchorListProps {
   readonly featureId?: FeatureId;
   /** HB3-12: dispatch a存続期間 edit; returns an error message to show, or null. */
   readonly onEditInterval?: (intent: AnchorIntervalEditIntent) => string | null;
+  /** 錨を消すと一緒に終わる集約地物を尋ねる口（B78）。 */
+  readonly describeIntervalCascade?: (intent: AnchorIntervalEditIntent) => readonly CascadedImpact[];
   /**
    * 「板が出ている」と名乗る口（司令塔の決定 (13)）。錨の削除の確認が出ている間、
    * 背後で Ctrl+Z / Delete が走らないようにする。
@@ -439,6 +442,9 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
           featureId={featureId}
           soleAnchor={soleAnchor}
           onEditInterval={onEditInterval}
+          {...(props.describeIntervalCascade
+            ? { describeIntervalCascade: props.describeIntervalCascade }
+            : {})}
           {...(props.onModalChange ? { onModalChange: props.onModalChange } : {})}
           openStartSignal={
             props.openStartEditor?.anchorId === selectedEntry.anchor.id
@@ -455,7 +461,10 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
  * 錨を消す前の影響の板の中身（N-05 / 設計書 §A.3）。素性欄の錨表と、時刻レールの右クリック
  * 「この錨を消す」（項目 6）が **同じ 1 本**を使う（写しを作らない＝教訓 5.44）。
  */
-export function anchorDeleteImpactView(start: TimePoint): {
+export function anchorDeleteImpactView(
+  start: TimePoint,
+  cascaded: readonly CascadedImpact[] = [],
+): {
   readonly title: string;
   readonly groups: readonly ImpactGroup[];
   readonly confirmLabel: string;
@@ -472,6 +481,12 @@ export function anchorDeleteImpactView(start: TimePoint): {
           PROPERTY_STRINGS.anchorDeleteLineRecord(formatTimePoint(start)),
           PROPERTY_STRINGS.anchorDeleteLineFallback,
         ],
+      },
+      // 下位領域を全て失う集約地物が一緒に終わる・記録ごと無くなるときは、押す前に言う（B78）。
+      {
+        testId: 'cascaded',
+        heading: PROPERTY_STRINGS.endHereImpactHeadingCascaded,
+        lines: cascadedImpactLines(cascaded),
       },
     ],
     confirmLabel: PROPERTY_STRINGS.anchorDeleteConfirm,
@@ -535,6 +550,7 @@ function AnchorIntervalEditor(props: {
   readonly featureId: FeatureId;
   readonly soleAnchor: boolean;
   readonly onEditInterval: (intent: AnchorIntervalEditIntent) => string | null;
+  readonly describeIntervalCascade?: (intent: AnchorIntervalEditIntent) => readonly CascadedImpact[];
   readonly onModalChange?: (open: boolean) => void;
   /** 0 でなければ、変わるたびに欄を開いて開始の欄へ焦点を置く（時刻レールの右クリック）。 */
   readonly openStartSignal?: number;
@@ -576,8 +592,10 @@ function AnchorIntervalEditor(props: {
    * 増分 7 の中身 7）。旧版は押した瞬間に消えていた ―― 錨は「その年からの姿」の
    * 記録なので、消すと **その年から次の錨まで、前の錨の姿へ戻る**。取り消せるとはいえ、
    * 何が起きるかを言わずに消すのは削除の作法から外れている。
+   *
+   * 値は押した瞬間に数えた「一緒に終わる集約地物」（B78）。`null` は板が閉じている。
    */
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState<readonly CascadedImpact[] | null>(null);
 
   const run = (intent: AnchorIntervalEditIntent): void => {
     setMessage(onEditInterval(intent));
@@ -629,7 +647,11 @@ function AnchorIntervalEditor(props: {
         data-testid={`anchor-interval-delete-${anchorId}`}
         disabled={soleAnchor}
         title={soleAnchor ? PROPERTY_STRINGS.intervalDeleteSoleReason : undefined}
-        onClick={() => setConfirmingDelete(true)}
+        onClick={() =>
+          setConfirmingDelete(
+            props.describeIntervalCascade?.(buildDeleteAnchorIntent(featureId, anchorId)) ?? [],
+          )
+        }
       >
         {PROPERTY_STRINGS.intervalDeleteLabel}
       </button>
@@ -641,15 +663,15 @@ function AnchorIntervalEditor(props: {
         </p>
       )}
 
-      {confirmingDelete && (
+      {confirmingDelete !== null && (
         <ImpactConfirmDialog
           testIdPrefix="anchor-delete-impact"
-          {...anchorDeleteImpactView(entry.start)}
+          {...anchorDeleteImpactView(entry.start, confirmingDelete)}
           onConfirm={() => {
-            setConfirmingDelete(false);
+            setConfirmingDelete(null);
             run(buildDeleteAnchorIntent(featureId, anchorId));
           }}
-          onCancel={() => setConfirmingDelete(false)}
+          onCancel={() => setConfirmingDelete(null)}
           {...(onModalChange ? { onModalChange } : {})}
         />
       )}

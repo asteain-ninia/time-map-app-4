@@ -310,4 +310,23 @@ describe('useShortcuts: 文字を打っている最中でも保存は通す（D4
     fireEvent.keyDown(input, { key: 's', ctrlKey: true });
     expect(save).toHaveBeenCalledTimes(1);
   });
+
+  it('B64: 止めている間に通す取り消しは、押しっぱなしの続きでは走らない', () => {
+    const registry = new CommandRegistry();
+    const undo = vi.fn();
+    registry.register(COMMAND_ID.EditUndo, { run: undo });
+    renderHook(() =>
+      useShortcuts({
+        keymap: buildDefaultKeymap(),
+        registry,
+        mode: EDIT_MODE.Edit,
+        suspended: true,
+        alwaysAllowed: new Set([COMMAND_ID.EditUndo]),
+      }),
+    );
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true, repeat: true });
+    expect(undo).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
+    expect(undo).toHaveBeenCalledTimes(1);
+  });
 });

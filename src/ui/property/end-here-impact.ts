@@ -15,7 +15,49 @@
 import type { ImpactGroup } from '../shell/ImpactConfirmDialog';
 
 import { summarizeNames } from './delete-impact';
-import { PROPERTY_STRINGS } from './messages';
+import { PROPERTY_STRINGS, PROPERTY_TEXT } from './messages';
+
+/** 一緒に終わる集約地物 1 件（名前と年。`whole` は記録ごと無くなるもの）。 */
+export interface CascadedImpact {
+  readonly name: string;
+  readonly yearLabel: string;
+  readonly whole?: boolean;
+}
+
+/**
+ * 一緒に終わる集約地物の行。「この年に終わったことにする」の板と錨を消す板が同じ 1 本を使う
+ * （B78、教訓 5.44）。1 つの地物に切れ目がいくつもあると同じ文が並ぶので、同じ行はまとめる。
+ */
+export function cascadedImpactLines(cascaded: readonly CascadedImpact[]): readonly string[] {
+  return [
+    ...new Set(
+      cascaded.map((c) =>
+        c.whole === true
+          ? PROPERTY_STRINGS.endHereImpactCascadedWhole(c.name)
+          : PROPERTY_STRINGS.endHereImpactCascaded(c.name, c.yearLabel),
+      ),
+    ),
+  ];
+}
+
+/**
+ * 存続期間の欄の編集で集約地物が一緒に終わったときの状態行。名前が 1 つも引けなければ `null`
+ * （B78 で検査できるよう、`App` の中から出した）。
+ */
+export function intervalCascadeStatus(
+  names: readonly string[],
+  wholeNames: readonly string[],
+): string | null {
+  if (names.length === 0 && wholeNames.length === 0) return null;
+  return (
+    (names.length > 0
+      ? PROPERTY_STRINGS.intervalCascaded(names.join(PROPERTY_TEXT.nameSeparator))
+      : PROPERTY_STRINGS.intervalChanged) +
+    (wholeNames.length > 0
+      ? PROPERTY_STRINGS.endHereDoneCascadedWhole(wholeNames.join(PROPERTY_TEXT.nameSeparator))
+      : '')
+  );
+}
 
 /** 影響の板へ渡す一式。 */
 export interface EndHereImpactView {
@@ -43,7 +85,7 @@ export function buildEndHereImpactView(input: {
    * 下位領域を全て失って一緒に終わる集約地物（名前と年。手直し 3 回目 1-1）。`whole` はどの年にも
    * 下位領域が居なくなって記録ごと無くなるもの（4 回目 #1）。
    */
-  readonly cascaded?: readonly { readonly name: string; readonly yearLabel: string; readonly whole?: boolean }[];
+  readonly cascaded?: readonly CascadedImpact[];
   /** 一緒に終わる後ろの記録の中の、別の上位領域への所属（名前と年。4 回目 #2）。 */
   readonly laterAffiliations?: readonly { readonly name: string; readonly yearLabel: string }[];
 }): EndHereImpactView {
@@ -81,11 +123,7 @@ export function buildEndHereImpactView(input: {
       {
         testId: 'cascaded',
         heading: PROPERTY_STRINGS.endHereImpactHeadingCascaded,
-        lines: cascaded.map((c) =>
-          c.whole === true
-            ? PROPERTY_STRINGS.endHereImpactCascadedWhole(c.name)
-            : PROPERTY_STRINGS.endHereImpactCascaded(c.name, c.yearLabel),
-        ),
+        lines: cascadedImpactLines(cascaded),
       },
     ],
     // 実行ボタンは **素性欄のボタンと同じ文**（「1500年に終わったことにする」）。押した

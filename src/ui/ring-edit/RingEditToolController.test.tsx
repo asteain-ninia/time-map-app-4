@@ -629,6 +629,11 @@ describe('RingEditToolController — バグハント第11波 (#3/#6): focus guar
     return input;
   }
 
+  /** 面を掴んだ直後の局面。 */
+  function flowAfterTarget(): string {
+    return 'drafting';
+  }
+
   function drawTwoVertices(): void {
     selectTargetFace();
     clickInput(1, 1);
@@ -674,6 +679,20 @@ describe('RingEditToolController — バグハント第11波 (#3/#6): focus guar
     expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('2');
     expect(ev.defaultPrevented).toBe(false);
     input.remove();
+    h.unmount();
+  });
+
+  it('B64: 頂点が無いときの Ctrl+Z は道具が受けない（面を離さず、打鍵を奪わない）', () => {
+    const h = mountRing();
+    activateRing(h.store);
+    selectTargetFace();
+    const button = document.createElement('button');
+    document.body.appendChild(button);
+    button.focus();
+    const notPrevented = fireEvent.keyDown(button, { key: 'z', ctrlKey: true });
+    expect(notPrevented).toBe(true);
+    expect(screen.getByTestId('ring-edit-tool').getAttribute('data-flow')).toBe(flowAfterTarget());
+    button.remove();
     h.unmount();
   });
 

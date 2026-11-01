@@ -171,6 +171,12 @@ export function useShortcuts(options: UseShortcutsOptions): void {
         const id = keymap.resolve(chord);
         if (id === undefined) return;
         if (alwaysAllowed?.has(id) === true) {
+          // 道具が鍵盤を持っているあいだは、押しっぱなしで履歴へ流れ込ませない（B64）。道具の
+          // 点を戻し切った打鍵の続きが、そのまま確定済みの編集を取り消してしまう。
+          if (e.repeat && (id === COMMAND_ID.EditUndo || id === COMMAND_ID.EditRedo)) {
+            e.preventDefault();
+            return;
+          }
           const allowedResult = dispatchChord(chord, keymap, registry, mode);
           if (allowedResult !== DISPATCH_RESULT.Unbound) e.preventDefault();
           return;

@@ -631,6 +631,26 @@ describe('PropertyPanel — 存続期間編集 wiring (HB3-12 / FR-70, 教訓 5.
     }
   });
 
+  it('B78: 押した瞬間に一緒に無くなる集約地物を尋ね、板がそれを言う', () => {
+    const asked: AnchorIntervalEditIntent[] = [];
+    const store = makeStore({ active: true });
+    renderPanelWithInterval(
+      store,
+      {
+        dispatchAnchorInterval: () => {},
+        describeAnchorIntervalCascade: (intent) => {
+          asked.push(intent);
+          return [{ name: '連邦 G', yearLabel: '1200年', whole: true }];
+        },
+      },
+      'a2',
+    );
+    expect(asked).toHaveLength(0);
+    fireEvent.click(screen.getByTestId('anchor-interval-delete-a2'));
+    expect(asked.map((i) => i.op)).toEqual([ANCHOR_INTERVAL_OP.Delete]);
+    expect(screen.getByTestId('anchor-delete-impact-cascaded').textContent).toContain('記録ごと無くなります');
+  });
+
   it('この錨を削除 dispatches a delete intent (series has >1 anchor so the button is enabled)', () => {
     const intents: AnchorIntervalEditIntent[] = [];
     const store = makeStore({ active: true });
