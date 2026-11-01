@@ -41,7 +41,7 @@ export function FirstRunGuide<S>(props: FirstRunGuideProps<S>): JSX.Element | nu
   const { store } = props;
   const api = liveApi(props.api);
   const show = useStore(store, (s) => s.appSettings.showFirstRunGuide);
-  // 設定が **利用者の手で** 変わった印（`hydrateSettings` は出さない）。これを見るので、
+  // 設定が **利用者の手で** 変わった印（読み込みの `reflectLoadedProject` は出さない）。これを見るので、
   // 「読み込みで既定が真に戻った」と「利用者が設定欄で入れ直した」を取り違えない。
   const lastSettingsChange = useStore(store, (s) => s.lastSettingsChange);
   // 今回だけ閉じる（設定は書かない）。**設定が真に戻れば次の起動でまた出る。**

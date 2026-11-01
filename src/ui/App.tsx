@@ -185,6 +185,7 @@ import {
   type CommandId,
   type CommandRefusal,
 } from './shell/commands';
+import { alwaysDrawnIds } from './map/always-drawn';
 import { featureByIdAt, featuresAt, verticesAt, leafShapeAt, leafAtPoint } from './live-lookup';
 import {
   buildVertexDeletePlan,
@@ -852,8 +853,26 @@ export function App(): JSX.Element {
     },
     [statusMessageStore],
   );
-  // 設定の補正で出した文（手放したことを同じ文の後ろへ続けるために覚える）。
-  const rangeClampNoticeRef = useRef<string | null>(null);
+  // 設定の補正で出した文とその年（同じ補正で起きたことを、同じ文の後ろへ続けるために覚える）。
+  const rangeClampNoticeRef = useRef<{ readonly text: string; readonly timeKey: string } | null>(null);
+  /**
+   * 補正と同時に起きたこと（印が外れた・掴んでいた面を手放した）を言う。補正の文の直後で、まだ同じ年に
+   * 居るなら後ろへ続ける（B118）。別々に出すと、あとの文が補正の文を上書きして捨てたことが読めない。
+   */
+  const noticeAfterRangeClamp = useCallback(
+    (text: string, time: TimePoint): void => {
+      const clamp = rangeClampNoticeRef.current;
+      const timeKey = moveTrailerKey(time);
+      if (clamp === null || clamp.timeKey !== timeKey || statusMessageStore.get()?.text !== clamp.text) {
+        statusMessageStore.notice(text);
+        return;
+      }
+      const joined = `${clamp.text}${text}`;
+      rangeClampNoticeRef.current = { text: joined, timeKey };
+      statusMessageStore.notice(joined);
+    },
+    [statusMessageStore],
+  );
   // 年の移動・設定の補正・読み込みで捨てたものを言う（B112）。年の移動は、移動の知らせに上書き
   // されないよう後ろへ続ける文としても控える。ほかの 2 つに移動の知らせは来ないので、1 文で言い切る。
   const onToolDraftLost = useCallback(
@@ -865,12 +884,15 @@ export function App(): JSX.Element {
           return;
         case DRAFT_LOSS_CAUSE.RangeClamped: {
           const text = DRAFT_DISCARD_STRINGS.rangeClampedDiscarded(formatTimePoint(time), what);
-          rangeClampNoticeRef.current = text;
+          rangeClampNoticeRef.current = { text, timeKey: moveTrailerKey(time) };
           statusMessageStore.notice(text);
           return;
         }
         case DRAFT_LOSS_CAUSE.ProjectSwitched:
           statusMessageStore.notice(DRAFT_DISCARD_STRINGS.projectSwitchedDiscarded(what));
+          return;
+        case DRAFT_LOSS_CAUSE.SelectionMoved:
+          statusMessageStore.notice(what);
           return;
       }
     },
@@ -880,15 +902,10 @@ export function App(): JSX.Element {
   // されないよう、印を外したときと同じく移動の知らせの後ろへ続ける文としても控える。
   const onToolTargetGone = useCallback(() => {
     const text = APP_STRINGS.toolTargetGoneByTime;
-    // 設定の補正で捨てたことの直後なら、読めるように同じ文の後ろへ続ける。
-    const clampNotice = rangeClampNoticeRef.current;
-    statusMessageStore.notice(
-      clampNotice !== null && statusMessageStore.get()?.text === clampNotice
-        ? `${clampNotice}${text}`
-        : text,
-    );
-    statusMessageStore.stageMoveTrailer(moveTrailerKey(store.getState().currentTime), text);
-  }, [statusMessageStore, store]);
+    const time = store.getState().currentTime;
+    noticeAfterRangeClamp(text, time);
+    statusMessageStore.stageMoveTrailer(moveTrailerKey(time), text);
+  }, [noticeAfterRangeClamp, statusMessageStore, store]);
 
   /**
    * **直前に消した測量の線を戻す**（増分 8C の手直し / 反証 #2）。状態行の［戻す］と、
@@ -1425,14 +1442,14 @@ export function App(): JSX.Element {
         if (dropped > 0) {
           s.setFeatureMarks(kept);
           const text = APP_STRINGS.markDroppedByTime(dropped);
-          statusMessageStore.notice(text);
+          noticeAfterRangeClamp(text, s.currentTime);
           statusMessageStore.stageMoveTrailer(moveTrailerKey(s.currentTime), text);
         }
       }
       paint();
     });
     // 印が動いたときは React 側から、ドメイン・時刻が動いたときは購読から引き直す。
-  }, [store, markedFeatures, statusMessageStore]);
+  }, [store, markedFeatures, statusMessageStore, noticeAfterRangeClamp]);
 
   // The stable camera-input port handed to BOTH tool controllers (bughunt: 追加/ナイフ
   // 描画中のパン/ズーム). Each method reads the live dispatcher-backed port through the
@@ -2926,6 +2943,23 @@ export function App(): JSX.Element {
     [store],
   );
 
+  /**
+   * **分ける・穴あけ・輪郭の取得の関門**（B118）。表示条件を通っているか、隠れていても描いている
+   * （§D.6 規則 1 の「選んでいるものと親までの道筋」）なら掴める。［動かす］はもともと描いているものを
+   * 掴むので、見えているのに道具だけ断る形が残っていた。見えていない面は今までどおり掴めない。
+   *
+   * {@link isToolTargetVisible} を変えないのは、視点の側が「隠れている」ことを読んで言い分けるため。
+   */
+  const isToolTargetDrawn = useCallback(
+    (featureId: FeatureId): boolean => {
+      if (isToolTargetVisible(featureId)) return true;
+      const s = store.getState();
+      const { forest } = resolveDisplayFor(s.domain, s.currentTime, s.displayControl);
+      return alwaysDrawnIds(forest, s.activeFeature).has(featureId);
+    },
+    [store, isToolTargetVisible],
+  );
+
   // U26 INTEGRATION (教訓 5.7 / 5.2): the knife-tool controller is mounted in the
   // SAME shell overlay, bound to the SAME store, so selecting 編集モード→ナイフ starts
   // a session, map-input clicks drive対象面選択 / 分断線入力 / 閉線確定, the继承先 modal +
@@ -2947,9 +2981,9 @@ export function App(): JSX.Element {
         // W3-A: 対象取得は生リーフ (`leafAtPoint`) + FR-113 可視ゲート — merge / reparent /
         // ring-edit / drill と同じ単一の取得規約 (HB3-16). 対象面強調も同じ live-lookup
         // (`leafShapeAt`) 由来なので、取得と強調が食い違わない。
-        isToolTargetVisible,
+        isToolTargetDrawn,
       ),
-    [store, sharedMint, isToolTargetVisible],
+    [store, sharedMint, isToolTargetDrawn],
   );
 
   // U30 INTEGRATION (教訓 5.7 / 5.2): the merge-tool bootstrap mirrors the knife one —
@@ -2997,9 +3031,9 @@ export function App(): JSX.Element {
         () => store.getState().domain,
         () => store.getState().currentTime,
         sharedMint,
-        isToolTargetVisible,
+        isToolTargetDrawn,
       ),
-    [store, sharedMint, isToolTargetVisible],
+    [store, sharedMint, isToolTargetDrawn],
   );
 
   // U27 INTEGRATION (教訓 5.7 / 5.2): the drill (穴あけによる新地物生成) bootstrap mirrors
@@ -3015,9 +3049,9 @@ export function App(): JSX.Element {
         () => store.getState().domain,
         () => store.getState().currentTime,
         sharedMint,
-        isToolTargetVisible,
+        isToolTargetDrawn,
       ),
-    [store, sharedMint, isToolTargetVisible],
+    [store, sharedMint, isToolTargetDrawn],
   );
 
   // ADD COMMIT (教訓 5.11 / U12): record the committed add as one history unit and
@@ -3219,6 +3253,11 @@ export function App(): JSX.Element {
   const [helpModalOpen, setHelpModalOpen] = useState(false);
   const [fileModalOpen, setFileModalOpen] = useState(false);
   const [addDrawing, setAddDrawing] = useState(false);
+  // 分ける・穴あけ・輪郭が、選択を動かすと聞く下書きを持っている（視点を止める。B118）。
+  const toolHoldsDraftRef = useRef(false);
+  const onToolDraftHeldChange = useCallback((held: boolean): void => {
+    toolHoldsDraftRef.current = held;
+  }, []);
   const [knifeDrawing, setKnifeDrawing] = useState(false);
   const [mergeDrawing, setMergeDrawing] = useState(false);
   const [reparentDrawing, setReparentDrawing] = useState(false);
@@ -4095,7 +4134,8 @@ export function App(): JSX.Element {
       // 抱えたまま一覧の行を押すと、地図だけが世界の反対側へ飛び、そのあと打った点が
       // **世界をまたぐ形**になった（下書きは残るので、利用者は何が起きたか分からない）。
       // 一覧で選ぶこと自体は妨げない ―― 素性を見たいだけのことがあるので。
-      if (addDrawing) return;
+      // 分ける・穴あけ・輪郭も、下書きを持っているあいだは同じ（B118。片付けた道具が呼び直す）。
+      if (addDrawing || toolHoldsDraftRef.current) return;
 
       const s = store.getState();
       // **隠れている地物でも、選んでいるなら視点を合わせる**（2026-09-06、2 回目の手直し）。
@@ -4413,6 +4453,7 @@ export function App(): JSX.Element {
               store={store}
               screenToWorld={screenToWorld}
               mapCameraInput={mapCameraInput}
+              boardOpen={boardHoldsInput}
             />
             {/* 編集モードの 8 つの道具の帯（増分 3 の手直し C3）。DOM は 1 つも作らず、
                 道具名と対象だけをオプションバーへ押し込む。追加モードのときは帯を持たない
@@ -4497,6 +4538,8 @@ export function App(): JSX.Element {
               onModalChange={toolModalChange('knife')}
               onTargetGone={onToolTargetGone}
               onDraftDiscarded={onToolDraftDiscarded}
+              onFocusSelection={focusCameraOnSelection}
+              onDraftHeldChange={onToolDraftHeldChange}
               onDraftLost={onToolDraftLost}
             />
             {/* U30 INTEGRATION (教訓 5.7 / 5.2): the merge-tool controller, bound to the
@@ -4578,6 +4621,8 @@ export function App(): JSX.Element {
               onTargetGone={onToolTargetGone}
               onImpactModalChange={toolModalChange('ring-delete-impact')}
               onDraftDiscarded={onToolDraftDiscarded}
+              onFocusSelection={focusCameraOnSelection}
+              onDraftHeldChange={onToolDraftHeldChange}
               onDraftLost={onToolDraftLost}
             />
             {/* U27 INTEGRATION (教訓 5.7 / 5.2): the drill (穴あけによる新地物生成)
@@ -4607,6 +4652,8 @@ export function App(): JSX.Element {
               onModalChange={toolModalChange('drill')}
               onTargetGone={onToolTargetGone}
               onDraftDiscarded={onToolDraftDiscarded}
+              onFocusSelection={focusCameraOnSelection}
+              onDraftHeldChange={onToolDraftHeldChange}
               onDraftLost={onToolDraftLost}
             />
           </>

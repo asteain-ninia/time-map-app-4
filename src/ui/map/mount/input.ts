@@ -14,7 +14,6 @@ import {
 import { BROWSER_CLOCK, throttleTrailing } from '../../shell/map-resize';
 import { toolPansFromEmptyPress, toolPansFromFeaturePress } from '../../shell/tools';
 import { timePointKey } from '../../../domain/anchor-id';
-import { EDIT_MODE } from '../../state/session';
 import { TIME_CHANGE_SOURCE } from '../../state/store';
 import { POINTER_BUTTON, pointerButtonFromCode } from '../dispatch';
 import { DRAG_CANCEL_CAUSE, type DragCancelCause, type DragYearHost } from '../drag-year';
@@ -483,8 +482,8 @@ export function createMountInput(options: MountInputOptions): MountInput {
   let prevMode = store.getState().mode;
   let prevActiveTool = store.getState().activeTool;
   // 測量の入り切りも入力の切り替えである（B114 の検証）。測量の橋渡しが地図を覆う／外れるのに、道具が
-  // `null` のままだと `mode` も `activeTool` も変わらず、明示の「選択」からだけ破棄されていた。読むだけの
-  // 動きは変えない（鍵を開けているときだけ畳む）。
+  // `null` のままだと `mode` も `activeTool` も変わらず、明示の「選択」からだけ破棄されていた。読むだけ
+  // でも同じ（B117）。残すと、押したまま測量へ入って離したときに選択が外れる。
   let prevSurveyActive = store.getState().survey.active;
   let prevTime = store.getState().currentTime;
   let prevDomain = store.getState().domain;
@@ -506,7 +505,7 @@ export function createMountInput(options: MountInputOptions): MountInput {
     prevTime = s.currentTime;
     prevDomain = s.domain;
     prevLoadNonce = s.projectLoadNonce;
-    const surveySwitched = s.survey.active !== prevSurveyActive && s.mode !== EDIT_MODE.View;
+    const surveySwitched = s.survey.active !== prevSurveyActive;
     prevSurveyActive = s.survey.active;
     if (s.mode === prevMode && s.activeTool === prevActiveTool && !surveySwitched) return;
     prevMode = s.mode;
@@ -526,9 +525,8 @@ export function createMountInput(options: MountInputOptions): MountInput {
     return true;
   });
 
-  // 確認の板が開いた瞬間に、左の押下を畳む（B114 の検証）。読むだけの動きは変えない。
+  // 確認の板が開いた瞬間に、左の押下を畳む（B114 の検証）。読むだけでも同じ（B117。Ctrl+P の板）。
   options.boardOpenedRef.current = (): void => {
-    if (store.getState().mode === EDIT_MODE.View) return;
     if (dispatcher.holdsEditPress) {
       // 覆いが地図を隠すと、あとに来る `pointerleave` が黙って畳む。先に取り消して言う。
       dispatcher.cancelSelectEdit();

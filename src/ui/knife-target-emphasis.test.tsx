@@ -347,7 +347,8 @@ function mountKnifeOver(root: DomainRoot): Harness {
     },
   };
 
-  // The composition root's FR-113 gate, verbatim (App.isToolTargetVisible).
+  // The composition root's FR-113 gate (App.isToolTargetVisible). 本番の分ける道具はこれに「隠れていても
+  // 描いている面」を足した App.isToolTargetDrawn を通す（B118）。足した分は e2e/b117-b118-leftovers.spec.ts。
   const ports = createKnifeBootstrap(
     () => store.getState().domain,
     () => store.getState().currentTime,

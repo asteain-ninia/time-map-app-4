@@ -902,6 +902,14 @@ describe('左の押下の途中で板が開いたとき（B114 の検証の指�
     expect(camera.writes.length).toBe(1);
   });
 
+  it('中ボタンとして渡された左の押下（測量の左ドラッグ）は、指が左なので畳む（B117）', () => {
+    const { camera, dispatcher } = setupBoard();
+    dispatcher.pointerDown({ ...ptr(1, 100, 100, POINTER_BUTTON.Middle), pressMask: 1 });
+    expect(dispatcher.foldPressedLeftPans()).toBe(true);
+    dispatcher.pointerMove(ptr(1, 180, 140, POINTER_BUTTON.Middle));
+    expect(camera.writes).toEqual([]);
+  });
+
   it('「選択」で地物の上からの押下も畳む。離しても選択を解決しない（裁定 2026-11-01）', () => {
     const selection = new FakeSelection();
     const camera = new FakeCamera();

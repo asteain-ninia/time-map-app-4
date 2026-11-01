@@ -42,6 +42,8 @@ export const DRAFT_LOSS_CAUSE = {
   RangeClamped: 'range-clamped',
   /** ファイルを開いた・新規にした。 */
   ProjectSwitched: 'project-switched',
+  /** 一覧で別の地物を選んだ（素性を入れている局面の形を捨てた。頂点の数では言えない）。 */
+  SelectionMoved: 'selection-moved',
 } as const;
 
 export type DraftLossCause = (typeof DRAFT_LOSS_CAUSE)[keyof typeof DRAFT_LOSS_CAUSE];

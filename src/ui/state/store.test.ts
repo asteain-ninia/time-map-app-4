@@ -910,16 +910,16 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
       expect(store.getState().projectDirty).toBe(false);
     });
 
-    // CLEAR (settings hydrate): hydrateSettings also establishes a clean baseline (it
+    // CLEAR (load reflect): reflectLoadedProject also establishes a clean baseline (it
     // writes savedDomain and clears projectDirty), so it must clear the byte flag too —
     // the same invariant every savedDomain-writing path shares.
-    it('a settings hydrate (hydrateSettings) clears the byte-replace flag', () => {
+    it('a load reflect (reflectLoadedProject) clears the byte-replace flag', () => {
       const store = replaceStore();
       store.getState().markProjectSaved();
       store.getState().replaceBaseMap({ tag: 'd0' });
       expect(store.getState().projectDirty).toBe(true);
 
-      store.getState().hydrateSettings({});
+      store.getState().reflectLoadedProject({ tag: 'd0' }, {});
       expect(store.getState().projectDirty).toBe(false);
       store.getState().applyCommandResult({ tag: 'd1' }, edit);
       store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
@@ -1034,21 +1034,21 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
     });
   });
 
-  // 回帰 (finding): hydrateSettings is the LOAD / NEW project-settings half. The
+  // 回帰 (finding): reflectLoadedProject carries the LOAD / NEW project settings. The
   // timeline RANGE the slider reads (timelineMin/timelineMax) is a derived mirror
   // of projectSettings.timelineMin/MaxYear, and currentTime must be re-clamped into
   // the new range — otherwise a previous project's wide range and an out-of-range
   // currentTime survive a LOAD / NEW and the domain resolves at a time outside the
-  // new range (空表示). Pre-fix, hydrateSettings replaced only the settings slice
-  // and left timelineMin/Max/currentTime untouched.
-  it('hydrateSettings re-derives the timeline range and clamps currentTime into it (finding)', () => {
+  // new range (空表示). The first version replaced only the settings slice and left
+  // timelineMin/Max/currentTime untouched.
+  it('reflectLoadedProject re-derives the timeline range and clamps currentTime into it (finding)', () => {
     // Default range is 0..10000. Slide near the right end of the OLD range.
     const store = makeStore();
     store.getState().setCurrentTime(timePointYear(9000), TIME_CHANGE_SOURCE.Slider);
     expect(store.getState().currentTime).toEqual(timePointYear(9000));
 
     // Load a NEW project whose timeline is a NARROW, shifted range 0..100.
-    store.getState().hydrateSettings({
+    store.getState().reflectLoadedProject({ tag: 'd0' }, {
       projectSettings: {
         ...DEFAULT_PROJECT_SETTINGS,
         timelineMinYear: 0,
@@ -1066,10 +1066,10 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
     expect(s.projectDirty).toBe(false);
   });
 
-  it('hydrateSettings keeps an in-range currentTime unchanged', () => {
+  it('reflectLoadedProject keeps an in-range currentTime unchanged', () => {
     const store = makeStore();
     store.getState().setCurrentTime(timePointYear(50), TIME_CHANGE_SOURCE.Slider);
-    store.getState().hydrateSettings({
+    store.getState().reflectLoadedProject({ tag: 'd0' }, {
       projectSettings: {
         ...DEFAULT_PROJECT_SETTINGS,
         timelineMinYear: 0,
@@ -1079,10 +1079,10 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
     expect(store.getState().currentTime).toEqual(timePointYear(50));
   });
 
-  it('hydrateSettings with no project slice derives the range from the kept settings (pre-`ui` manifest)', () => {
+  it('reflectLoadedProject with no project slice derives the range from the kept settings (pre-`ui` manifest)', () => {
     // Start from a project with a narrow range, then move current time inside it.
     const store = makeStore();
-    store.getState().hydrateSettings({
+    store.getState().reflectLoadedProject({ tag: 'd0' }, {
       projectSettings: {
         ...DEFAULT_PROJECT_SETTINGS,
         timelineMinYear: 0,
@@ -1092,7 +1092,7 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
     store.getState().setCurrentTime(timePointYear(80), TIME_CHANGE_SOURCE.Slider);
     // A pre-`ui` manifest carries no settings: the kept settings still drive the
     // derived range, and an in-range currentTime is preserved.
-    store.getState().hydrateSettings({});
+    store.getState().reflectLoadedProject({ tag: 'd0' }, {});
     const s = store.getState();
     expect(s.timelineMin).toEqual(timePointYear(0));
     expect(s.timelineMax).toEqual(timePointYear(100));
@@ -1100,8 +1100,8 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
   });
 
   // 回帰 (bughunt2): reflectLoadedProject is the ATOMIC LOAD / NEW reflect. The
-  // previous two-call form — resetToDomain(project) THEN hydrateSettings(...) —
-  // swapped the domain FIRST, so if the settings hydrate threw on an inverted
+  // previous two-call form (swap the domain, THEN replace the settings)
+  // swapped the domain FIRST, so if the settings step threw on an inverted
   // timeline range (timelineMin >= timelineMax, rejected by deriveTimelineState)
   // the throw escaped with the NEW domain already installed alongside the OLD
   // project's settings/range — a half-applied store. The atomic action derives the
@@ -1114,14 +1114,8 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
       activeTool: asToolId('add'),
     });
     // Establish a known-good baseline the failed reflect must not perturb.
-    store.getState().hydrateSettings({
-      projectSettings: {
-        ...DEFAULT_PROJECT_SETTINGS,
-        timelineMinYear: 0,
-        timelineMaxYear: 100,
-        zoomMax: 33,
-      },
-    });
+    store.getState().setProjectTimelineRangeYears(0, 100);
+    store.getState().updateProjectSetting('zoomMax', 33);
     store.getState().setCurrentTime(timePointYear(50), TIME_CHANGE_SOURCE.Slider);
     const before = store.getState();
     const domainBefore = before.domain;
@@ -1203,7 +1197,7 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
   });
 
   // 回帰 (finding): a LIVE settings-dialog confirm changes the timeline range
-  // through updateProjectSetting, NOT hydrateSettings. The slider reads the derived
+  // through updateProjectSetting, NOT reflectLoadedProject. The slider reads the derived
   // timelineMin/Max mirror + currentTime, so a timeline-key change must re-derive
   // the range and re-clamp currentTime in the SAME transition. Pre-fix,
   // updateProjectSetting wrote only projectSettings, so narrowing the range via the
@@ -2571,11 +2565,6 @@ const TOOL_MODE_OPERATIONS: Readonly<Record<string, OperationEntry>> = {
     why: '同上。',
     run: (s) => s.getState().updateAppSetting('renderFps', 30),
   },
-  hydrateSettings: {
-    group: 'invariant',
-    why: '読み込みの設定流し込み。道具・鍵は resetToDomain 側の仕事なので、ここでは動かない。',
-    run: (s) => s.getState().hydrateSettings({}),
-  },
   reflectLoadedProject: {
     group: 'scenario',
     why: '読み込みの原子版。resetToDomain と同じ意味を持つので鍵と道具を一緒に書く。',
@@ -3016,10 +3005,11 @@ describe('年を直接書く経路も関門へ知らせる（書き込みの出�
     expect(store.getState().currentTime.year).toBe(1300);
     expect(sources).toEqual([TIME_CHANGE_SOURCE.RangeClamp, TIME_CHANGE_SOURCE.RangeClamp]);
 
-    store.getState().hydrateSettings({
+    // 読み込みは補正として届かない（世代の印で別に片付く。「表示年の範囲に合わせて」と言わない）。
+    store.getState().reflectLoadedProject(store.getState().domain, {
       projectSettings: { ...store.getState().projectSettings, timelineMaxYear: 1200 },
     });
     expect(store.getState().currentTime.year).toBe(1200);
-    expect(sources).toHaveLength(3);
+    expect(sources).toHaveLength(2);
   });
 });

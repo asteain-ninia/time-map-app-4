@@ -182,6 +182,38 @@ describe('引いている最中の年 — 地図の入力の層', () => {
     expect(session.release).not.toHaveBeenCalled();
   });
 
+  describe('読むだけ（B117）', () => {
+    beforeEach(() => {
+      store.getState().setMode(EDIT_MODE.View);
+    });
+    const clickRelease = (): void => {
+      target.dispatchEvent(
+        new PointerEvent('pointerup', { button: 0, pointerId: 1, bubbles: true, clientX: 10, clientY: 10 }),
+      );
+    };
+
+    it('動かさず離せば今までどおり選択になる', () => {
+      press();
+      clickRelease();
+      expect(selectionEnd).toHaveBeenCalledTimes(1);
+    });
+
+    it('押したまま測量へ入ると押下を畳み、離しても選択を解決しない', () => {
+      press();
+      store.getState().surveyEnable();
+      clickRelease();
+      expect(selectionEnd).not.toHaveBeenCalled();
+    });
+
+    it('押したまま板が開くと押下を畳み、離しても選択を解決しない。掴んだわけではないので言わない', () => {
+      press();
+      boardOpened.current?.();
+      clickRelease();
+      expect(selectionEnd).not.toHaveBeenCalled();
+      expect(host.cancelled).not.toHaveBeenCalled();
+    });
+  });
+
   describe('離した知らせを取りこぼしたとき', () => {
     const moveWith = (buttons: number, x = 40): void => {
       target.dispatchEvent(

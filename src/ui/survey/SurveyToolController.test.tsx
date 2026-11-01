@@ -21,6 +21,7 @@ import {
   EMPTY_HIT_TESTER,
   NOOP_ADD_PORT,
   NOOP_CONTEXT_MENU_PORT,
+  NOOP_MAP_CAMERA_INPUT,
   NOOP_SELECTION_PORT,
   POINTER_BUTTON,
   PointerDispatcher,
@@ -247,6 +248,61 @@ describe('SurveyToolController — click / drag discrimination (教訓 5.8)', ()
     expect(s.draft).toBeNull();
     expect(s.lines).toHaveLength(0);
     h.unmount();
+  });
+});
+
+describe('SurveyMapBridge — 板が開いたら左の押下を畳む（B117）', () => {
+  function mountWithBoard() {
+    const store = createSessionStore<S>({ initialDomain: { tag: 'd0' }, initial: { mode: EDIT_MODE.Edit } });
+    const bridge = (boardOpen: boolean): JSX.Element => (
+      <SurveyMapBridge store={store} screenToWorld={screenToWorld} boardOpen={boardOpen} />
+    );
+    const utils = render(bridge(false));
+    act(() => store.getState().surveyEnable());
+    return { store, setBoard: (open: boolean) => utils.rerender(bridge(open)), unmount: utils.unmount };
+  }
+  const down = (): void => {
+    fireEvent.pointerDown(layer(), { clientX: 100, clientY: 50, button: 0, pointerId: 1 });
+  };
+  const up = (): void => {
+    fireEvent.pointerUp(layer(), { clientX: 100, clientY: 50, button: 0, pointerId: 1 });
+  };
+
+  it('板の裏で離しても点を打たない', () => {
+    const h = mountWithBoard();
+    down();
+    h.setBoard(true);
+    up();
+    expect(h.store.getState().survey.draft).toBeNull();
+    h.unmount();
+  });
+
+  it('閉じてから離しても点を打たない。次のクリックは打てる', () => {
+    const h = mountWithBoard();
+    down();
+    h.setBoard(true);
+    h.setBoard(false);
+    up();
+    expect(h.store.getState().survey.draft).toBeNull();
+    act(() => clickAt(100, 50));
+    expect(h.store.getState().survey.draft).not.toBeNull();
+    h.unmount();
+  });
+
+  it('板が開いたまま動かしても、畳んだ押下から地図の移動へ渡さない', () => {
+    const store = createSessionStore<S>({ initialDomain: { tag: 'd0' }, initial: { mode: EDIT_MODE.Edit } });
+    const beginPan = vi.fn();
+    const camera: MapCameraInput = { ...NOOP_MAP_CAMERA_INPUT, beginPan };
+    const bridge = (boardOpen: boolean): JSX.Element => (
+      <SurveyMapBridge store={store} screenToWorld={screenToWorld} mapCameraInput={camera} boardOpen={boardOpen} />
+    );
+    const utils = render(bridge(false));
+    act(() => store.getState().surveyEnable());
+    down();
+    utils.rerender(bridge(true));
+    fireEvent.pointerMove(layer(), { clientX: 180, clientY: 50, pointerId: 1, buttons: 1 });
+    expect(beginPan).not.toHaveBeenCalled();
+    utils.unmount();
   });
 });
 
