@@ -86,6 +86,20 @@ export function ringNestingRestrictedSyntax() {
 }
 
 /**
+ * React の `onWheel` の禁止（§5.81）。React は root へ passive で張るので、中の
+ * `preventDefault()` は効かず、コンソールにエラーが出る。
+ */
+export function reactWheelRestrictedSyntax() {
+  return [
+    {
+      selector: "JSXAttribute[name.name='onWheel']",
+      message:
+        'React の onWheel では preventDefault が効かない。useEffect の中で addEventListener(\'wheel\', 処理, { passive: false }) を張る（開発ガイド §5.81）。',
+    },
+  ];
+}
+
+/**
  * 点の包含の述語。輪の包含を「先頭の頂点 1 点」でこれに聞くと、先頭の頂点が縁に乗ったときに
  * 「中に無い」と読む（B109。bughunt2 でも結合と刃物で同じ形を直した）。輪どうしは
  * `ringStrictlyContains` を使う。走査は `src/test-support/test-lesson-rules.test.ts`。
@@ -123,7 +137,7 @@ export const CAST_NOTE = 'キャストの例外:';
  */
 export const VIOLATION_LIMITS = {
   /** §5.64 テストの中で、要素を探す言葉に日本語を直書きしている所。 */
-  textQueryLiterals: 219,
+  textQueryLiterals: 216,
   /** §5.39 オブジェクトリテラルをドメイン型へキャストしている所。 */
   domainLiteralCasts: 39,
 };

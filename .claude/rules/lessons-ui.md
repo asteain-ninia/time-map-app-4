@@ -180,9 +180,9 @@ paths:
 - 確かめ方: `aggregateCount` と `sourceCount` を別々に観測し（`src/ui/e2e/rail-observation.ts`）、再生・現在時刻の移動で増えないことを見る。`e2e/inc6-rail.spec.ts`（385 行付近）。
 
 ### 5.81 `preventDefault` が要るホイールは、自分で `{ passive: false }` を付けて張る
-- 正しい道: `useEffect` の中で `el.addEventListener('wheel', handler, { passive: false })` を張り、後片付けで外す。アプリ内の効く張り方に揃える（`src/ui/timeline/Timeline.tsx:557`、`src/ui/map/mount/input.ts:312`）。
+- 正しい道: `useEffect` の中で `el.addEventListener('wheel', handler, { passive: false })` を張り、後片付けで外す。アプリ内の効く張り方に揃える（`src/ui/timeline/Timeline.tsx` の `onWheelNative`、`src/ui/map/mount/input.ts` の `onWheel`）。
 - 誤った道の兆候: React の `onWheel` の中で `e.preventDefault()` を呼ぶ（React 17 以降は root へ passive で張るので無視）。ズームは効くのにページも一緒にスクロールし、コンソールに「Unable to preventDefault inside passive event listener invocation.」が 1 走行 96 件。
-- 確かめ方: `e2e/inc6-rail.spec.ts:910`（コンソールの `error` を集めて passive を数える）。これはレールだけを見る。`onWheel=` を Grep すると `src/ui/time/AnchorTimeBar.tsx:149` が同じ形で残っている（本番では描画されていない。lint にすれば類全体を捕まえられる）。
+- 確かめ方: `eslint.config.js` の `no-restricted-syntax`（条件は `scripts/test-lesson-rules.mjs` の `reactWheelRestrictedSyntax`）が、本体のコードの `onWheel=` を赤くする。実機は `e2e/inc6-rail.spec.ts` の「レールのホイールで passive のエラーが出ない」（コンソールの `error` を集めて passive を数える。レールだけを見る）。
 
 ### 5.84 `flex-basis` は `min-width: auto` に負ける ―― 予算を嵌めたつもりで嵌まっていない
 - 正しい道: 固定幅を嵌める区画には `min-width: 0` を併記し、TS 側の予算の定数と CSS の `flex-basis` が同じ数であることを全部（12 個あれば 12 個）契約テストで突き合わせる。

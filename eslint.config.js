@@ -16,6 +16,7 @@ import {
   RING_NESTING_OWNER_FILE,
   rawTextReadRestrictedSyntax,
   ringNestingRestrictedSyntax,
+  reactWheelRestrictedSyntax,
 } from './scripts/test-lesson-rules.mjs';
 
 // Layer dependency direction is fixed inward toward `domain`.
@@ -146,8 +147,14 @@ export default tseslint.config(
     files: ['src/**/*.{ts,tsx}'],
     ignores: [...UI_TEXT_TABLE_FILES, ...UI_TEXT_EXEMPT_FILES],
     rules: {
-      // 入れ子の写しの禁止（§5.44）も同じ規則の条件に足す。規則は後の設定が丸ごと上書きする。
-      'no-restricted-syntax': ['error', ...uiTextRestrictedSyntax(), ...ringNestingRestrictedSyntax()],
+      // 入れ子の写しの禁止（§5.44）と React の onWheel の禁止（§5.81）も同じ規則の条件に足す。
+      // 規則は後の設定が丸ごと上書きする。
+      'no-restricted-syntax': [
+        'error',
+        ...uiTextRestrictedSyntax(),
+        ...ringNestingRestrictedSyntax(),
+        ...reactWheelRestrictedSyntax(),
+      ],
     },
   },
   {

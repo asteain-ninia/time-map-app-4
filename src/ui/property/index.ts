@@ -26,11 +26,6 @@ export {
   type AnchorSectionProps,
 } from './AnchorSection';
 export { AnchorList, type AnchorListProps } from './AnchorList';
-export {
-  AnchorTimeBar,
-  type AnchorTimeBarProps,
-  DEFAULT_TIMEBAR_PIXELS,
-} from '../time/AnchorTimeBar';
 export { DetailPanel, type DetailPanelProps } from './DetailPanel';
 export {
   DetailDocumentSection,

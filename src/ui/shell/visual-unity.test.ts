@@ -155,7 +155,6 @@ describe('押された状態の色の組（教訓 5.104）', () => {
     ".parent-tree__pick[aria-selected='true']",
     '.knife-choice--selected',
     '.anchor-list__row--selected',
-    '.anchor-timebar__bar--selected',
   ]);
 
   it('押された・選ばれた状態で地を変えるなら、文字の色も一緒に書く', () => {
@@ -231,11 +230,11 @@ describe('文字の大きさの直値', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('10px のボタンは一覧の種別（56px の枠に種別名を入れる）と錨の時間棒（細い帯の中の年）だけ', () => {
+  it('10px のボタンは一覧の種別（56px の枠に種別名を入れる）だけ', () => {
     const offenders = allRules()
       .filter(({ body }) => decl(body, 'font-size') === '10px' && decl(body, 'cursor') === 'pointer')
       .map(({ selector }) => selector);
-    expect(offenders.sort()).toEqual(['.anchor-timebar__bar', '.ledger__kind']);
+    expect(offenders.sort()).toEqual(['.ledger__kind']);
   });
 });
 
