@@ -247,6 +247,85 @@ describe('集約地物を動かす確定', () => {
   });
 });
 
+describe('後の年の引き継ぎは、同じ頂点の座標を履歴の間で食い違わせない（GPT 審査の指摘）', () => {
+  const divergence = (root: DomainProject) =>
+    checkConsistency(root, calendar).inconsistencies.filter(
+      (i) => i.kind === INCONSISTENCY.VertexCoordinateDivergence,
+    );
+  const VS = [body('v', 5, 0), body('u', 5, 5)];
+  const A_FULL = [body('a0', 0, 0), ...VS, body('a3', 0, 5)];
+  const A_CUT = [body('a0', 0, 0), body('u', 5, 5), body('a3', 0, 5)];
+  const B_BODIES = [...VS, body('b1', 10, 0), body('b2', 10, 5)];
+  const aFull = (parent?: string) => leaf('A', parent, ['a0', 'v', 'u', 'a3']);
+  const aCut = (parent?: string) => leaf('A', parent, ['a0', 'u', 'a3']);
+  const bLeaf = (parent?: string) => leaf('B', parent, ['v', 'b1', 'b2', 'u']);
+  const aHistory = (parent?: string) =>
+    history('A', [
+      { year: 1000, features: [aFull(parent)], vertices: A_FULL },
+      { year: 1500, features: [aCut(parent)], vertices: A_CUT },
+      { year: 2000, features: [aFull(parent)], vertices: A_FULL },
+    ]);
+
+  it('集約地物: A が 1500 年に外して 2000 年に引き直す頂点も、B と同じ座標になる', () => {
+    const country = createAggregateFeature(fid('G'), ATTRS, COLOR, [fid('A'), fid('B')]);
+    const before = project([
+      history('G', [{ year: 1000, features: [country], vertices: [] }]),
+      aHistory('G'),
+      history('B', [{ year: 1000, features: [bLeaf('G')], vertices: B_BODIES }]),
+    ]);
+    expect(divergence(before)).toEqual([]);
+    const { after, proposal } = moveAggregate(before, 'G', 0.5, 0.5);
+    expect(divergence(after)).toEqual([]);
+    expect(coordinateIn(after, 'A', 2000, 'v')).toEqual(coord(5.5, 0.5));
+    expect(coordinateIn(after, 'B', 2000, 'v')).toEqual(coord(5.5, 0.5));
+    // 頂点を外している 1500 年の錨へ体を持ち込まない。
+    expect(coordinateIn(after, 'A', 1500, 'v')).toBeUndefined();
+    // 状態行の材料も同じ歩き方を通る（A の 2 本の錨）。
+    expect(reportVertexCarryForward(before, proposal, calendar).anchorCount).toBe(2);
+  });
+
+  it('普通の面の移動（B を動かす）でも同じ', () => {
+    const before = project([
+      aHistory(),
+      history('B', [{ year: 1000, features: [bLeaf()], vertices: B_BODIES }]),
+    ]);
+    const moved = [body('v', 5, -1), body('b1', 10, -1), body('b2', 10, 4), body('u', 5, 4)];
+    const after = applyEditProposal(
+      before,
+      createEditProposal(fid('B'), T, buildSnapshot({ feature: bLeaf(), vertices: moved })),
+      calendar,
+    );
+    expect(divergence(after)).toEqual([]);
+    expect(coordinateIn(after, 'A', 2000, 'v')).toEqual(coord(5, -1));
+  });
+
+  it('本当に動いた錨がある頂点は、全部の履歴がその年で止まる（ほかの履歴だけ先へ進まない）', () => {
+    // A は 1200 年に v を動かし、1800 年に元の座標へ戻す。C は 1800 年から元の座標で現れる。
+    const c = leaf('C', undefined, ['v', 'c1', 'c2']);
+    const cBodies = [body('v', 5, 0), body('c1', 8, -3), body('c2', 8, -6)];
+    const elsewhere = [body('a0', 0, 0), body('v', 4, -1), body('u', 5, 5), body('a3', 0, 5)];
+    const before = project([
+      history('A', [
+        { year: 1000, features: [aFull()], vertices: A_FULL },
+        { year: 1200, features: [aFull()], vertices: elsewhere },
+        { year: 1800, features: [aFull()], vertices: A_FULL },
+      ]),
+      history('C', [{ year: 1800, features: [c], vertices: cBodies }]),
+    ]);
+    expect(divergence(before)).toEqual([]);
+    const after = applyEditProposal(
+      before,
+      createEditProposal(fid('A'), T, buildSnapshot({ feature: aFull(), vertices: [body('v', 6, 1)] })),
+      calendar,
+    );
+    expect(divergence(after)).toEqual([]);
+    expect(coordinateIn(after, 'A', 1000, 'v')).toEqual(coord(6, 1));
+    expect(coordinateIn(after, 'A', 1200, 'v')).toEqual(coord(4, -1));
+    expect(coordinateIn(after, 'A', 1800, 'v')).toEqual(coord(5, 0));
+    expect(coordinateIn(after, 'C', 1800, 'v')).toEqual(coord(5, 0));
+  });
+});
+
 describe('隣への頂点の体の配り方', () => {
   it('地物 1 つの移動で、頂点を 1 つ共有するだけの隣へ、引いていない体を置いていかない', () => {
     const a = leaf('A', undefined, ['s', 'a1', 'a2']);

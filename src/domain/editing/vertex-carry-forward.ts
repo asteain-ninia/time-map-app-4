@@ -21,6 +21,12 @@
 // > 錨を順に見て、V の座標が **旧座標と等しい間は新座標に書き換え**、**最初に異なる座標を
 // > 持つ錨で止める**。止まる位置は頂点ごとに独立に決まる。
 //
+// **止まる年は頂点ごとに全部の履歴で 1 つ**（{@link limitCarriesAcrossHistories}）。読み込みの検査は
+// 同じ年の同じ id の座標が履歴の間で違うことを断るので、ある履歴だけ先に止めてはいけない。その錨に
+// 頂点が無いことは「動いた」ではないので、飛ばして先へ進む。無い錨で打ち切っていた頃は、いったん
+// 参照を外して同じ id を元の座標で引き直した面の後の年に旧座標が残り、引き続けている隣は新座標に
+// なって食い違った（GPT の審査が指摘し、普通の面の移動でも再現した）。
+//
 // つまり「意図しない巻き戻し」だけを消し、「本当に動かした記録」は 1 つも壊さない。
 // 書き換えた錨が何本あっても **1 回の操作＝1 つの取り消し単位**である（この module は
 // 系列を丸ごと作り替えて返すので、呼び出し側の 1 コマンドに収まる）。
@@ -49,6 +55,11 @@ export interface MovedVertexCarry {
   readonly id: VertexId;
   readonly before: WorldCoordinate;
   readonly after: WorldCoordinate;
+  /**
+   * どれかの履歴でこの頂点が本当に動く、いちばん早い年。この年から先の錨は書き換えない
+   * （{@link limitCarriesAcrossHistories} が決める）。無ければ履歴の中で動くまで進む。
+   */
+  readonly until?: TimePoint;
 }
 
 /**
@@ -68,6 +79,42 @@ export function movedVertexCarries(
     out.push({ id: v.id, before, after: v.coordinate });
   }
   return out;
+}
+
+/**
+ * 頂点ごとの止まる年を、**全部の履歴を見て** 決める。`T` より後ろの錨で旧座標と違う座標を持つ最初の
+ * 年が、その頂点の止まる年になる。履歴ごとに止まる年が違うと、同じ年の同じ id の座標が食い違う
+ * （読み込みの `VertexCoordinateDivergence`）。
+ *
+ * 渡すのは **編集の前の** 履歴。走査は全部の錨 × 動いた頂点。
+ */
+export function limitCarriesAcrossHistories(
+  allSeries: readonly AnchorSeries[],
+  baseTime: TimePoint,
+  carries: readonly MovedVertexCarry[],
+  calendar: Calendar,
+): readonly MovedVertexCarry[] {
+  if (carries.length === 0) return carries;
+  const until = new Map<VertexId, TimePoint>();
+  for (const series of allSeries) {
+    for (const entry of series.entries) {
+      if (compare(entry.start, baseTime, calendar) <= 0) continue;
+      const store = entry.anchor.snapshot.vertices;
+      for (const carry of carries) {
+        const held = getVertex(store, carry.id);
+        if (held === undefined || coordinatesEqual(held.coordinate, carry.before)) continue;
+        const known = until.get(carry.id);
+        if (known === undefined || compare(entry.start, known, calendar) < 0) {
+          until.set(carry.id, entry.start);
+        }
+      }
+    }
+  }
+  if (until.size === 0) return carries;
+  return carries.map((carry) => {
+    const limit = until.get(carry.id);
+    return limit === undefined ? carry : { ...carry, until: limit };
+  });
 }
 
 /**
@@ -91,13 +138,14 @@ function walkVertexCarryForward(
     const store = entry.anchor.snapshot.vertices;
     const applicable: MovedVertexCarry[] = [];
     for (const carry of [...carrying.values()]) {
-      const held = getVertex(store, carry.id);
-      if (held === undefined) {
-        // この錨はもうその頂点を持っていない。**黙って飛ばさず、その頂点はここで打ち切る**
-        // （飛ばすと、いったん参照が切れて再び現れた頂点の座標を勝手に書き換えてしまう）。
+      // ほかの履歴でこの頂点が本当に動く年まで来た。
+      if (carry.until !== undefined && compare(entry.start, carry.until, calendar) >= 0) {
         carrying.delete(carry.id);
         continue;
       }
+      const held = getVertex(store, carry.id);
+      // この錨はその頂点を持っていない。動いたわけではないので、後の錨へ進む。
+      if (held === undefined) continue;
       if (coordinatesEqual(held.coordinate, carry.before)) {
         applicable.push(carry);
         continue;

@@ -48,6 +48,7 @@ import type { TimePoint } from '../time/time-point';
 import { applyCarryForward, carriedAttributesOf } from './carry-forward';
 import {
   applyVertexCarryForward,
+  limitCarriesAcrossHistories,
   movedVertexCarries,
   vertexCarryForwardTargets,
   type MovedVertexCarry,
@@ -1732,9 +1733,11 @@ export function applyEditProposal(
   // ここで 1 度引けば全履歴に使える（食い違っていたら、それは既に壊れたデータである）。
   const beforeStore =
     effectiveBefore.kind === 'present' ? effectiveBefore.entry.anchor.snapshot.vertices : null;
-  const vertexCarries = movedVertexCarries(
-    movedVertices,
-    beforeBodiesOf(beforeStore, movedVertices),
+  const vertexCarries = limitCarriesAcrossHistories(
+    root.histories.map((h) => h.series),
+    anchorTime,
+    movedVertexCarries(movedVertices, beforeBodiesOf(beforeStore, movedVertices)),
+    calendar,
   );
 
   const updatedSeries = applyPastEdit(
@@ -1897,9 +1900,14 @@ function applyAggregateMove(
   anchorTime: TimePoint,
   calendar: Calendar,
 ): DomainProject {
-  const carries = movedVertexCarries(
-    movedVertices,
-    beforeBodiesAcrossHistories(root.histories, movedVertices, anchorTime, calendar),
+  const carries = limitCarriesAcrossHistories(
+    root.histories.map((h) => h.series),
+    anchorTime,
+    movedVertexCarries(
+      movedVertices,
+      beforeBodiesAcrossHistories(root.histories, movedVertices, anchorTime, calendar),
+    ),
+    calendar,
   );
   const histories = applyMovedVerticesToHistories(
     root.histories,
@@ -2276,14 +2284,19 @@ export function reportVertexCarryForward(
   const found = findHistoryContaining(root, featureId, anchorTime, calendar);
   if (found === undefined) return NO_VERTEX_CARRY_FORWARD;
   const effectiveBefore = resolveAt(found.history.series, anchorTime, calendar);
-  const carries = movedVertexCarries(
-    snapshot.vertices,
-    isAggregateMove(snapshot)
-      ? beforeBodiesAcrossHistories(root.histories, snapshot.vertices, anchorTime, calendar)
-      : beforeBodiesOf(
-          effectiveBefore.kind === 'present' ? effectiveBefore.entry.anchor.snapshot.vertices : null,
-          snapshot.vertices,
-        ),
+  const carries = limitCarriesAcrossHistories(
+    root.histories.map((h) => h.series),
+    anchorTime,
+    movedVertexCarries(
+      snapshot.vertices,
+      isAggregateMove(snapshot)
+        ? beforeBodiesAcrossHistories(root.histories, snapshot.vertices, anchorTime, calendar)
+        : beforeBodiesOf(
+            effectiveBefore.kind === 'present' ? effectiveBefore.entry.anchor.snapshot.vertices : null,
+            snapshot.vertices,
+          ),
+    ),
+    calendar,
   );
   if (carries.length === 0) return NO_VERTEX_CARRY_FORWARD;
   let anchorCount = 0;
