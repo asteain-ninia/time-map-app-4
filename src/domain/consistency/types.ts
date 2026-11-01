@@ -85,6 +85,12 @@ export interface Conflict {
   readonly kind: ConflictKind;
   /** The in-story time (point or range) at which the conflict holds. */
   readonly time: ConflictTime;
+  /**
+   * 解決を掛ける年（古い順）。形の編集の検出だけが入れる。後の年にだけ重なる組は、押した年に片方が
+   * 居ないので、押した年では削れない。無ければ確定の年に掛ける。同じ組が続く年は、どちらかの形が
+   * 変わる年だけが入る（削った形は次の錨まで続く）。
+   */
+  readonly slices?: readonly TimePoint[];
   /** The two terminal features that overlap. */
   readonly a: ConflictParticipant;
   readonly b: ConflictParticipant;

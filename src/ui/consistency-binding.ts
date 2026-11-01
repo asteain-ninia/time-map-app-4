@@ -29,6 +29,8 @@ import {
   type Resolution,
   type TimeCheckResult,
   type SpatialCheckResult,
+  conflictFromOverlapPair,
+  conflictIdFor,
   conflictsFromOverlapPairs,
   createEditProposal,
 } from '../domain/consistency/index';
@@ -84,6 +86,7 @@ import { buildForest } from '../domain/hierarchy/forest';
 import {
   extractTerminalShapes,
   createTerminalShapeCache,
+  type TerminalShape,
   type TerminalShapeCache,
 } from '../domain/spatial/index';
 import { detectTerminalOverlaps, type OverlapPair } from '../domain/spatial/index';
@@ -104,7 +107,9 @@ import {
 import { createShape } from '../domain/ring';
 import { createVertexStore, getVertex, type Vertex, type VertexStore } from '../domain/vertex';
 import { buildWeldIndex, weldRingVertices, type WeldIndex } from '../domain/vertex-weld';
+import { compare as compareTime } from '../domain/time/normalized';
 import type { TimePoint } from '../domain/time/time-point';
+import { distinctAnchorTimes } from '../domain/persistence/consistency';
 import {
   PARTICIPANT_NAME_STRINGS,
   createdAtOf,
@@ -391,6 +396,34 @@ function changedFeatureIdsAt(
 }
 
 /**
+ * その編集の結果が効く、押した年より後の時刻の切れ目（読み込みの検査と同じ {@link distinctAnchorTimes}）。
+ * 書き換えた錨の開始年だけでは足りない: 外の地物が後の年に現れるだけなら、押した年の錨がその年まで
+ * 続いて重なる。書き換えた錨が効いている区間に入る切れ目を全部返す。
+ */
+function laterSliceTimes(committed: DomainRoot, result: DomainRoot, time: TimePoint): readonly TimePoint[] {
+  const priorById = new Map(committed.histories.map((h) => [h.featureId, h]));
+  const reach: { readonly from: TimePoint; readonly to: TimePoint | null }[] = [];
+  for (const history of result.histories) {
+    const prior = priorById.get(history.featureId);
+    if (prior === history) continue;
+    const priorAnchors = new Set(prior?.series.entries.map((e) => e.anchor) ?? []);
+    history.series.entries.forEach((entry, i, entries) => {
+      if (priorAnchors.has(entry.anchor)) return;
+      reach.push({ from: entry.start, to: entry.end ?? entries[i + 1]?.start ?? null });
+    });
+  }
+  if (reach.length === 0) return [];
+  return distinctAnchorTimes(result.histories, calendar).filter(
+    (t) =>
+      compareTime(t, time, calendar) > 0 &&
+      reach.some(
+        (r) =>
+          compareTime(t, r.from, calendar) >= 0 && (r.to === null || compareTime(t, r.to, calendar) < 0),
+      ),
+  );
+}
+
+/**
  * 形を変える編集（輪郭の道具・頂点のドラッグ・面の移動・辺からの頂点の追加）の検出。
  * **形の変わった面の重なりが、確定済みの形より増えた組だけ** を競合にする（B97 / B98）。
  *
@@ -406,38 +439,108 @@ function changedFeatureIdsAt(
  */
 function introducedOverlapsDetector(committedCache: TerminalShapeCache): SpatialDetectorFor {
   return (access, proposal, cache) => (resultState) => {
-    const time = proposal.anchorTime;
+    const anchor = proposal.anchorTime;
     const committed = access.getRoot();
-    const involved = changedFeatureIdsAt(committed, resultState, time);
-    if (involved.size === 0) return [];
-    const overlapsInvolving = (
-      root: DomainRoot,
-      terminalCache: TerminalShapeCache | undefined,
-    ): readonly OverlapPair[] =>
-      detectTerminalOverlaps(
-        extractTerminalShapes(
-          buildForest(featuresAt(root, time)),
-          verticesAt(root, time),
-          terminalCache,
-        ),
+    const found = new Map<string, FoundOverlap>();
+    // 前の切れ目の形と重なり。どちらの形も変わっていない組は調べ直さない（実データの切れ目はほとんどが
+    // 遠くの地物の改名なので、切れ目ごとに全部の組を調べると確定が固まる）。
+    let previous: SliceOverlaps | undefined;
+    for (const time of [anchor, ...laterSliceTimes(committed, resultState, anchor)]) {
+      const involved = changedFeatureIdsAt(committed, resultState, time);
+      const terminals = extractTerminalShapes(
+        buildForest(featuresAt(resultState, time)),
+        verticesAt(resultState, time),
+        cache,
+      );
+      const slice = overlapsAtSlice(terminals, involved, previous);
+      previous = slice;
+      // ふつうは重なりが無い。そのときは確定済みの形を調べない。
+      if (slice.pairs.length === 0) continue;
+      const before = detectTerminalOverlaps(
+        extractTerminalShapes(buildForest(featuresAt(committed, time)), verticesAt(committed, time), committedCache),
         { onlyInvolving: involved },
       );
-    const pairs = overlapsInvolving(resultState, cache);
-    // ふつうは重なりが無い。そのときは確定済みの形を調べない。
-    if (pairs.length === 0) return [];
-    const before = overlapsInvolving(committed, committedCache);
-    const introduced = pairs.filter((pair) => {
-      const prior = before.find((p) => p.a === pair.a && p.b === pair.b);
-      if (prior === undefined) return true;
-      const grown = difference(pair.overlap, prior.overlap);
-      // 比べられないなら止める側へ倒す（重なりを黙って通さない）。
-      return !isOk(grown) || !isMultiPolygonEmpty(grown.result);
-    });
-    return conflictsFromOverlapPairs(introduced, displayNamesAt(resultState, time), () => ({
-      kind: 'point',
-      at: time,
+      const introduced = slice.pairs.filter((pair) => {
+        const prior = before.find((p) => p.a === pair.a && p.b === pair.b);
+        if (prior === undefined) return true;
+        const grown = difference(pair.overlap, prior.overlap);
+        // 比べられないなら止める側へ倒す（重なりを黙って通さない）。
+        return !isOk(grown) || !isMultiPolygonEmpty(grown.result);
+      });
+      for (const pair of introduced) {
+        const id = conflictIdFor(pair.a, pair.b);
+        const known = found.get(id);
+        if (known === undefined) {
+          found.set(id, { pair, names: displayNamesAt(resultState, time), from: time, to: time, slices: [time] });
+          continue;
+        }
+        known.to = time;
+        if (slice.fresh.has(id)) known.slices.push(time);
+      }
+    }
+    return [...found.values()].map(({ pair, names, from, to, slices }) => ({
+      ...conflictFromOverlapPair(pair, names, () =>
+        from === to ? { kind: 'point', at: from } : { kind: 'range', from, to },
+      ),
+      slices,
     }));
   };
+}
+
+/** 検出の途中の、組ごとの覚え。`from` の年の重なりと名前を板に見せる。 */
+interface FoundOverlap {
+  readonly pair: OverlapPair;
+  readonly names: (id: FeatureId) => string;
+  readonly from: TimePoint;
+  to: TimePoint;
+  readonly slices: TimePoint[];
+}
+
+/** 1 つの切れ目の末端の形と、形の変わった面の重なり。 */
+interface SliceOverlaps {
+  readonly shapes: ReadonlyMap<FeatureId, GeoMultiPolygon>;
+  readonly involved: ReadonlySet<FeatureId>;
+  readonly pairs: readonly OverlapPair[];
+  /** この切れ目で調べ直した組（前の切れ目からそのまま続く組は入らない）。 */
+  readonly fresh: ReadonlySet<string>;
+}
+
+function sameIds(a: ReadonlySet<FeatureId>, b: ReadonlySet<FeatureId>): boolean {
+  if (a.size !== b.size) return false;
+  for (const id of a) if (!b.has(id)) return false;
+  return true;
+}
+
+/**
+ * 切れ目 1 つの重なり（形の変わった面 `involved` を含む組）。形は覚え（`TerminalShapeCache`）から同じ
+ * オブジェクトで返るので、前の切れ目と同一なら形も同じ。どちらの形も変わっていない組は前の結果を使う。
+ */
+function overlapsAtSlice(
+  terminals: readonly TerminalShape[],
+  involved: ReadonlySet<FeatureId>,
+  previous: SliceOverlaps | undefined,
+): SliceOverlaps {
+  const shapes = new Map(terminals.map((t) => [t.id, t.shape]));
+  const changed = new Set<FeatureId>();
+  if (previous !== undefined) {
+    for (const [id, shape] of shapes) if (previous.shapes.get(id) !== shape) changed.add(id);
+    for (const id of previous.shapes.keys()) if (!shapes.has(id)) changed.add(id);
+  }
+  if (involved.size === 0) return { shapes, involved, pairs: [], fresh: new Set() };
+  const movedShapeChanged = [...involved].some((id) => changed.has(id));
+  const reusable =
+    previous !== undefined && !movedShapeChanged && sameIds(involved, previous.involved);
+  const checked = detectTerminalOverlaps(
+    reusable ? terminals.filter((t) => involved.has(t.id) || changed.has(t.id)) : terminals,
+    { onlyInvolving: involved },
+  );
+  const fresh = new Set(checked.map((p) => conflictIdFor(p.a, p.b)));
+  const kept = reusable
+    ? previous.pairs.filter(
+        (p) => !changed.has(p.a) && !changed.has(p.b) && !fresh.has(conflictIdFor(p.a, p.b)),
+      )
+    : [];
+  return { shapes, involved, pairs: [...kept, ...checked], fresh };
 }
 
 /**
@@ -676,11 +779,16 @@ function applyResolutionAt(
 ): (state: DomainRoot, conflict: Conflict, resolution: Resolution) => DomainRoot | undefined {
   const nextVertexId = access.nextVertexId;
   const nextRingId = access.nextRingId;
-  return (state, _conflict, resolution) => {
+  const trimAt = (
+    state: DomainRoot,
+    time: TimePoint,
+    resolution: Resolution,
+    onlyIfStillOverlapping: boolean,
+  ): DomainRoot | undefined => {
     if (nextVertexId === undefined || nextRingId === undefined) return undefined;
     const adjustId = resolution.adjustFeatureId;
-    const features = featuresAt(state, anchorTime);
-    const vertices = verticesAt(state, anchorTime);
+    const features = featuresAt(state, time);
+    const vertices = verticesAt(state, time);
     // Index the effective-feature list ONCE into a Map for O(1) lookups: this
     // closure is invoked up to maxRounds × #conflicts times in the convergence
     // loop (orchestrator U06), and the previous two Array.find scans were each
@@ -696,6 +804,16 @@ function applyResolutionAt(
     const adjustArea = resolveLeafShape(adjust.shape, vertices);
     const priorityArea = resolveLeafShape(priority.shape, vertices);
     if (adjustArea === undefined || priorityArea === undefined) return undefined;
+    // 前の年の解決で削った形がこの年まで続いているなら、もう重なっていない（錨を増やさない）。
+    if (
+      onlyIfStillOverlapping &&
+      detectTerminalOverlaps([
+        { id: adjustId, shape: adjustArea },
+        { id: priority.id, shape: priorityArea },
+      ]).length === 0
+    ) {
+      return state;
+    }
 
     // 面の全部の周で引き、引けたことを確かめ、集合演算が消した点を打ち直す（B108・B105）。処理は
     // 分け残しと同じ 1 本（開発ガイド §5.44）。引いた結果を整列し直さない（1 つの連続の枠にある）。
@@ -728,7 +846,18 @@ function applyResolutionAt(
     if (!shapeKeepsArea(built.shape, built.vertices, subtracted.area)) return undefined;
 
     const trimmed: LeafFeature = withLeafShape(adjust, built.shape);
-    return rewriteFeatureAtTime(state, adjustId, anchorTime, trimmed, built.vertices);
+    return rewriteFeatureAtTime(state, adjustId, time, trimmed, built.vertices);
+  };
+  // 重なりが見つかった年に掛ける。後の年にだけ重なる相手は押した年に居ないので、押した年では削れない。
+  return (state, conflict, resolution) => {
+    const times = conflict.slices ?? [anchorTime];
+    let work: DomainRoot = state;
+    for (const time of times) {
+      const next = trimAt(work, time, resolution, times.length > 1);
+      if (next === undefined) return undefined;
+      work = next;
+    }
+    return work;
   };
 }
 
