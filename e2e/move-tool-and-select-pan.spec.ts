@@ -14,6 +14,7 @@ import { test, expect, type Page } from '@playwright/test';
 
 import { SYNTHETIC_NEST_PARENT_ID } from '../src/ui/e2e/synthetic-project';
 import { APP_STRINGS } from '../src/ui/shell/strings';
+import { RING_BREAK_PHRASE_TEXT } from '../src/ui/strings';
 import {
   addInputLayerBox,
   armVertexTool,
@@ -412,7 +413,7 @@ test.describe('隠したあと選んだままの地物', () => {
 test.describe('裁定 2026-11-01: ［動かす］（実データの全体図）', () => {
   test.skip(!existsSync(canonicalPath), `実データが無い (${canonicalPath})`);
 
-  test('小さな国の内側を押すと国が選ばれ、一覧は出ず、引くと国全体が動く形で重なりの検査へ進む', async () => {
+  test('小さな国の内側を押すと国が選ばれ、一覧は出ず、引くと国全体が動く形で確定の検査へ進む', async () => {
     test.setTimeout(180_000);
     const dir = mkdtempSync(join(tmpdir(), 'gimoza-move-tool-'));
     const copy = join(dir, REAL_DATA_FILE);
@@ -442,18 +443,14 @@ test.describe('裁定 2026-11-01: ［動かす］（実データの全体図）'
 
       const before = await committedVertices(page, report.id);
       const cam = await liveCamera(page);
-      // 隣と接している国なので、10px（10 度）ずらすと重なって板で止まる（確定の検査を通った証拠）。
+      // 隣と接している国なので、10px（10 度）ずらすと共有頂点を引かれた隣の輪郭が交わって断る
+      // （確定の検査を通った証拠。FR-32）。
       await drag(page, at, 10, 0);
-      await expect(page.getByTestId('conflict-dialog')).toBeVisible();
+      await expect(page.getByTestId('statusbar-result')).toContainText(RING_BREAK_PHRASE_TEXT.selfCross);
+      await expect(page.getByTestId('conflict-dialog')).toHaveCount(0);
       await expect(page.getByTestId('vertex-candidates')).toHaveCount(0);
       expect(await committedVertices(page, report.id)).toEqual(before);
       expect(await liveCamera(page)).toEqual(cam);
-
-      const guide = page.getByTestId('conflict-guide');
-      if (await guide.isVisible()) await page.getByTestId('conflict-guide-close').click();
-      await page.getByTestId('conflict-cancel').click();
-      await expect(page.getByTestId('conflict-dialog')).toHaveCount(0);
-      expect(await committedVertices(page, report.id)).toEqual(before);
     } finally {
       await app.close();
     }

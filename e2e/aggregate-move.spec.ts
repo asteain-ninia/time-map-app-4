@@ -11,6 +11,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 import { SYNTHETIC_MOVE_IDS as IDS } from '../src/ui/e2e/synthetic-project';
 import { APP_STRINGS } from '../src/ui/shell/strings';
+import { RING_BREAK_PHRASE_TEXT } from '../src/ui/strings';
 import {
   committedVertices,
   jumpToYear,
@@ -348,6 +349,27 @@ test.describe('［動かす］で集約地物を引く', () => {
       await page.getByTestId(STATUS).click();
       await page.keyboard.press('Control+z');
       await expect.poll(() => shapes(page)).toEqual(before);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('不動の頂点の向こうへ引いて州の輪郭が交わる形は確定せず、理由を言い、何も残らない', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await ready(page, 1000);
+      await armAndSelect(page, INSIDE_B, IDS.federation);
+      const before = await shapes(page);
+      const stats = await projectStats(page);
+      const canUndo = await page.getByTestId('app-can-undo').textContent();
+
+      // 州 A の左下 mv-b0 は街道と共有して動かない。それを挟んで残りが向こう側へ越える。
+      await drag(page, INSIDE_B, -30, -10);
+      await expect(page.getByTestId(STATUS)).toContainText(RING_BREAK_PHRASE_TEXT.selfCross);
+      await expect(page.getByTestId('conflict-dialog')).toHaveCount(0);
+      expect(await shapes(page)).toEqual(before);
+      expect(await projectStats(page)).toEqual(stats);
+      await expect(page.getByTestId('app-can-undo')).toHaveText(canUndo ?? '');
     } finally {
       await app.close();
     }

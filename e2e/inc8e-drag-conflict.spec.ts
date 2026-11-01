@@ -28,7 +28,9 @@ import { test, expect, type Locator, type Page } from '@playwright/test';
 import {
   addInputLayerBox,
   armAddAreaTool,
+  commitOneFace,
   committedVertices,
+  DEFAULT_FACE_HALF,
   drawFace,
   enterEditMode,
   jumpToYear,
@@ -40,6 +42,7 @@ import {
   vertexHandlePositions,
   type ScreenPoint,
 } from './helpers';
+import { RING_BREAK_PHRASE_TEXT } from '../src/ui/strings';
 
 /** 中心 (cx, cy)・半幅 hw・半高 hh の長方形の 4 隅（左上から時計回り）。 */
 function rect(cx: number, cy: number, hw: number, hh: number): readonly ScreenPoint[] {
@@ -486,6 +489,26 @@ test.describe('B98 — 頂点のドラッグ・面の移動の確定は重なり
     }
   });
 
+  test('頂点を向かいの辺の外へ引いて輪郭が交わる形は確定せず、理由を言い、形も履歴も変わらない（FR-32）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      const { faceId, corners, cx, cy } = await commitOneFace(page);
+      await selectWithTool(page, cx, cy, faceId, 'tool-edit.vertex');
+      const before = await committedVertices(page, faceId);
+      const undo = await page.getByTestId('app-can-undo').textContent();
+
+      const [x, y] = corners[0]!;
+      await drag(page, x, y, cx + DEFAULT_FACE_HALF * 2, cy);
+
+      await expect(page.getByTestId('statusbar-result')).toContainText(RING_BREAK_PHRASE_TEXT.selfCross);
+      await expect(page.getByTestId('conflict-dialog')).toHaveCount(0);
+      expect(await committedVertices(page, faceId)).toEqual(before);
+      await expect(page.getByTestId('app-can-undo')).toHaveText(undo ?? '');
+    } finally {
+      await app.close();
+    }
+  });
+
   test('重なりを作らないドラッグは止めない（頂点を内へ・面を空の所へ）', async () => {
     const { app, page } = await launchApp();
     try {
@@ -545,7 +568,7 @@ async function worldToScreen(
 test.describe('B98 — 実データのコピーで', () => {
   test.skip(!existsSync(canonicalPath), `実データ ${REAL_DATA_FILE} が無い`);
 
-  test('頂点を内へ寄せる普通のドラッグは板を出さず、面の移動は隣との重なりで止まり、どちらも待たせない', async () => {
+  test('頂点を内へ寄せる普通のドラッグは板を出さず、大きな面の移動は隣の輪郭が交わるので断り、どちらも待たせない', async () => {
     test.setTimeout(180_000);
     const dir = mkdtempSync(join(tmpdir(), 'gimoza-drag-conflict-'));
     const copy = join(dir, REAL_DATA_FILE);
@@ -595,16 +618,14 @@ test.describe('B98 — 実データのコピーで', () => {
       await expect.poll(async () => (await liveCamera(page)).zoom).toBeLessThan(50);
       const [mx, my] = (await worldToScreen(page))(96.6, 57.37);
 
-      // 面の移動: 隣と接している国を 10px ずらすと重なるので、板で止まる。
+      // 面の移動: 隣と接している国を全体図で 10px ずらすと、共有頂点を引かれた隣の輪郭が交わるので
+      // 断る（FR-32。重なりの板より前の検査。板で止まる形は合成の面で上の検査が見ている）。
       await page.getByTestId('tool-edit.move').click();
       started = Date.now();
       await drag(page, mx, my, mx + 10, my);
-      await expect(page.getByTestId('conflict-dialog')).toBeVisible();
+      await expect(page.getByTestId('statusbar-result')).toContainText(RING_BREAK_PHRASE_TEXT.selfCross);
       const moveMs = Date.now() - started;
-      console.log(`[B98] 実データの面の移動が板で止まるまで ${String(moveMs)}ms`);
-      expect(await drawnShapes(page)).toEqual(before);
-      await closeGuideIfShown(page);
-      await page.getByTestId('conflict-cancel').click();
+      console.log(`[B98] 実データの面の移動を断るまで ${String(moveMs)}ms`);
       await expect(page.getByTestId('conflict-dialog')).toHaveCount(0);
       expect(await drawnShapes(page)).toEqual(before);
       // 待ち時間は記録するだけ（`knife-v10-real.spec.ts` の B97 と同じ）。混んだ全件ゲートでは

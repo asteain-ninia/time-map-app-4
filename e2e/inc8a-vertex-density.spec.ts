@@ -19,6 +19,8 @@ import { fileURLToPath } from 'node:url';
 
 import { expect, test, type Page } from '@playwright/test';
 
+import { RING_BREAK_PHRASE_TEXT } from '../src/ui/strings';
+
 import {
   armVertexTool,
   DEFAULT_FACE_HALF,
@@ -129,17 +131,23 @@ async function grabTargetedVertex(
   await page.mouse.down();
   await page.mouse.move(at.x + dx / 2, at.y + dy / 2);
   await page.mouse.move(at.x + dx, at.y + dy);
+  // 引いている間に動いた印は、狙いの頂点ただ 1 つ。
   await expect
     .poll(async () => {
       const during = new Set((await vertexHandlePositions(page)).map(key));
-      return before.filter((p) => !during.has(key(p))).length;
+      return before.filter((p) => !during.has(key(p))).map(key);
     })
-    .toBe(1);
+    .toEqual([key(committedBefore.get(expectedId)!)]);
   await page.mouse.up();
-  // 確定したデータを id で照合する: 変わったのは狙いの頂点ただ 1 つ。
+  // 離したら、確定したデータを id で照合する: 変わったのは狙いの頂点ただ 1 つ。
+  // 頂点が密な所では 6px で隣の辺を越えて輪郭が交わることがあり、そのときは断る（FR-32）。何も変わらない。
+  const refused = page.getByTestId('statusbar-result').filter({ hasText: RING_BREAK_PHRASE_TEXT.selfCross });
   await expect
-    .poll(async () => changedVertexIds(committedBefore, await committedVertices(page, featureId)))
-    .toEqual([expectedId]);
+    .poll(async () => {
+      const changed = changedVertexIds(committedBefore, await committedVertices(page, featureId));
+      return (await refused.count()) > 0 ? changed.length === 0 : changed.join() === expectedId;
+    })
+    .toBe(true);
   return { usedList };
 }
 
