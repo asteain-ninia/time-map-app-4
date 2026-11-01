@@ -17,6 +17,8 @@ import {
   type ConflictsPendingResult,
   type ProcessResult,
 } from '../domain/consistency/index';
+import { parentNone as affiliationParentNone } from '../domain/affiliation/decision';
+import { buildAffiliationProposalForTargets } from '../domain/affiliation/proposal';
 import { createCoordinate } from '../domain/coordinate';
 import { drillRegion, DRILL_STATUS, toEditProposal as drillToEdit } from '../domain/drill/index';
 import { freshIdPorts as drillIds } from '../domain/drill/fixtures';
@@ -38,7 +40,7 @@ import {
   propertyNew,
   toMergeEditProposal,
 } from '../domain/merge/index';
-import { applyEditProposal } from '../domain/editing/apply-proposal';
+import { applyEditProposal, toAffiliationEditProposal } from '../domain/editing/apply-proposal';
 import { moveVertexSet, planAggregateMove } from '../domain/editing/move';
 import {
   createAggregateFeature,
@@ -49,6 +51,7 @@ import {
 } from '../domain/feature';
 import { createGeoParams } from '../domain/geo/geo-params';
 import { storedCoordinate } from '../domain/geo/seam';
+import { createIdGeneratorState } from '../domain/id-generator';
 import { asAnchorId, asFeatureId, asRingId, asVertexId, type FeatureId } from '../domain/ids';
 import { checkConsistency, INCONSISTENCY } from '../domain/persistence/consistency';
 import type { FeatureHistory } from '../domain/persistence/serialize';
@@ -58,6 +61,7 @@ import { timePointYear } from '../domain/time/time-point';
 import { createVertex, createVertexStore, getVertex, withVertexCoordinate, type Vertex } from '../domain/vertex';
 import {
   createLiveAddBinding,
+  createLiveAffiliationBinding,
   createLiveDrillBinding,
   createLiveKnifeBinding,
   createLiveMergeBinding,
@@ -507,5 +511,41 @@ describe('移動のほかの確定も、後の年の重なりを板で止める'
     );
     if (result.status !== PROCESS_STATUS.Committed) throw new Error(result.status);
     expect(loadIssues(result.state)).toEqual([]);
+  });
+
+  describe('所属変更: 子が全部去って親の面が末端に戻る', () => {
+    /** 親 P は経度 0〜10、子 L は P の隅。`others` は P の中に居る面。 */
+    function detach(others: readonly FeatureHistory[], otherFeatures: readonly Feature[], otherBodies: readonly Vertex[]) {
+      const p = leaf('P');
+      const l = leaf('L', 4, 'P');
+      const pBodies = bodies('p', box(0, 10, 0, 10));
+      const lBodies = bodies('l', box(0, 2, 0, 2));
+      const root = project([
+        history('P', [{ year: 1000, features: [p], vertices: pBodies }]),
+        history('L', [{ year: 1000, features: [l], vertices: lBodies }]),
+        ...others,
+      ]);
+      const built = buildAffiliationProposalForTargets([p, l, ...otherFeatures], [l.id], affiliationParentNone, {
+        idState: createIdGeneratorState(),
+        now: () => 1,
+        vertexStore: createVertexStore([...pBodies, ...lBodies, ...otherBodies]),
+      });
+      if (built.status !== 'proposal') throw new Error(built.status);
+      return paused(createLiveAffiliationBinding(access(root)).startProcess(toAffiliationEditProposal(built.proposal, T)));
+    }
+
+    it('押した年に親の中に居る第三の面との重なりも言う（形の変わった面だけ見て落とさない）', () => {
+      const x = leaf('X');
+      const xBodies = bodies('x', box(5, 9, 5, 9));
+      const first = detach([history('X', [{ year: 1000, features: [x], vertices: xBodies }])], [x], xBodies);
+      expect(first.conflicts.map((c) => c.id).sort()).toEqual(['L__P', 'P__X']);
+    });
+
+    it('後の年に親の中へ現れる面との重なりも言う', () => {
+      const x = leaf('X');
+      const first = detach([history('X', [{ year: 1500, features: [x], vertices: bodies('x', box(5, 9, 5, 9)) }])], [], []);
+      const later = first.conflicts.find((c) => c.id === 'P__X');
+      expect(later?.slices).toEqual([timePointYear(1500)]);
+    });
   });
 });

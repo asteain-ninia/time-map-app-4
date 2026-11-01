@@ -372,7 +372,7 @@ const detectAllOverlaps: SpatialDetectorFor = (_access, proposal, cache) =>
  * `TerminalShapeCache` と同じ、参照の同一性による判定）。
  *
  * 経路（どの道具が何を掴んだか）ではなく結果の状態から決める（教訓 5.6）: 共有頂点を動かせば
- * 掴んでいない隣の面も入り、面を消す提案なら何も入らない。
+ * 掴んでいない隣の面も入り、面を消す提案なら何も入らない。子が全部去って末端に戻った面も入る。
  */
 function changedFeatureIdsAt(
   before: DomainRoot,
@@ -383,9 +383,15 @@ function changedFeatureIdsAt(
   for (const f of featuresAt(before, time)) beforeById.set(f.id, f);
   const beforeStore = verticesAt(before, time);
   const afterStore = verticesAt(after, time);
+  const parentsOf = (features: readonly Feature[]): ReadonlySet<FeatureId | undefined> =>
+    new Set(features.map((f) => f.parentId));
+  const parentsBefore = parentsOf(featuresAt(before, time));
+  const afterFeatures = featuresAt(after, time);
+  const parentsAfter = parentsOf(afterFeatures);
   const changed = new Set<FeatureId>();
-  for (const feature of featuresAt(after, time)) {
-    if (beforeById.get(feature.id) !== feature) {
+  for (const feature of afterFeatures) {
+    // 子が全部去った面は、記録が同じでも末端に戻り、その形で重なるようになる。
+    if (beforeById.get(feature.id) !== feature || (parentsBefore.has(feature.id) && !parentsAfter.has(feature.id))) {
       changed.add(feature.id);
       continue;
     }
