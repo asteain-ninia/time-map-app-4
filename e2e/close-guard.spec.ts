@@ -24,7 +24,11 @@
 //     quit 経路の状態機械は close-guard.test.ts の単体テストで固定している（教訓 5.41
 //     の二重固め: E2E が赤いとき「UI 結線」か「ガード判定」かを切り分けられる）。
 
-import { test, expect, type ElectronApplication, type Page } from '@playwright/test';
+import type { ChildProcess } from 'node:child_process';
+
+import { test, expect, type ElectronApplication, type Locator, type Page } from '@playwright/test';
+
+import { CLOSE_GUARD_LOG } from '../src/shell/main/close-guard-log';
 
 import { launchApp, commitOneFace } from './helpers';
 import { FRESH_LAUNCH } from './shared-launch';
@@ -81,6 +85,53 @@ function unsavedDialog(page: Page) {
   return page.getByTestId('unsaved-dialog');
 }
 
+/**
+ * main プロセスの標準エラーを集める（close ガードの判断は `console.warn` でここへ出る）。
+ * 標準エラーの管はプロセスの外にあるので、アプリが終わったあとでも読める。
+ */
+function collectMainLog(mainProcess: ChildProcess): () => string {
+  const stderr = mainProcess.stderr;
+  if (stderr === null) throw new Error('main プロセスの標準エラーが読めない');
+  const chunks: Buffer[] = [];
+  stderr.on('data', (chunk: Buffer) => chunks.push(chunk));
+  return () => Buffer.concat(chunks).toString('utf8');
+}
+
+/**
+ * 押すとアプリが終わるボタンを押す。
+ *
+ * 押すと 本体 → ウィンドウを閉じる まで進むので、`click` の完了の知らせが届く前に接続が
+ * 切れて、`click` が「閉じられた」で失敗することがある（CPU に余裕がないと 600 回中 5 回）。
+ * アプリの不具合ではなく検査の競合なので、この失敗だけを許す。ただし「閉じられた」は押す前に
+ * アプリが落ちても出るので、失敗の種類だけでは「押した」と読まない:
+ *   - 押す前の失敗は、実際には押さない試し押し（見える・押せる・覆われていない）で赤にする。
+ *   - 押したことは、本体の「許可されたので閉じる」の記録で読む。押す前にはその記録が無いことを
+ *     見ておき、押したあとに出なければ、`click` の失敗も添えて赤にする。
+ */
+async function pressButtonThatEndsApp(
+  button: Locator,
+  mainLog: () => string,
+): Promise<void> {
+  expect(mainLog(), '押す前に本体が許可の記録を出している').not.toContain(CLOSE_GUARD_LOG.allowed);
+  await button.click({ trial: true });
+
+  const clickError = await button.click().then(
+    () => null,
+    (error: unknown) => (error instanceof Error ? error : new Error(String(error))),
+  );
+  if (clickError !== null && !clickError.message.includes(PAGE_CLOSED_MESSAGE)) throw clickError;
+
+  await expect
+    .poll(mainLog, {
+      message: `押したのに本体が許可の記録を出さない（click の結果: ${clickError?.message ?? '成功'}）`,
+      timeout: 15_000,
+    })
+    .toContain(CLOSE_GUARD_LOG.allowed);
+}
+
+/** ページが閉じたときの Playwright の文。これ以外の `click` の失敗は許さない。 */
+const PAGE_CLOSED_MESSAGE = 'Target page, context or browser has been closed';
+
 test.describe('FR-107 終了確認ガード（close ブリッジ）', { annotation: FRESH_LAUNCH }, () => {
   test('未保存のまま閉じようとすると閉じず、未保存警告が出る（キャンセルで開いたまま）', async () => {
     const { app, page } = await launchApp();
@@ -132,15 +183,21 @@ test.describe('FR-107 終了確認ガード（close ブリッジ）', { annotati
   test('「保存せずに続行」を選ぶと実際に閉じる（ガードは通せんぼではない）', async () => {
     const { app, page } = await launchApp();
     try {
+      // 終わったあとは `app.process()` が読めないので、先に取っておく。
+      const mainProcess = app.process();
+      const mainLog = collectMainLog(mainProcess);
       await commitOneFace(page);
       await requestClose(app);
       await expect(unsavedDialog(page)).toBeVisible();
 
-      await page.getByTestId('unsaved-discard').click();
+      await pressButtonThatEndsApp(page.getByTestId('unsaved-discard'), mainLog);
 
-      // 許可 → main が one-shot フラグ付きで再 close → ウィンドウが消える。
+      // 許可 → main が one-shot フラグ付きで再 close → ウィンドウが消え、アプリが正常に終わる。
       await expect
         .poll(async () => app.windows().length, { timeout: 15_000 })
+        .toBe(0);
+      await expect
+        .poll(() => mainProcess.exitCode, { timeout: 15_000 })
         .toBe(0);
     } finally {
       await app.close().catch(() => undefined);
