@@ -47,7 +47,7 @@ paths:
 ### 5.66 オフスクリーンで描いていても、`show()` を呼べばウィンドウは前面に出る
 - 正しい道: オフスクリーンにする条件とウィンドウを出す条件を同じ 1 つの述語から導く（`src/shell/main/headless-window.ts` の `isHeadlessRun` と `windowRevealAction`。旗は `E2E_TEST`／`SMOKE_TEST`／`E2E_OFFSCREEN`）。`show: false` のまま放っておけば前面に出ない。
 - 誤った道の兆候: 起動モードの旗で「どう描くか」だけ分岐し、`ready-to-show` → `show()` が無条件（OS のフォーカスまで奪う。E2E は 1 テスト＝Electron 1 起動 × ワーカー 6 本で、利用者が PC で他の作業をできなくなった）。「テストが緑だから問題ない」（占有の副作用は成否に現れない）。音・通知・タスクバー表示・最前面固定・スクリーンセーバ抑止のような「テストのときだけ静かにする」設定も同じ型。
-- 確かめ方: `src/shell/main/headless-window.test.ts`（表示とオフスクリーンが割れないこと）。占有の実測は、`GetForegroundWindow` → `GetWindowThreadProcessId` を P/Invoke した .ps1 をテストと並行して回し、前面が electron に変わった回数を数える（直す前 32 回・記録時間の 4 割、直した後 0 回）。この計測スクリプトはリポジトリに無い。
+- 確かめ方: `src/shell/main/headless-window.test.ts`（表示とオフスクリーンが割れないこと）。占有の実測は、`scripts/measure-foreground.ps1`（`GetForegroundWindow` → `GetWindowThreadProcessId` を読む）をテストと並行して回し、前面が electron に変わった回数を数える（直す前 32 回・記録時間の 4 割、直した後 0 回）。
 
 ### 5.82 「この PC の覚え書き」は書類の中に置かない ―― 置き場を分けたら、画面へも映す
 - 正しい道: 「今後表示しない」の類はアプリ側の置き場（`userData` の JSON 1 枚。`src/shell/io/app-prefs.ts`）へ書き、画面の設定欄にも映す。映すときは「利用者が変えた印」と「読み込みで既定へ戻った」を `lastSettingsChange` で区別する（`src/ui/shell/FirstRunGuide.tsx`）。
