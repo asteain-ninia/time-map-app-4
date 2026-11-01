@@ -97,7 +97,8 @@ export function sweepDeletionState(
     // 束は錨の始まりの時刻で組むので、始まりの時刻に子が居なくても途中から子が入る
     // 集約地物（開始年を前へ直した連邦など）が、関係の無い削除で系列ごと消えていた。
     // 錨 1 枚は丸ごと残すか消すかしか選べないので、区間のどこかで子が居れば残す
-    // （途中から子の居ない殻が残る逆の形は「消えない」側なので許容。docs/現状.md）。
+    // （途中から子の居ない殻が残る逆の形は、割られていない錨でだけ起きる。今のアプリは作らず、
+    // 開くときの修復で割られる。`ui/file-ops/delete-empty-aggregate-shell.test.ts`）。
     const interior = bundling?.interior;
     if (interior !== undefined) {
       const keep = new Set<FeatureId>();
