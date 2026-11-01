@@ -185,7 +185,8 @@
 .property-panel__create-anchor {
   align-self: stretch;
   font: inherit;
-  padding: 5px 10px;
+  font-size: var(--font-size-body);
+  padding: 4px 10px;
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px dashed var(--c-accent);
@@ -196,7 +197,8 @@
 .property-panel__round-year {
   flex: 0 0 auto;
   font: inherit;
-  padding: 5px 10px;
+  font-size: var(--font-size-body);
+  padding: 4px 10px;
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -242,6 +244,7 @@
 
 .property-panel__draft-confirm-buttons button {
   font: inherit;
+  font-size: var(--font-size-body);
   padding: 4px 10px;
   background: var(--c-surface);
   color: var(--c-text);
@@ -267,6 +270,7 @@
 .property-panel__inherited button {
   align-self: flex-start;
   font: inherit;
+  font-size: var(--font-size-body);
   padding: 3px 8px;
   background: var(--c-surface);
   color: var(--c-text);
@@ -290,7 +294,8 @@
 .property-panel__actions button,
 .basic-info__save {
   font: inherit;
-  padding: 5px 10px;
+  font-size: var(--font-size-body);
+  padding: 4px 10px;
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -487,6 +492,7 @@
 .anchor-list__expand {
   margin-left: auto;
   font: inherit;
+  font-size: var(--font-size-body);
   padding: 2px 8px;
   background: var(--c-surface);
   color: var(--c-text);
@@ -654,7 +660,8 @@
 .detail-document__save {
   align-self: flex-start;
   font: inherit;
-  padding: 5px 10px;
+  font-size: var(--font-size-body);
+  padding: 4px 10px;
   background: var(--c-accent);
   color: #fff;
   border: 1px solid var(--c-accent);

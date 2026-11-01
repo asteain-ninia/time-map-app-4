@@ -517,7 +517,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   min-height: var(--control-h-sm);
   padding: 3px 4px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-size-body);
   line-height: 1.2;
   text-align: center;
   /* 切れないことは E2E（`scrollWidth <= clientWidth`）が見る。ここで折り返さないのは、
@@ -569,8 +569,10 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   background: transparent;
   border: 0;
   color: inherit;
-  padding: 6px 12px;
+  min-height: var(--control-h-lg);
+  padding: 0 12px;
   font: inherit;
+  font-size: var(--font-size-body);
   cursor: pointer;
 }
 
@@ -613,6 +615,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   background: transparent;
   border: 0;
   font: inherit;
+  font-size: var(--font-size-body);
   color: inherit;
   text-align: left;
   padding: 4px 12px;
@@ -704,7 +707,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   font: inherit;
   /* 設計書 §C.3 の「文字 12px」。13px のままだと「測量モード」（全角 5 文字 ＝ 65px）が
      文字に使える 72px にほとんど余裕なく収まり、環境差で切れる。 */
-  font-size: 12px;
+  font-size: var(--font-size-body);
   display: block;
   width: 100%;
   /* **padding と枠線を高さ・幅の内側に入れる。** これが無いと `min-height: 32px` は
@@ -835,6 +838,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   flex: 1 1 auto;
   min-width: 0;
   font: inherit;
+  font-size: var(--font-size-body);
   text-align: left;
   padding: 4px 10px;
   background: transparent;
@@ -923,6 +927,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 .sidebar-list__mode {
   flex: 1 1 auto;
   font: inherit;
+  font-size: var(--font-size-body);
   padding: 4px 8px;
   background: var(--c-surface);
   color: var(--c-text);
@@ -954,6 +959,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   width: 100%;
   text-align: left;
   font: inherit;
+  font-size: var(--font-size-body);
   padding: 5px 8px;
   background: var(--c-surface);
   color: var(--c-text);
@@ -1279,6 +1285,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   align-items: baseline;
   gap: 4px;
   font: inherit;
+  font-size: var(--font-size-body);
   text-align: left;
   padding: 0 4px;
   background: transparent;
@@ -1624,6 +1631,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   align-items: baseline;
   gap: 6px;
   font: inherit;
+  font-size: var(--font-size-body);
   text-align: left;
   padding: 4px 8px;
   background: var(--c-surface);
@@ -2348,6 +2356,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   width: 100%;
   text-align: left;
   font: inherit;
+  font-size: var(--font-size-body);
   background: none;
   border: none;
   padding: 2px 4px;
@@ -2621,6 +2630,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   min-width: 52px;
   padding: 2px 6px;
   font: inherit;
+  font-size: var(--font-size-body);
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -2677,6 +2687,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   min-width: 64px;
   padding: 2px 6px;
   font: inherit;
+  font-size: var(--font-size-body);
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -2695,6 +2706,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   width: 88px;
   padding: 2px 6px;
   font: inherit;
+  font-size: var(--font-size-body);
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -2884,7 +2896,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   height: 40px;
   pointer-events: auto;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-size-body);
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -2963,6 +2975,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
   justify-content: space-between;
   gap: 8px;
   font: inherit;
+  font-size: var(--font-size-body);
   background: none;
   border: none;
   padding: 3px 4px;
@@ -2990,6 +3003,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 .vertex-candidates__more button {
   margin-left: 6px;
   font: inherit;
+  font-size: var(--font-size-body);
   padding: 1px 6px;
   cursor: pointer;
 }
@@ -3076,6 +3090,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 /* Compact buttons for the上部バー (相対ジョグ ◀▶ + presets). */
 .longitude-shift button {
   font: inherit;
+  font-size: var(--font-size-body);
   padding: 3px 8px;
   background: var(--c-surface);
   color: var(--c-text);
@@ -3201,6 +3216,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 /* Compact buttons for the 上部バー (深度 ± + フォーカス). */
 .global-depth button {
   font: inherit;
+  font-size: var(--font-size-body);
   padding: 3px 8px;
   background: var(--c-surface);
   color: var(--c-text);
@@ -3567,7 +3583,7 @@ html :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='col
 .display-filter__clear-emphasis {
   align-self: flex-start;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-size-body);
   padding: 4px 8px;
   background: var(--c-surface);
   color: var(--c-text);

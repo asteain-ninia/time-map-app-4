@@ -277,6 +277,17 @@ describe('文字の大きさの直値', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('ボタンの文字の大きさを `font: inherit` で親（13px）から受けない', () => {
+    // 部品の規則で `font: inherit` だけを書くと、親の 13px に戻って土台の 12px と混ざる（B103）。`font: inherit` は
+    // 行の高さも親から受けるので残し、大きさを続けて書く。入力欄は別なので、ボタンだけを見る。
+    const offenders = allRules()
+      .filter(({ selector }) => /(^|[\s,>])button|__button|__item|__mode|__name|__panel-title/.test(selector))
+      .filter(({ selector }) => !selector.startsWith(':where'))
+      .filter(({ body }) => decl(body, 'font') === 'inherit' && decl(body, 'font-size') === undefined)
+      .map(({ path, selector }) => `${path}: ${selector}`);
+    expect(offenders).toEqual([]);
+  });
+
   it('10px のボタンは一覧の種別（56px の枠に種別名を入れる）だけ', () => {
     const offenders = allRules()
       .filter(({ body }) => decl(body, 'font-size') === '10px' && decl(body, 'cursor') === 'pointer')
