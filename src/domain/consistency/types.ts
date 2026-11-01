@@ -246,6 +246,14 @@ export interface ConsistencyPorts<S, Snapshot> {
    */
   readonly checkConstraints: (resultState: S) => readonly unknown[];
 
+  /**
+   * 重なりの解決で消えるかもしれない制約（自己交差・長さ 0 の辺）。**確定する形**にだけ掛ける:
+   * 重なりが検出されなければ確定の前に、重なりがあれば解決のあとの形に（所有者の決定、B127）。
+   * 重なりの板の前では止めない。解決で交差が消える形まで板の前で断ると、利用者は解決を選べない。
+   * 違反があれば断り、記録しない。空または未指定なら通す。
+   */
+  readonly checkBeforeCommit?: (finalState: S) => readonly unknown[];
+
   /** U10 — detect terminal-vs-terminal spatial overlaps over the result state (step 3). */
   readonly detectSpatial: (resultState: S) => SpatialCheckResult;
 

@@ -31,7 +31,6 @@ import {
   worldToClient,
   type ScreenPoint,
 } from './helpers';
-import { RING_BREAK_PHRASE_TEXT } from '../src/ui/strings';
 
 interface World {
   readonly lon: number;
@@ -328,14 +327,12 @@ test.describe('B102 — 実データのコピーで', () => {
         );
         expect(moved).toBeLessThanOrEqual(CAP_DEGREES + 6 / zoom);
         await page.mouse.up();
-        // 確定に進んだら、離す前に見えていた場所と同じ。板で止まるか、輪郭が交わるので断ったら形は元のまま。
+        // 確定に進んだら、離す前に見えていた場所と同じ。板で止まったら形は元のまま。
         const dialog = page.getByTestId('conflict-dialog');
-        const refused = page.getByTestId('statusbar-result').filter({ hasText: RING_BREAK_PHRASE_TEXT.selfCross });
         await expect
           .poll(
             async () => {
               if ((await dialog.count()) > 0) return 'paused';
-              if ((await refused.count()) > 0) return 'refused';
               const now = await committedVertices(page, report.id);
               return [...now.values()].some((v) => near(v, held)) ? 'landed' : 'waiting';
             },

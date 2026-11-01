@@ -2,21 +2,20 @@
 // 2,615 個、動かない頂点 452 個で、実データの集約地物でいちばん大きい。
 //
 //   - 引いている間の 1 コマの時間を測る（数字は標準出力へ出す）。
-//   - 半周より小さい引きでも、輪郭が自分自身と交わるなら理由を言って断る（FR-32）。実データでは 0.1 度台から
-//     国境の頂点を挟んで輪郭が交わるので、重なりの板より先にこちらで止まる（数字は `docs/実装済み.md`）。
-//   - 確定できる小さな引きは、保存して開き直しても修復を聞かれない。
+//   - 半周より小さい引きでも、領海の穴が外周を越えれば理由を言って断る。
+//   - 重なりの板で外の地物を残して確定し、保存して開き直しても修復を聞かれない。
 //
 // ⚠️ 正本は開かない。一時ディレクトリのコピーを開く（§5.48）。
 
-import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { expect, test, type Page } from '@playwright/test';
+import { strFromU8, unzipSync } from 'fflate';
 
 import { APP_STRINGS } from '../src/ui/shell/strings';
-import { RING_BREAK_PHRASE_TEXT } from '../src/ui/strings';
 import {
   committedVertices,
   launchApp,
@@ -75,6 +74,38 @@ async function stopFrameRecorder(page: Page): Promise<FrameTimes> {
   };
 }
 
+/** 書き出したファイルから、`rootId` の下にある末端地物の名前を全部拾う。 */
+function namesUnder(path: string, rootId: string): ReadonlySet<string> {
+  const manifest = JSON.parse(
+    strFromU8(unzipSync(new Uint8Array(readFileSync(path)))['manifest.json']!),
+  ) as unknown;
+  const features = new Map<
+    string,
+    { readonly kind: string; readonly parentId?: string; readonly attributes: { readonly name: string } }
+  >();
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    if (node === null || typeof node !== 'object') return;
+    const o = node as Record<string, unknown>;
+    if (typeof o['id'] === 'string' && (o['kind'] === 'leaf' || o['kind'] === 'aggregate')) {
+      features.set(o['id'], o as never);
+    }
+    Object.values(o).forEach(walk);
+  };
+  walk(manifest);
+  const names = new Set<string>();
+  for (const f of features.values()) {
+    if (f.kind !== 'leaf') continue;
+    for (let up = f.parentId; up !== undefined; up = features.get(up)?.parentId) {
+      if (up === rootId) names.add(f.attributes.name);
+    }
+  }
+  return names;
+}
+
 /** 州の内側の点。 */
 async function insideState(page: Page): Promise<{ readonly lon: number; readonly lat: number }> {
   const report = await leafReport(page, { names: [STATE_NAME] });
@@ -102,7 +133,7 @@ async function zoomInAround(
         await page.mouse.wheel(0, -300);
         return false;
       },
-      { timeout: 90_000 },
+      { timeout: 30_000 },
     )
     .toBe(true);
 }
@@ -110,7 +141,7 @@ async function zoomInAround(
 test.describe('実データの集約地物を［動かす］で引く', () => {
   test.skip(!existsSync(canonicalPath), `実データが無い (${canonicalPath})`);
 
-  test('引き心地を測り、輪郭が交わる引きは理由を言って断り、確定した小さな引きは保存して開き直しても修復を聞かれない', async () => {
+  test('引き心地を測り、大きな引きは理由を言って断り、板で確定したものは保存して開き直しても修復を聞かれない', async () => {
     test.setTimeout(240_000);
     const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-aggregate-real-'));
     const workingCopy = join(workDir, REAL_DATA_FILE);
@@ -121,9 +152,10 @@ test.describe('実データの集約地物を［動かす］で引く', () => {
       await leaveViewMode(page);
       const inside = await insideState(page);
       await page.getByTestId('tool-edit.move').click();
-      const at = await worldToClient(page, inside);
+      let at = await worldToClient(page, inside);
       await page.mouse.click(at.x, at.y);
       await expect(page.getByTestId('app-active-feature')).not.toHaveText('');
+      const federationId = (await page.getByTestId('app-active-feature').textContent()) ?? '';
       const before = await projectStats(page);
 
       // 引いている間の 1 コマ。全体図で 60 回に分けて引く。
@@ -143,32 +175,39 @@ test.describe('実データの集約地物を［動かす］で引く', () => {
       await expect(page.getByTestId(STATUS)).not.toHaveText('');
       // 半周より小さくても、領海の穴が外周を越える引きは断る。
       await expect(page.getByTestId('conflict-dialog')).toHaveCount(0);
-      await expect(page.getByTestId(STATUS)).toContainText(RING_BREAK_PHRASE_TEXT.selfCross);
+      await expect(page.getByTestId(STATUS)).toContainText('領海');
       console.log(
         `[実データ] 引いている間のコマ: ${JSON.stringify(frames)} 60 回の移動 ${String(wallMs)}ms、離してから断りまで ${String(Date.now() - releaseStart)}ms`,
       );
       expect(await projectStats(page)).toEqual(before);
 
-      // 寄せて 0.2 度ほど引くと、輪郭が交わるので断る。記録は変わらない。
-      await zoomInAround(page, inside, 50);
-      const pull = async (dLon: number, dLat: number): Promise<void> => {
-        const from = await worldToClient(page, inside);
-        const to = await worldToClient(page, { lon: inside.lon + dLon, lat: inside.lat + dLat });
-        await page.mouse.move(from.x, from.y);
-        await page.mouse.down();
-        await page.mouse.move(to.x, to.y, { steps: 4 });
-        await page.mouse.up();
-      };
-      const refusedStart = Date.now();
-      await pull(0.2, 0.1);
-      await expect(page.getByTestId(STATUS)).toContainText(RING_BREAK_PHRASE_TEXT.selfCross);
-      console.log(`[実データ] 0.2 度の引きを離してから断りまで ${String(Date.now() - refusedStart)}ms`);
-      await expect(page.getByTestId('conflict-dialog')).toHaveCount(0);
-      expect(await projectStats(page)).toEqual(before);
-
-      // 0.08 度の引きは確定する（全体図に近い倍率では引いたことにならない量なので、寄せて引く）。
-      await pull(0.08, 0.04);
-      await expect(page.getByTestId('conflict-dialog')).toHaveCount(0);
+      // 寄せて小さく引くと重なりの板で止まる。外の地物を残して確定する。
+      await zoomInAround(page, inside, 25);
+      at = await worldToClient(page, inside);
+      await page.mouse.move(at.x, at.y);
+      await page.mouse.down();
+      await page.mouse.move(at.x + 7, at.y - 3, { steps: 4 });
+      const commitStart = Date.now();
+      await page.mouse.up();
+      const dialog = page.getByTestId('conflict-dialog');
+      await expect(dialog).toBeVisible({ timeout: 20_000 });
+      console.log(`[実データ] 離してから板まで ${String(Date.now() - commitStart)}ms`);
+      if (await page.getByTestId('conflict-guide').isVisible()) {
+        await page.getByTestId('conflict-guide-close').click();
+      }
+      const rows = page.getByTestId('conflict-rows').locator('li');
+      const moved = namesUnder(workingCopy, federationId);
+      // 名前で数えるので 60 より少ない（???州 が 10 件ある）。
+      expect(moved.size).toBeGreaterThan(40);
+      for (let i = 0; i < (await rows.count()); i += 1) {
+        // 外の地物のほうを残す（動かした州を削る）。
+        const radios = rows.nth(i).getByRole('radio');
+        const first = (await radios.nth(0).locator('xpath=ancestor::label[1]').textContent()) ?? '';
+        const firstIsMoved = [...moved].some((name) => first.includes(name));
+        await radios.nth(firstIsMoved ? 1 : 0).check();
+      }
+      await page.getByTestId('conflict-apply').click();
+      await expect(dialog).toHaveCount(0, { timeout: 20_000 });
       await expect(page.getByTestId(STATUS)).toContainText(APP_STRINGS.moveAggregateDone(60, 452));
 
       const movedState = Object.fromEntries(

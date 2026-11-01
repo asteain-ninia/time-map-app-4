@@ -13,6 +13,9 @@
 //   4. conflict resolution (collect policies → U06 difference per port),
 //   5. apply + single-undo-unit commit (U12 port).
 //
+// 確定の前の関門（{@link commitOrReject}）: 確定する形にだけ掛ける検査（ports.checkBeforeCommit）は、
+// 確定する 3 か所すべてがここを通る。重なりの解決の選び方によって素通りする経路を作らない。
+//
 // Purity (技術方針 R9 / 教訓5.22): every function here is pure — same input
 // yields same output, no shared-state mutation before commit, no I/O, no clock.
 // The trial states it threads are produced by the ports' pure applyProposal /
@@ -137,6 +140,24 @@ function validatePipeline<S, Snapshot>(
   return { status: 'detected', conflicts };
 }
 
+/**
+ * 確定の最後の関門: 確定する形（`finalState`）に {@link ConsistencyPorts.checkBeforeCommit} を掛け、
+ * 違反があれば断る（記録しない）。通れば 1 つの取り消し単位にして返す。確定はかならずこれを通る。
+ */
+function commitOrReject<S, Snapshot>(
+  current: S,
+  finalState: S,
+  touched: readonly FeatureId[],
+  ports: ConsistencyPorts<S, Snapshot>,
+): ProcessResult<S> {
+  const violations = ports.checkBeforeCommit?.(finalState) ?? [];
+  if (violations.length > 0) {
+    return reject(REJECTION_KIND.ConstraintViolation, MSG_CONSTRAINT_VIOLATION, violations);
+  }
+  const command = ports.makeCommand(current, finalState, touched);
+  return { status: PROCESS_STATUS.Committed, state: finalState, command };
+}
+
 /** Collect every feature id the proposal + resolutions touched (for U12 notify). */
 function touchedFeatureIds<Snapshot>(
   proposal: EditProposal<Snapshot>,
@@ -175,12 +196,7 @@ export function startProcess<S, Snapshot>(
   const { conflicts } = validated;
   if (conflicts.length === 0) {
     // No conflict: commit the proposal as one undo unit (FR-73 / FR-94).
-    const command = ports.makeCommand(
-      current,
-      trialState,
-      touchedFeatureIds(proposal, []),
-    );
-    return { status: PROCESS_STATUS.Committed, state: trialState, command };
+    return commitOrReject(current, trialState, touchedFeatureIds(proposal, []), ports);
   }
 
   // Conflicts found: pause confirmation, surface the full structured list +
@@ -223,8 +239,7 @@ export function applyResolutions<S, Snapshot>(
   let conflicts = validated.conflicts;
   if (conflicts.length === 0) {
     // Nothing to resolve — commit the proposal alone (consistent with start).
-    const command = ports.makeCommand(current, trialState, touchedFeatureIds(proposal, []));
-    return { status: PROCESS_STATUS.Committed, state: trialState, command };
+    return commitOrReject(current, trialState, touchedFeatureIds(proposal, []), ports);
   }
 
   // Index resolutions by their target conflict id. A resolution only counts
@@ -283,12 +298,7 @@ export function applyResolutions<S, Snapshot>(
     const residual = ports.detectSpatial(workState);
     if (residual.length === 0) {
       // Step 5 — commit edit + all adjustments as ONE indivisible undo unit.
-      const command = ports.makeCommand(
-        current,
-        workState,
-        touchedFeatureIds(proposal, appliedResolutions),
-      );
-      return { status: PROCESS_STATUS.Committed, state: workState, command };
+      return commitOrReject(current, workState, touchedFeatureIds(proposal, appliedResolutions), ports);
     }
 
     // New / residual conflicts. If they are all still covered by existing

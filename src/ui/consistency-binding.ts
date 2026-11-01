@@ -110,7 +110,11 @@ import {
   createdAtOf,
   participantDisplayName,
 } from './conflict/participant-name';
-import { ringHierarchyViolationsIntroduced, ringShapeViolationsIntroduced } from './ring-hierarchy-gate';
+import {
+  editRejectionMessage,
+  ringHierarchyViolationsIntroduced,
+  ringShapeViolationsIntroduced,
+} from './ring-hierarchy-gate';
 import { CONSISTENCY_BINDING_TEXT } from './strings';
 
 /** The live domain truth root the binding threads through every port (U14). */
@@ -890,7 +894,7 @@ function createAccumulatingApply<Snapshot>(
   const accumulated = new Map<string, Resolution>();
   return (resolutions) => {
     for (const r of resolutions) accumulated.set(r.conflictId, r);
-    return runResolutionsGuarded(
+    const result = runResolutionsGuarded(
       access,
       ports,
       proposal,
@@ -898,6 +902,10 @@ function createAccumulatingApply<Snapshot>(
       spatialCache,
       detector,
     );
+    // 板の中で断られたときも、どの面のどの年の形かを言う（板は `message` をそのまま出す）。
+    return result.status === PROCESS_STATUS.Rejected
+      ? { ...result, message: editRejectionMessage(result) }
+      : result;
   };
 }
 
@@ -966,13 +974,22 @@ function editPorts(
     // 増分 8E（G-14）: 穴・飛び地の形を **この編集で新しく壊した** なら確定させない。
     // 頂点のドラッグ・辺からの頂点の追加・頂点の削除・面の移動は、どれもこの束ねを通る。
     // 以前は空を返していたので、穴の頂点を隣の穴の中へ入れた形がそのまま記録された。
-    // 1 本の輪の自己交差と長さ 0 の辺も同じ（FR-32。集約地物の移動で、不動の頂点を挟んで動く頂点が
-    // 向こう側へ越えると自己交差する）。どちらも新しくできたものだけを止める。輪そのものの傷を先に
-    // 言う（輪が交わっていれば、穴がはみ出すのはその結果なので、直すべきことは輪のほう）。
-    checkConstraints: (resultState) => [
-      ...ringShapeViolationsIntroduced(access.getRoot(), resultState),
-      ...ringHierarchyViolationsIntroduced(access.getRoot(), resultState),
-    ],
+    checkConstraints: (resultState) => {
+      const broken = ringHierarchyViolationsIntroduced(access.getRoot(), resultState);
+      if (broken.length === 0) return [];
+      // 同じ面の輪そのものが交わっているなら、そちらを先に言う（穴がはみ出すのはその結果なので、
+      // 直すべきことは輪のほう）。ここで止まるので、形の検査はこの面のぶんだけ前に回す。
+      const faces = new Set(broken.map((v) => v.featureId));
+      return [
+        ...ringShapeViolationsIntroduced(access.getRoot(), resultState).filter((v) => faces.has(v.featureId)),
+        ...broken,
+      ];
+    },
+    // 1 本の輪の自己交差と長さ 0 の辺（FR-32。集約地物の移動で、不動の頂点を挟んで動く頂点が向こう側へ
+    // 越えると自己交差する）。新しくできたものだけを止める。**確定する形にだけ掛ける**（B127。所有者の
+    // 決定）: 重なりの板が出る引きでは解決のあとの形を見る。共有頂点を引かれた隣の輪郭が交わる形は
+    // 解決で消えることが多いので、板の前で断ると利用者は解決を選べない。解決のあとに残れば断る。
+    checkBeforeCommit: (finalState) => ringShapeViolationsIntroduced(access.getRoot(), finalState),
     detectSpatial: () => [],
     applyResolution: () => undefined,
     // **確定経路ごとに違う label**（増分 2）。素性欄の保存は「その年の錨を上書き」と

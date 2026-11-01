@@ -56,7 +56,7 @@ import { createAggregateFeature } from '../domain/feature';
 import { asAnchorId } from '../domain/ids';
 import { createVertexStore, withVertexCoordinate } from '../domain/vertex';
 import { RING_BREAK_PHRASE_TEXT } from './strings';
-import { editRejectionMessage } from './ring-hierarchy-gate';
+import { editRejectionMessage, ringShapeViolationsIntroduced } from './ring-hierarchy-gate';
 
 const color = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
 
@@ -2694,6 +2694,69 @@ describe('形を変える確定の関門（FR-32。自己交差と長さ 0 の�
     expect(result.status).toBe(PROCESS_STATUS.Rejected);
     if (result.status !== PROCESS_STATUS.Rejected) return;
     expect(editRejectionMessage(result)).toContain('「右の名」');
+  });
+
+  describe('重なりの板が出る引きでは、解決のあとの形だけを見る（B127）', () => {
+    // 面を東へ 11 度引くと、共有頂点 s を引かれた隣の輪郭が交わり、面と隣も重なる。
+    function crossingNeighbour() {
+      const face = leafOf('面', ['s', 'c', 'd', 'e']);
+      const neighbour = leafOf('隣', ['s', 'x', 'y', 'z', 't']);
+      const faceBodies = [body('s', 0, 5), body('c', -5, 10), body('d', -10, 5), body('e', -5, 0)];
+      const root: DomainRoot = {
+        ...emptyProject(),
+        histories: [
+          historyOf([face], faceBodies),
+          historyOf(
+            [neighbour],
+            [body('s', 0, 5), body('x', 1, 0), body('y', 10, 0), body('z', 10, 10), body('t', 1, 10)],
+          ),
+        ],
+      };
+      const moved = moveVertexSet(new Set(faceBodies.map((v) => v.id)), verticesAt(root, YEAR), { dLon: 11, dLat: 0 });
+      const proposal = createEditProposal(face.id, YEAR, buildSnapshot({ feature: face, vertices: moved }));
+      let n = 0;
+      const live = {
+        getRoot: () => root,
+        nextVertexId: () => asVertexId(`new-v-${String((n += 1))}`),
+        nextRingId: () => asRingId(`new-r-${String((n += 1))}`),
+      };
+      return { root, face, neighbour, proposal, binding: createLiveShapeEditBinding(live) };
+    }
+
+    it('交わった形でも重なりがあれば板を出す。検査はしない', () => {
+      const { binding, proposal, root } = crossingNeighbour();
+      expect(ringShapeViolationsIntroduced(root, createLiveShapeEditBinding(access(root)).ports.applyProposal(root, proposal))).not.toEqual([]);
+      const result = binding.startProcess(proposal);
+      expect(result.status).toBe(PROCESS_STATUS.ConflictsPending);
+    });
+
+    it('交わった隣を削る解決は交差が消えるので確定する。確定した形に新しい傷は無い', () => {
+      const { binding, proposal, root, face, neighbour } = crossingNeighbour();
+      const paused = binding.startProcess(proposal);
+      if (paused.status !== PROCESS_STATUS.ConflictsPending) throw new Error('板が出ない');
+      const result = binding.applyResolutionsFor(proposal)(
+        paused.conflicts.map((c) => ({ conflictId: c.id, priorityFeatureId: face.id, adjustFeatureId: neighbour.id })),
+      );
+      expect(result.status).toBe(PROCESS_STATUS.Committed);
+      if (result.status !== PROCESS_STATUS.Committed) return;
+      expect(ringShapeViolationsIntroduced(root, result.state)).toEqual([]);
+    });
+
+    it('交わった隣を残す解決は交差が残るので断り、理由を言う。記録も取り消しの項目も作らない', () => {
+      const { binding, proposal, root, face, neighbour } = crossingNeighbour();
+      const paused = binding.startProcess(proposal);
+      if (paused.status !== PROCESS_STATUS.ConflictsPending) throw new Error('板が出ない');
+      const result = binding.applyResolutionsFor(proposal)(
+        paused.conflicts.map((c) => ({ conflictId: c.id, priorityFeatureId: neighbour.id, adjustFeatureId: face.id })),
+      );
+      expect(result.status).toBe(PROCESS_STATUS.Rejected);
+      if (result.status !== PROCESS_STATUS.Rejected) return;
+      expect(result.kind).toBe(REJECTION_KIND.ConstraintViolation);
+      // 板は `message` をそのまま出すので、どの面の形かをここで言う。
+      expect(result.message).toContain(RING_BREAK_PHRASE_TEXT.selfCross);
+      expect(result.message).toContain('「隣の名」');
+      expect(root.histories).toHaveLength(2);
+    });
   });
 
   it('頂点を隣の頂点の真上へ動かすと、長さ 0 の辺で断る', () => {

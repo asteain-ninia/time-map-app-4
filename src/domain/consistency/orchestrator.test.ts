@@ -505,6 +505,102 @@ describe('受け入れ基準7: 差分調整後の再検出と収束 (FR-61)', ()
   });
 });
 
+// --- 確定する形にだけ掛ける検査（checkBeforeCommit。B127 の所有者の決定） ---------
+
+describe('checkBeforeCommit は確定する形にだけ掛かり、どの経路でも素通りしない', () => {
+  const VIOLATION = [{ kind: 'self-intersection' }];
+
+  it('重なりが無ければ確定の前に断り、記録しない', () => {
+    const log: SpyLog = { calls: [] };
+    const ports = makePorts(log, { checkBeforeCommit: () => VIOLATION });
+    const result = startProcess(EMPTY_STATE, proposalFor(FA, 'a'), ports);
+    expect(result.status).toBe(PROCESS_STATUS.Rejected);
+    if (result.status !== PROCESS_STATUS.Rejected) return;
+    expect(result.kind).toBe(REJECTION_KIND.ConstraintViolation);
+    expect(result.detail).toEqual(VIOLATION);
+    expect(log.calls).not.toContain('makeCommand');
+  });
+
+  it('重なりがあれば板を出し、板の前では呼ばない', () => {
+    const c = conflict(conflictIdFor(FA, FB), FA, FB);
+    let calls = 0;
+    const ports = makePorts(
+      { calls: [] },
+      {
+        detectSpatial: () => [c],
+        checkBeforeCommit: () => {
+          calls += 1;
+          return VIOLATION;
+        },
+      },
+    );
+    const result = startProcess(EMPTY_STATE, proposalFor(FA, 'a'), ports);
+    expect(result.status).toBe(PROCESS_STATUS.ConflictsPending);
+    expect(calls).toBe(0);
+  });
+
+  it('解決のあとの形に傷が残れば断り、記録しない。検査は解決のあとの形を受け取る', () => {
+    const c = conflict(conflictIdFor(FA, FB), FA, FB);
+    let detectCalls = 0;
+    const seen: State[] = [];
+    const log: SpyLog = { calls: [] };
+    const ports = makePorts(log, {
+      detectSpatial() {
+        detectCalls += 1;
+        return detectCalls === 1 ? [c] : [];
+      },
+      applyResolution: (state: State) => ({ applied: [...state.applied, 'trimmed'] }),
+      checkBeforeCommit: (finalState: State) => {
+        seen.push(finalState);
+        return VIOLATION;
+      },
+    });
+    const result = applyResolutions(EMPTY_STATE, proposalFor(FA, 'a'), [resolutionFor(c, FA, FB)], ports);
+    expect(result.status).toBe(PROCESS_STATUS.Rejected);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.applied).toContain('trimmed');
+    expect(log.calls).not.toContain('makeCommand');
+  });
+
+  it('板の間に重なりが消えていても（適用の入口で 0 件）、確定の前に見る', () => {
+    const log: SpyLog = { calls: [] };
+    const ports = makePorts(log, { detectSpatial: () => [], checkBeforeCommit: () => VIOLATION });
+    const result = applyResolutions(EMPTY_STATE, proposalFor(FA, 'a'), [], ports);
+    expect(result.status).toBe(PROCESS_STATUS.Rejected);
+    expect(log.calls).not.toContain('makeCommand');
+  });
+
+  it('解決が別の重なりを生んで板へ戻るあいだは呼ばない（確定する形ではない）', () => {
+    const c1 = conflict('c1', FA, FB);
+    const c2 = conflict('c2', FA, FB);
+    let detectCalls = 0;
+    let calls = 0;
+    const ports = makePorts(
+      { calls: [] },
+      {
+        detectSpatial() {
+          detectCalls += 1;
+          return detectCalls === 1 ? [c1] : [c2];
+        },
+        checkBeforeCommit: () => {
+          calls += 1;
+          return VIOLATION;
+        },
+      },
+    );
+    const result = applyResolutions(EMPTY_STATE, proposalFor(FA, 'a'), [resolutionFor(c1, FA, FB)], ports);
+    expect(result.status).toBe(PROCESS_STATUS.ConflictsPending);
+    expect(calls).toBe(0);
+  });
+
+  it('検査が空なら今までどおり確定する', () => {
+    const log: SpyLog = { calls: [] };
+    const ports = makePorts(log, { checkBeforeCommit: () => [] });
+    expect(startProcess(EMPTY_STATE, proposalFor(FA, 'a'), ports).status).toBe(PROCESS_STATUS.Committed);
+    expect(log.calls).toContain('makeCommand');
+  });
+});
+
 // --- 受け入れ基準8: attribute-only edit is one whole-state commit ----------
 
 describe('受け入れ基準8: 属性のみ編集の一体確定 (FR-59)', () => {

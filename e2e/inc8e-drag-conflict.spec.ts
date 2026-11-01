@@ -489,6 +489,73 @@ test.describe('B98 — 頂点のドラッグ・面の移動の確定は重なり
     }
   });
 
+  test('共有頂点を引かれた隣の輪郭が交わっても板は出る。隣を残すと交差が残るので断り、削れば確定する（B127）', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await jumpToYear(page, 1200);
+      await armAddAreaTool(page);
+      const b = await addInputLayerBox(page);
+      const cx = b.x + b.width / 2;
+      const cy = b.y + b.height / 2;
+      const half = 90;
+      // A（左）と B（右）は右辺の 2 隅を共有する（`snap-share.spec.ts` と同じ描き方）。
+      const aCx = cx - half - 150;
+      const aCorners = rect(aCx, cy, half, half);
+      const aId = await face(page, aCorners, 'A');
+      const aTopRight = aCorners[1]!;
+      const aBottomRight = aCorners[2]!;
+      await armAddAreaTool(page);
+      await page.mouse.move(aTopRight[0] + 2, aTopRight[1] + 2);
+      await expect(page.getByTestId('option-bar-next-step')).toContainText('頂点に合わせます');
+      await expect.poll(async () => handleCount(page), { timeout: 10_000 }).toBeGreaterThan(0);
+      const bId = await drawFace(
+        page,
+        [
+          [aTopRight[0] + 2, aTopRight[1] + 2],
+          [aTopRight[0] + 2 * half, aTopRight[1]],
+          [aBottomRight[0] + 2 * half, aBottomRight[1]],
+          [aBottomRight[0] + 2, aBottomRight[1] - 2],
+        ],
+        { name: 'B' },
+      );
+      const before = await drawnShapes(page);
+      const statsBefore = await projectStats(page);
+      const undoBefore = await page.getByTestId('app-can-undo').textContent();
+
+      // 共有している右上の頂点を、B の右辺の外まで引く。B の左下からの辺が右辺を横切って B の輪郭が
+      // 交わり、A は B に重なる。
+      await selectWithTool(page, aCx, cy, aId, 'tool-edit.vertex');
+      await expect.poll(async () => (await vertexHandlePositions(page)).length).toBe(4);
+      await drag(page, aTopRight[0], aTopRight[1], aTopRight[0] + 2 * half + 60, cy);
+      await expectPausedUnchanged(page, before);
+
+      // B を残す: B の交差は解決で消えないので断る。板の中で理由を言い、何も記録しない。
+      const row = page.getByTestId('conflict-rows').locator('li').first();
+      await keepFace(row, 'B');
+      await page.getByTestId('conflict-apply').click();
+      const refusal = page.getByTestId('conflict-rejection');
+      await expect(refusal).toContainText(RING_BREAK_PHRASE_TEXT.selfCross);
+      await expect(refusal).toContainText('B');
+      expect(await drawnShapes(page)).toEqual(before);
+      expect(await projectStats(page)).toEqual(statsBefore);
+      await expect(page.getByTestId('app-can-undo')).toHaveText(undoBefore ?? '');
+
+      // 選び直して A を残す: B が削られて交差が消え、確定する。取り消しの 1 回で全部戻る。
+      await page.getByTestId('conflict-retry').click();
+      await keepFace(page.getByTestId('conflict-rows').locator('li').first(), 'A');
+      await page.getByTestId('conflict-apply').click();
+      await expect(page.getByTestId('conflict-dialog')).toHaveCount(0);
+      await expect(page.getByTestId('statusbar-result')).toContainText('重なりを解消');
+      const after = await drawnShapes(page);
+      expect(after[bId]).not.toEqual(before[bId]);
+      await page.keyboard.press('Control+z');
+      await expect.poll(async () => drawnShapes(page)).toEqual(before);
+    } finally {
+      await app.close();
+    }
+  });
+
   test('頂点を向かいの辺の外へ引いて輪郭が交わる形は確定せず、理由を言い、形も履歴も変わらない（FR-32）', async () => {
     const { app, page } = await launchApp();
     try {
@@ -568,7 +635,7 @@ async function worldToScreen(
 test.describe('B98 — 実データのコピーで', () => {
   test.skip(!existsSync(canonicalPath), `実データ ${REAL_DATA_FILE} が無い`);
 
-  test('頂点を内へ寄せる普通のドラッグは板を出さず、大きな面の移動は隣の輪郭が交わるので断り、どちらも待たせない', async () => {
+  test('頂点を内へ寄せる普通のドラッグは板を出さず、面の移動は隣との重なりで止まり、どちらも待たせない', async () => {
     test.setTimeout(180_000);
     const dir = mkdtempSync(join(tmpdir(), 'gimoza-drag-conflict-'));
     const copy = join(dir, REAL_DATA_FILE);
@@ -618,14 +685,17 @@ test.describe('B98 — 実データのコピーで', () => {
       await expect.poll(async () => (await liveCamera(page)).zoom).toBeLessThan(50);
       const [mx, my] = (await worldToScreen(page))(96.6, 57.37);
 
-      // 面の移動: 隣と接している国を全体図で 10px ずらすと、共有頂点を引かれた隣の輪郭が交わるので
-      // 断る（FR-32。重なりの板より前の検査。板で止まる形は合成の面で上の検査が見ている）。
+      // 面の移動: 隣と接している国を 10px ずらすと重なるので、板で止まる。共有頂点を引かれた隣の輪郭が
+      // 交わっていても、解決のあとの形を見るので板の前では断らない（B127）。
       await page.getByTestId('tool-edit.move').click();
       started = Date.now();
       await drag(page, mx, my, mx + 10, my);
-      await expect(page.getByTestId('statusbar-result')).toContainText(RING_BREAK_PHRASE_TEXT.selfCross);
+      await expect(page.getByTestId('conflict-dialog')).toBeVisible();
       const moveMs = Date.now() - started;
-      console.log(`[B98] 実データの面の移動を断るまで ${String(moveMs)}ms`);
+      console.log(`[B98] 実データの面の移動が板で止まるまで ${String(moveMs)}ms`);
+      expect(await drawnShapes(page)).toEqual(before);
+      await closeGuideIfShown(page);
+      await page.getByTestId('conflict-cancel').click();
       await expect(page.getByTestId('conflict-dialog')).toHaveCount(0);
       expect(await drawnShapes(page)).toEqual(before);
       // 待ち時間は記録するだけ（`knife-v10-real.spec.ts` の B97 と同じ）。混んだ全件ゲートでは
