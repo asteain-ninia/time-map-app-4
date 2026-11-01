@@ -42,9 +42,9 @@ test.describe('B79 — 修復の板の既定に効かない方法を出さない
       const sample = (histories[0] as {
         entries: readonly { anchor: { snapshot: { features: readonly Record<string, unknown>[] } } }[];
       }).entries[0]!.anchor.snapshot.features[0]!;
-      const { shape: _shape, ...withoutShape } = sample;
       const lonely = {
-        ...withoutShape,
+        ...sample,
+        shape: undefined, // 集約地物は形を持たない（JSON に書くときに落ちる）
         kind: 'aggregate',
         id: 'L',
         childIds: [],
