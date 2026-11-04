@@ -74,6 +74,63 @@ describe('checkDrillable — 妥当性検証 (受け入れ6 / 7)', () => {
   });
 });
 
+// bughunt#4: 頂点が全て対象内部にあっても、辺が凹部(対象の外)を横切る指定領域は
+// 「完全包含」ではない。以前は頂点判定のみで通過し、穴の代わりに外周へ切り込みが入り、
+// 新地物は 2 片に分かれていた(受け入れ6 違反)。
+describe('checkDrillable — 辺が外周を横切る指定領域 (bughunt#4)', () => {
+  // U 字形: 中央の凹部 x∈(3,7), y∈(3,10) は対象の外.
+  const uShape = () =>
+    squareLeaf('u', [
+      createCoordinate(0, 0),
+      createCoordinate(10, 0),
+      createCoordinate(10, 10),
+      createCoordinate(7, 10),
+      createCoordinate(7, 3),
+      createCoordinate(3, 3),
+      createCoordinate(3, 10),
+      createCoordinate(0, 10),
+    ]);
+
+  it('両腕に頂点を置き凹部を跨ぐ指定領域は NotContained で拒否される', () => {
+    const { feature, store } = uShape();
+    const res = checkDrillable(feature, store, [
+      createCoordinate(1, 5),
+      createCoordinate(9, 5),
+      createCoordinate(9, 8),
+      createCoordinate(1, 8),
+    ]);
+    expect(res.status).toBe(DRILL_CHECK_STATUS.NotDrillable);
+    if (res.status === DRILL_CHECK_STATUS.NotDrillable) {
+      expect(res.reason).toBe(DRILL_REJECT.NotContained);
+    }
+  });
+
+  it('同じ U 字の片腕に収まる指定領域は従来どおり穴あけできる', () => {
+    const { feature, store } = uShape();
+    const res = checkDrillable(feature, store, [
+      createCoordinate(0.5, 4),
+      createCoordinate(2.5, 4),
+      createCoordinate(2.5, 8),
+      createCoordinate(0.5, 8),
+    ]);
+    expect(res.status).toBe(DRILL_CHECK_STATUS.Drillable);
+    if (res.status !== DRILL_CHECK_STATUS.Drillable) return;
+    expect(res.newRegion.length).toBe(1);
+    expect(area(res.newRegion)).toBeCloseTo(8, 6);
+  });
+
+  it('外周に内側から接するだけの指定領域は拒否されない', () => {
+    const { feature, store } = unitSquare();
+    const res = checkDrillable(feature, store, [
+      createCoordinate(0, 3),
+      createCoordinate(4, 3),
+      createCoordinate(4, 7),
+      createCoordinate(0, 7),
+    ]);
+    expect(res).not.toMatchObject({ reason: DRILL_REJECT.NotContained });
+  });
+});
+
 describe('checkDrillable — 穴形成 + 新領域 (受け入れ1 / 5)', () => {
   it('内部の指定領域から穴付き原末端と新領域を算出する', () => {
     const { feature, store } = unitSquare();

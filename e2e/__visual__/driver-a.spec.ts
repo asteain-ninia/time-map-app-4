@@ -50,7 +50,6 @@ interface Note {
 const notes: Note[] = [];
 function record(kind: string, detail: string): void {
   notes.push({ kind, detail });
-  // eslint-disable-next-line no-console
   console.log(`VISUALA:${kind}: ${detail}`);
 }
 
@@ -747,7 +746,6 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       expect(stillPressed).toBe(false);
       expect(revivedBySameButton).toBe(true);
 
-      // eslint-disable-next-line no-console
       console.log(`VISUALA_SUMMARY_A123: ${JSON.stringify(notes)}`);
     } finally {
       await app.close();
@@ -856,7 +854,6 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       record('drill-list-rows', JSON.stringify(labels));
       await shot(page, 'a-11-drill-after');
 
-      // eslint-disable-next-line no-console
       console.log(`VISUALA_SUMMARY_A4: ${JSON.stringify(notes)}`);
     } finally {
       await app.close();
@@ -971,7 +968,6 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
         height: 90,
       });
 
-      // eslint-disable-next-line no-console
       console.log(`VISUALA_SUMMARY_A5: ${JSON.stringify(notes)}`);
     } finally {
       await app.close();
@@ -1062,7 +1058,6 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
         );
       }
 
-      // eslint-disable-next-line no-console
       console.log(`VISUALA_SUMMARY_A6: ${JSON.stringify(notes)}`);
     } finally {
       await app.close();
@@ -1196,7 +1191,6 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       await shotClip(page, 'a-21-agg-knife-child-closeup', clipAround(ccx, cy, 200));
       await shotClip(page, 'a-22-agg-knife-parent-closeup', clipAround(pcx, cy, 200));
 
-      // eslint-disable-next-line no-console
       console.log(`VISUALA_SUMMARY_A7: ${JSON.stringify(notes)}`);
     } finally {
       await app.close();
@@ -1361,7 +1355,6 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       expect(dOut, '両時刻で形の外の対照点は強調されない').toBeLessThan(8);
       expect(dIn - dOut).toBeGreaterThan(20);
 
-      // eslint-disable-next-line no-console
       console.log(`VISUALA_SUMMARY_A8: ${JSON.stringify(notes)}`);
     } finally {
       await app.close();
@@ -1572,7 +1565,6 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       expect(await activeFeature(page)).toBe(faceId);
       await shot(page, 'a-32-knife-reacquired');
 
-      // eslint-disable-next-line no-console
       console.log(`VISUALA_SUMMARY_A9: ${JSON.stringify(notes)}`);
     } finally {
       await app.close();
@@ -1624,7 +1616,6 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       await assertCancelReArms(page, 'drill', 'drill-tool', null);
       await shot(page, 'a-35-drill-rearm');
 
-      // eslint-disable-next-line no-console
       console.log(`VISUALA_SUMMARY_A10: ${JSON.stringify(notes)}`);
     } finally {
       await app.close();

@@ -700,6 +700,67 @@ describe('applyPastEdit (AC-4, FR-55/FR-57)', () => {
       );
     expect(run()).toBe(run());
   });
+
+  // bughunt#4: an anchor keeps its id when changeStart moves it, so a later insert
+  // whose (time-derived) id equals that moved anchor's id must NOT be collapsed by
+  // the INV-6 duplicate-id dedup — that silently deleted the moved anchor.
+  it('insert whose new id collides with an existing (moved) anchor keeps both anchors', () => {
+    const original = series(entry(1, 100, null));
+    const movedId = original.entries[0]!.anchor.id;
+    const moved = changeStart(
+      original,
+      movedId,
+      timePointYear(50),
+      cal,
+    );
+    expect(moved.ok).toBe(true);
+    if (!moved.ok) return;
+    // The factory re-uses the moved anchor's id (as deriveAnchorId does for the
+    // anchor's ORIGINAL start time).
+    const next = applyPastEdit(
+      moved.series,
+      timePointYear(100),
+      () => createAnchor(movedId, makeSnapshot(999)),
+      cal,
+    );
+    expect(next.entries).toHaveLength(2);
+    expect(next.entries.map((e) => e.start)).toEqual([timePointYear(50), timePointYear(100)]);
+    expect(resolveAt(next, timePointYear(60), cal).kind).toBe('present');
+    expect(validateSeries(next, cal).ok).toBe(true);
+    // Deterministic re-key: the same input yields the same ids.
+    const again = applyPastEdit(
+      moved.series,
+      timePointYear(100),
+      () => createAnchor(movedId, makeSnapshot(999)),
+      cal,
+    );
+    expect(again.entries.map((e) => e.anchor.id)).toEqual(next.entries.map((e) => e.anchor.id));
+  });
+
+  // bughunt#4: inserting inside a BOUNDED interval must split it (§5.6 分割) — the
+  // new anchor inherits the effective anchor's end. Previously it was inserted
+  // open-ended, so normalization shortened the old anchor to the base time and the
+  // feature silently came back to life forever after its set end (FR-54).
+  it('insert inside a bounded interval keeps the existing end (no resurrection)', () => {
+    const s = series(entry(1, 0, 200));
+    const next = applyPastEdit(s, timePointYear(100), () => makeAnchor(100, '-new'), cal);
+    expect(next.entries.map((e) => [e.start, e.end])).toEqual([
+      [timePointYear(0), timePointYear(100)],
+      [timePointYear(100), timePointYear(200)],
+    ]);
+    expect(resolveAt(next, timePointYear(150), cal).kind).toBe('present');
+    expect(resolveAt(next, timePointYear(200), cal).kind).toBe('absent');
+    expect(resolveAt(next, timePointYear(300), cal).kind).toBe('absent');
+    expect(validateSeries(next, cal).ok).toBe(true);
+  });
+
+  it('insert inside a bounded interval followed by a gap keeps the gap', () => {
+    const s = series(entry(1, 0, 200), entry(2, 300, null));
+    const next = applyPastEdit(s, timePointYear(100), () => makeAnchor(100, '-new'), cal);
+    expect(resolveAt(next, timePointYear(250), cal).kind).toBe('absent');
+    expect(resolveAt(next, timePointYear(300), cal).kind).toBe('present');
+    expect(validateSeries(next, cal).ok).toBe(true);
+  });
 });
 
 // --- AC-6 / FR-59 full-state unitary update ---------------------------------
