@@ -33,6 +33,7 @@ import { alignMultiPolygon, referenceLonForMultiPolygon, unwrapRingAnchored } fr
 import {
   difference,
   intersection,
+  isMultiPolygonEmpty,
   isOk,
   pointInPolygon,
   POINT_LOCATION,
@@ -115,11 +116,10 @@ function rejection(reason: DrillRejectKind): DrillCheckResult {
  * We判定 by U06 `pointInPolygon` over every target piece (教訓5.1: all pieces). A
  * region vertex that lands OUTSIDE every piece means the region escapes the target
  * → not contained. A region vertex ON a boundary is allowed (touching, not crossing).
- * The authoritative non-crossing gate is the post-difference / post-intersection
- * area check in {@link checkDrillable}: if the region crossed the外周, the
- * intersection would be smaller than the region's own area and the difference would
- * not carry the region as a clean hole — but the cheap vertex test short-circuits
- * the obviously-escaping case with the correct 包含されない message.
+ * The authoritative non-crossing gate is the (region \ target) emptiness check in
+ * {@link checkDrillable}: a vertex test alone cannot see an EDGE that leaves a
+ * concave target (bughunt#4) — this cheap vertex test only short-circuits the
+ * obviously-escaping case with the correct 包含されない message.
  */
 function regionContainedInTarget(
   region: readonly WorldCoordinate[],
@@ -220,6 +220,21 @@ export function checkDrillable(
   }
 
   const clip: GeoMultiPolygon = [[regionPts]];
+
+  // 内部完全包含の決定的検証 (bughunt#4): the vertex pre-gate above cannot see an
+  // EDGE that leaves the target — on a concave target every region vertex can sit
+  // inside while an edge crosses a notch (or the region swallows an existing hole).
+  // Such a region is not 完全包含 (受け入れ6), and drilling it would cut a notch into
+  // the outer boundary and split the new feature instead of forming a hole. The region
+  // is contained iff (region \ target) is empty under U06's quantization tolerance —
+  // a region that merely touches the boundary from inside leaves nothing behind.
+  const escaped = difference(clip, targetMp);
+  if (!isOk(escaped)) {
+    return rejection(DRILL_REJECT.InvalidShape);
+  }
+  if (!isMultiPolygonEmpty(escaped.result)) {
+    return rejection(DRILL_REJECT.NotContained);
+  }
 
   // 1. 穴形成: 元末端 \ 指定領域 (片落とし禁止 — every piece kept, 教訓5.1).
   const holed = difference(targetMp, clip);
