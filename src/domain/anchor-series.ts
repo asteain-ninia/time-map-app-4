@@ -23,7 +23,7 @@
 //     key for every by-id edit; see validateSeries / indexOfAnchor below).
 
 import type { Anchor, AnchorSnapshot } from './anchor';
-import type { AnchorId } from './ids';
+import { asAnchorId, type AnchorId } from './ids';
 import type { Calendar } from './time/calendar';
 import type { TimePoint } from './time/time-point';
 import { compare, compareNormalized, normalize, type Normalized } from './time/normalized';
@@ -481,9 +481,34 @@ export function applyPastEdit(
 
   // Insert a new anchor; inherit the state effective at baseTime.
   const effective = resolveAt(series, baseTime, calendar);
-  const anchor = makeAnchor(effective);
+  const anchor = withUniqueAnchorId(makeAnchor(effective), series);
   const inserted = createAnchorEntry(anchor, baseTime, null);
   return normalizeSeries([...series.entries, inserted], calendar);
+}
+
+/**
+ * Returns `anchor` unchanged when its id is not used by any entry of `series`;
+ * otherwise a copy re-keyed to the first free `<id>#<n>` (n = 2, 3, …).
+ *
+ * WHY (bughunt#4): callers derive a new anchor's id from (feature id, base time) —
+ * see `deriveAnchorId` — but an anchor KEEPS its id when `changeStart` later moves
+ * its start. A past edit at that anchor's ORIGINAL start finds no entry starting
+ * there (insert branch) yet derives the very id the moved entry still carries.
+ * Without re-keying, normalizeSeries' INV-6 duplicate-id collapse (keep-last)
+ * silently DROPS the moved entry, deleting a whole existence interval. The suffix
+ * is deterministic (same input → same id), so the op stays a pure replay; ids stay
+ * unique (INV-6) and every existing entry survives.
+ */
+function withUniqueAnchorId(anchor: Anchor, series: AnchorSeries): Anchor {
+  const used = new Set<AnchorId>(series.entries.map((e) => e.anchor.id));
+  if (!used.has(anchor.id)) return anchor;
+  let n = 2;
+  let candidate = asAnchorId(`${anchor.id}#${n}`);
+  while (used.has(candidate)) {
+    n += 1;
+    candidate = asAnchorId(`${anchor.id}#${n}`);
+  }
+  return { id: candidate, snapshot: anchor.snapshot };
 }
 
 // --- §5.6 start-time change (auto-reorganization) ---------------------------
