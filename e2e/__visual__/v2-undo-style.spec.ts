@@ -20,7 +20,6 @@ const shotDir = resolve(projectRoot, 'screenshots', '__visual__');
 mkdirSync(shotDir, { recursive: true });
 
 function record(kind: string, detail: string): void {
-  // eslint-disable-next-line no-console
   console.log(`V2:${kind}: ${detail}`);
 }
 
