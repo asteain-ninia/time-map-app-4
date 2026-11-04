@@ -235,3 +235,119 @@ describe('consistency detects + repair reconciles same-id coordinate divergence 
     expect(coordinatesEqual(coordA!, coordB!)).toBe(true);
   });
 });
+
+// bughunt#4: ReconcileVertexCoordinate used to canonicalise EVERY vertex id in EVERY
+// anchor of EVERY history to the first body ever seen — ignoring time. A vertex that a
+// later anchor legitimately MOVED (same id, new coordinate at a later time) was snapped
+// back to its oldest coordinate, silently erasing the project's edit history on load.
+// The repair must only re-join same-time disagreements.
+describe('ReconcileVertexCoordinate preserves legitimate moves over time (bughunt#4)', () => {
+  function withSharedBody(project: DomainProject, featureId: string, coord: { lon: number; lat: number }): DomainProject {
+    return {
+      ...project,
+      histories: project.histories.map((h) =>
+        h.featureId === asFeatureId(featureId)
+          ? {
+              featureId: h.featureId,
+              series: {
+                entries: h.series.entries.map((e) => {
+                  const byId = new Map(e.anchor.snapshot.vertices.byId);
+                  byId.set(SHARED, createVertex(SHARED, coord));
+                  return {
+                    anchor: { id: e.anchor.id, snapshot: { features: e.anchor.snapshot.features, vertices: { byId } } },
+                    start: e.start,
+                    end: e.end,
+                  };
+                }),
+              },
+            }
+          : h,
+      ),
+    };
+  }
+
+  function privateCoordIn(project: DomainProject, featureId: string, vertexId: string, year: number) {
+    const history = project.histories.find((h) => h.featureId === asFeatureId(featureId))!;
+    const res = resolveAt(history.series, timePointYear(year), calendar);
+    if (res.kind !== 'present') return undefined;
+    return getVertex(res.entry.anchor.snapshot.vertices, asVertexId(vertexId))?.coordinate;
+  }
+
+  it('a private vertex moved at a later anchor keeps its moved coordinate', () => {
+    const a = sharedTriangle('f-a', 'va-1', 'va-2', 0);
+    const b = sharedTriangle('f-b', 'vb-1', 'vb-2', -2); // mirrored: touches f-a only at the shared vertex
+    let project = seedAdd(seedAdd(emptyProject(), a, YEAR), b, YEAR);
+    // Legitimate history: f-b's private vertex vb-1 moves at year 100.
+    const movedPriv = createVertex(asVertexId('vb-1'), { lon: -1, lat: -0.5 });
+    const bFeature = project.histories[1]!.series.entries[0]!.anchor.snapshot.features[0] as LeafFeature;
+    project = applyEditProposal(
+      project,
+      createEditProposal(asFeatureId('f-b'), timePointYear(100), { feature: bFeature, vertices: [movedPriv] }),
+      calendar,
+    );
+    expect(privateCoordIn(project, 'f-b', 'vb-1', 100)).toEqual({ lon: -1, lat: -0.5 });
+    // Corrupt: f-a's shared body diverges from f-b's (the inconsistency to repair).
+    project = withSharedBody(project, 'f-a', { lon: 0, lat: 0.2 });
+
+    const inc = checkConsistency(project, calendar).inconsistencies.find(
+      (i) => i.kind === INCONSISTENCY.VertexCoordinateDivergence,
+    )!;
+    expect(inc).toBeDefined();
+    const applied = applyRepairChecked(project, inc, REPAIR_OPTION.ReconcileVertexCoordinate, calendar);
+    expect(applied.resolved).toBe(true);
+    expect(applied.resolved).toBe(true);
+    // The divergent shared vertex is re-joined at every time…
+    expect(sharedCoordIn(applied.project, 'f-b', YEAR)).toEqual({ lon: 0, lat: 0.2 });
+    expect(sharedCoordIn(applied.project, 'f-b', 100)).toEqual({ lon: 0, lat: 0.2 });
+    expect(applied.remaining.ok).toBe(true);
+    // …but the unrelated, legitimately moved private vertex is NOT reverted.
+    expect(privateCoordIn(applied.project, 'f-b', 'vb-1', YEAR)).toEqual({ lon: -1, lat: 0 });
+    expect(privateCoordIn(applied.project, 'f-b', 'vb-1', 100)).toEqual({ lon: -1, lat: -0.5 });
+  });
+
+  it('a shared vertex moved consistently at a later anchor keeps that move', () => {
+    const a = sharedTriangle('f-a', 'va-1', 'va-2', 0);
+    const b = sharedTriangle('f-b', 'vb-1', 'vb-2', -2); // mirrored: touches f-a only at the shared vertex
+    let project = seedAdd(seedAdd(emptyProject(), a, YEAR), b, YEAR);
+    // Legitimate history: the shared vertex moves at year 100 (propagated to both).
+    const aFeature = project.histories[0]!.series.entries[0]!.anchor.snapshot.features[0] as LeafFeature;
+    project = applyEditProposal(
+      project,
+      createEditProposal(asFeatureId('f-a'), timePointYear(100), {
+        feature: aFeature,
+        vertices: [createVertex(SHARED, { lon: 0, lat: 0.5 })],
+      }),
+      calendar,
+    );
+    expect(sharedCoordIn(project, 'f-b', 100)).toEqual({ lon: 0, lat: 0.5 });
+    // Corrupt only year 0: f-b's year-0 shared body diverges.
+    project = {
+      ...project,
+      histories: project.histories.map((h) =>
+        h.featureId === asFeatureId('f-b')
+          ? {
+              featureId: h.featureId,
+              series: {
+                entries: h.series.entries.map((e, i) => {
+                  if (i !== 0) return e;
+                  const byId = new Map(e.anchor.snapshot.vertices.byId);
+                  byId.set(SHARED, createVertex(SHARED, { lon: 0, lat: -0.5 }));
+                  return { ...e, anchor: { id: e.anchor.id, snapshot: { ...e.anchor.snapshot, vertices: { byId } } } };
+                }),
+              },
+            }
+          : h,
+      ),
+    };
+    const inc = checkConsistency(project, calendar).inconsistencies.find(
+      (i) => i.kind === INCONSISTENCY.VertexCoordinateDivergence,
+    )!;
+    const applied = applyRepairChecked(project, inc, REPAIR_OPTION.ReconcileVertexCoordinate, calendar);
+    expect(applied.resolved).toBe(true);
+    expect(sharedCoordIn(applied.project, 'f-a', YEAR)).toEqual({ lon: 0, lat: 0 });
+    expect(sharedCoordIn(applied.project, 'f-b', YEAR)).toEqual({ lon: 0, lat: 0 });
+    // The consistent year-100 move survives in both histories.
+    expect(sharedCoordIn(applied.project, 'f-a', 100)).toEqual({ lon: 0, lat: 0.5 });
+    expect(sharedCoordIn(applied.project, 'f-b', 100)).toEqual({ lon: 0, lat: 0.5 });
+  });
+});

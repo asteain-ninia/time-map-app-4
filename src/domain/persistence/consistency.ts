@@ -527,7 +527,7 @@ function detectDuplicateOwnerHistories(
  * Map keyed by the normalized integer (the single time-ordering truth), instead
  * of a linear membership scan, so the whole pass is ~O(A) not O(A²).
  */
-function distinctAnchorTimes(
+export function distinctAnchorTimes(
   histories: readonly FeatureHistory[],
   calendar: Calendar,
 ): TimePoint[] {
