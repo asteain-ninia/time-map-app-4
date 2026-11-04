@@ -25,3 +25,13 @@
 **対応**: Anthropic サーバが安定したら、bughunt#3 と同型の**短い1〜2ラウンド**（新シード・多様Claudeパネル・property/fuzz・e2e エクスプローラ）を回して再surface＋修正。dry になれば収束扱い。Codex は ~6/26 まで使わない。
 
 **注**: 失敗は server-side（こちらの使用量超過ではない）。ジャーナル(resumeFromRunId)で再開も可能だが、round3 の fix 失敗は finding がファイル化されていないため、resume より新シード再走の方が確実。
+
+**状況 (2026-11-04, bughunt#4 / branch `claude/bughunt-4`)**: 1 ラウンド実施。**未 dry**（4 件確定・全修正、各々 test-first の回帰テスト付き）。
+- 新シード fuzz: property/`__bughunt__` 36 ファイルを seed=20261104・既定 numRuns×3 で再走 → 失敗 0（明示 seed 固定のテストは同一入力の再走）。
+- 確定・修正:
+  1. [HIGH/data-loss] 開始年変更(changeStart)後に元の開始時刻で編集すると、派生アンカー id の衝突で移動済アンカーが INV-6 dedup に捨てられる (`anchor-series.ts` applyPastEdit)
+  2. [HIGH/data-loss] 終了時刻を持つ地物を存続区間の途中で編集すると新アンカーが無期限で入り、終了後も永久に復活する (同上・§5.6 分割に合わせ end を継承)
+  3. [HIGH/data-loss] 読込時修復 ReconcileVertexCoordinate が時刻を無視して全頂点を最古の座標へ揃え、過去の頂点移動を全部巻き戻す (`persistence/repair.ts`)
+  4. [MEDIUM] 穴あけで頂点は全て内部だが辺が凹部を横切る指定領域を受理し、穴でなく切り込み＋新地物 2 片になる (`drill/drill-geometry.ts`)
+- 未修正の候補（判断要・修正せず報告のみ）: 画面上で緯度 ±90° を超える位置にも頂点/地物を置ける（screenToWorld は緯度をクランプせず、追加ツールも検査しない。カーソル表示だけは |lat|>90 を無効扱い）。修復 DetachToTopLevel / Drop* も時刻を問わず全アンカーに適用される（3 と同型の懸念だが、利用者が選ぶ破壊的修復なので仕様判断に委ねる）。
+- 次回: dry になるまでもう 1 ラウンド（時間軸 × 修復・UI 入力境界を重点に）。
