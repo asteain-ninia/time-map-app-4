@@ -25,7 +25,7 @@ import type { FeatureSnapshot } from './edit-flow';
 import { createShape, createTerritoryRing } from '../ring';
 import { createVertex, createVertexStore, setVertex, withVertexCoordinate } from '../vertex';
 import { createAnchor, createAnchorSnapshot } from '../anchor';
-import { createAnchorEntry, normalizeSeries, resolveAt } from '../anchor-series';
+import { changeStart, createAnchorEntry, normalizeSeries, resolveAt } from '../anchor-series';
 import { checkConsistency, INCONSISTENCY } from '../persistence/consistency';
 import { asAnchorId, asFeatureId, asRingId, asVertexId } from '../ids';
 import { isValidSeries } from '../anchor-series';
@@ -1143,5 +1143,54 @@ describe('applyMergeProposal', () => {
       (i) => i.kind === INCONSISTENCY.VertexCoordinateDivergence,
     );
     expect(divergence).toBeUndefined();
+  });
+});
+
+// --- bughunt#4: 開始年変更後に元の開始時刻で編集しても既存アンカーが消えない -------
+//
+// changeStart はアンカー id を保持したまま start を動かす。id は deriveAnchorId(地物, 元の
+// 開始時刻) なので、その元の時刻で編集すると applyPastEdit の挿入枝が同じ id を派生し、
+// normalizeSeries の重複 id 畳み込み（keep-last）が移動済アンカーを無言で捨てていた。
+describe('applyEditProposal after changeStart (anchor id collision)', () => {
+  it('元の開始時刻での編集が、開始を早めたアンカーを消さない', () => {
+    const f = squareLeaf('f-cs', ['vc-1', 'vc-2', 'vc-3'], [0, 1, 2]);
+    const added = applyAddProposal(emptyProject(), {
+      featureId: f.feature.id,
+      anchorTime: timePointYear(100),
+      snapshot: { feature: f.feature, vertices: f.vertices, sharedCandidateIds: new Map() },
+    });
+    const h = added.histories[0]!;
+    const moved = changeStart(
+      h.series,
+      deriveAnchorId(f.feature.id, timePointYear(100)),
+      timePointYear(50),
+      calendar,
+    );
+    expect(moved.ok).toBe(true);
+    if (!moved.ok) return;
+    const shifted: DomainProject = {
+      ...added,
+      histories: [{ featureId: h.featureId, series: moved.series }],
+    };
+    expect(resolveAt(shifted.histories[0]!.series, timePointYear(60), calendar).kind).toBe('present');
+
+    // 年 100（元の開始時刻）で頂点を動かす通常の形状編集.
+    const movedBody = createVertex(asVertexId('vc-3'), { lon: 2, lat: 5 });
+    const afterEdit = applyEditProposal(
+      shifted,
+      createEditProposal(f.feature.id, timePointYear(100), { feature: f.feature, vertices: [movedBody] }),
+      calendar,
+    );
+
+    const series = afterEdit.histories[0]!.series;
+    // 50〜100 年の存続区間（移動済アンカー）が残り、100 年に新アンカーが挿入される.
+    expect(series.entries.map((e) => e.start)).toEqual([timePointYear(50), timePointYear(100)]);
+    expect(resolveAt(series, timePointYear(60), calendar).kind).toBe('present');
+    expect(isValidSeries(series, calendar)).toBe(true);
+    const at100 = resolveAt(series, timePointYear(100), calendar);
+    expect(at100.kind).toBe('present');
+    if (at100.kind === 'present') {
+      expect(at100.entry.anchor.snapshot.vertices.byId.get(asVertexId('vc-3'))!.coordinate.lat).toBe(5);
+    }
   });
 });
