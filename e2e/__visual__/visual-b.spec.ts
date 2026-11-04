@@ -29,7 +29,6 @@ interface Note {
 const notes: Note[] = [];
 function record(kind: string, detail: string): void {
   notes.push({ kind, detail });
-  // eslint-disable-next-line no-console
   console.log(`VISUALB:${kind}: ${detail}`);
 }
 
@@ -366,7 +365,6 @@ test.describe('VISUAL-B — FR-20 面積 / FR-87 エッジ頂点追加 / FR-87-8
       );
       await shot(page, 'b-09-context-deleted');
 
-      // eslint-disable-next-line no-console
       console.log(`VISUALB_SUMMARY: ${JSON.stringify(notes)}`);
       await expect(page.getByTestId('app-shell')).toBeVisible();
     } finally {
