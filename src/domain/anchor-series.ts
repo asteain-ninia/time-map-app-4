@@ -437,8 +437,14 @@ export function resolveAt(
  * the new anchor can inherit it (§5.7 step 3) — in a temporal enclave that is
  * `absent`, and the caller supplies a fresh full state.
  *
- * The new entry inherits NO end (open within its slot); overlap is resolved by
- * normalization. Because the only structural change is at `baseTime`, this never
+ * When the edit lands INSIDE an effective entry, the new entry inherits that
+ * entry's END (§5.6 分割: the effective entry is split into [start, baseTime) and
+ * [baseTime, end)); normalization then shortens the effective entry to `baseTime`.
+ * An open-ended effective entry yields an open-ended new entry (open within its
+ * slot, bounded by the next future start). Inheriting `null` from a BOUNDED entry
+ * would resurrect the feature forever after its set end (FR-54, bughunt#4). In a
+ * temporal enclave (`absent`) there is no interval to inherit, so the new entry is
+ * open-ended. Because the only structural change is at `baseTime`, this never
  * alters any future entry's start or snapshot.
  *
  * `baseTime` MUST be a TimePoint valid for the calendar. Unlike the guarded
@@ -482,7 +488,9 @@ export function applyPastEdit(
   // Insert a new anchor; inherit the state effective at baseTime.
   const effective = resolveAt(series, baseTime, calendar);
   const anchor = withUniqueAnchorId(makeAnchor(effective), series);
-  const inserted = createAnchorEntry(anchor, baseTime, null);
+  // §5.6 分割: inherit the effective entry's end so a bounded interval stays bounded.
+  const inheritedEnd = effective.kind === 'present' ? effective.entry.end : null;
+  const inserted = createAnchorEntry(anchor, baseTime, inheritedEnd);
   return normalizeSeries([...series.entries, inserted], calendar);
 }
 

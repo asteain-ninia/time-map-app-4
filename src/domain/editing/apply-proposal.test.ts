@@ -25,7 +25,7 @@ import type { FeatureSnapshot } from './edit-flow';
 import { createShape, createTerritoryRing } from '../ring';
 import { createVertex, createVertexStore, setVertex, withVertexCoordinate } from '../vertex';
 import { createAnchor, createAnchorSnapshot } from '../anchor';
-import { changeStart, createAnchorEntry, normalizeSeries, resolveAt } from '../anchor-series';
+import { changeStart, createAnchorEntry, normalizeSeries, resolveAt, setEnd } from '../anchor-series';
 import { checkConsistency, INCONSISTENCY } from '../persistence/consistency';
 import { asAnchorId, asFeatureId, asRingId, asVertexId } from '../ids';
 import { isValidSeries } from '../anchor-series';
@@ -1192,5 +1192,48 @@ describe('applyEditProposal after changeStart (anchor id collision)', () => {
     if (at100.kind === 'present') {
       expect(at100.entry.anchor.snapshot.vertices.byId.get(asVertexId('vc-3'))!.coordinate.lat).toBe(5);
     }
+  });
+});
+
+// --- bughunt#4: 終了時刻を設定した地物を存続区間の途中で編集しても復活しない -------
+//
+// applyPastEdit の挿入枝が新アンカーを無期限(end=null)で入れていたため、終了時刻 200 の
+// 地物を年 100 で編集すると、正規化で旧アンカーが 100 に短縮され、新アンカーが 200 以降も
+// 永久に続いていた(FR-54: 最後の錨の終了時刻以降は非存在)。
+describe('applyEditProposal inside a bounded existence interval', () => {
+  it('終了時刻 200 の地物を年 100 で編集しても 200 以降は非存在のまま', () => {
+    const f = squareLeaf('f-end', ['ve-1', 've-2', 've-3'], [0, 1, 2]);
+    const added = applyAddProposal(emptyProject(), {
+      featureId: f.feature.id,
+      anchorTime: timePointYear(0),
+      snapshot: { feature: f.feature, vertices: f.vertices, sharedCandidateIds: new Map() },
+    });
+    const h = added.histories[0]!;
+    const ended = setEnd(
+      h.series,
+      deriveAnchorId(f.feature.id, timePointYear(0)),
+      timePointYear(200),
+      calendar,
+    );
+    expect(ended.ok).toBe(true);
+    if (!ended.ok) return;
+    const bounded: DomainProject = {
+      ...added,
+      histories: [{ featureId: h.featureId, series: ended.series }],
+    };
+    expect(resolveAt(bounded.histories[0]!.series, timePointYear(300), calendar).kind).toBe('absent');
+
+    const movedBody = createVertex(asVertexId('ve-3'), { lon: 2, lat: 5 });
+    const afterEdit = applyEditProposal(
+      bounded,
+      createEditProposal(f.feature.id, timePointYear(100), { feature: f.feature, vertices: [movedBody] }),
+      calendar,
+    );
+
+    const series = afterEdit.histories[0]!.series;
+    expect(resolveAt(series, timePointYear(150), calendar).kind).toBe('present');
+    expect(resolveAt(series, timePointYear(200), calendar).kind).toBe('absent');
+    expect(resolveAt(series, timePointYear(300), calendar).kind).toBe('absent');
+    expect(isValidSeries(series, calendar)).toBe(true);
   });
 });
