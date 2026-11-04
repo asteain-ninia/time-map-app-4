@@ -7,13 +7,12 @@
 // prove the renderer makes NO network egress during a real session (FR-02), and
 // pin the two regression観点 as E2E.
 //
-// 依存ゲート (spec §依存 / §1.8) は解消済み: the live consistency-apply binding (once
-// a NEW domain責務 recorded unassigned in docs/現状.md by U43) is wired, so the full
-// add/edit/split/merge mutation flows run through the built composite and the
-// temp-state-discard / selection-retention regressions mutate domain state
-// end-to-end below. No test.skip() skeleton remains in this file. The same
-// regression観点 are ALSO fixed as pure unit lenses in src/domain/perf/*.test.ts, so
-// the unit layer holds them independently of the E2E run (教訓 5.41).
+// 依存ゲート (spec §依存 / §1.8) は解消済み: the live consistency-apply binding is
+// wired, so the full add/edit/split/merge mutation flows run through the built
+// composite and the temp-state-discard / selection-retention regressions mutate
+// domain state end-to-end below. No test.skip() skeleton remains in this file. The
+// same regression観点 are ALSO pinned at the unit layer (files listed at the 回帰観点
+// section below), so they hold independently of the E2E run (教訓 5.41).
 
 import { test, expect, type Page } from '@playwright/test';
 
@@ -143,8 +142,16 @@ test.describe('FR-02 — オフライン完結: レンダラは外部発信し�
 // --- 回帰観点 (live consistency-apply binding 配線済み) ---------------------------
 //
 // Editing mode mutates domain state through the live binding, so these run
-// end-to-end. The same判定 are ALSO held by the pure unit lenses in src/domain/perf
-// (一時状態破棄 / 選択維持 の判定は U23/U24/U26/U28/U30/U35 の単体で固定済み).
+// end-to-end. The same判定 are ALSO held at the unit layer:
+//   - 一時状態の破棄 (教訓 5.2): src/domain/add/session.test.ts (startSession /
+//     resetSession), src/ui/add/useAddTool.test.tsx「transient discard」,
+//     src/ui/add/AddToolController.test.tsx「U23 integration: 全経路で破棄」; the
+//     knife side in src/domain/knife/session.test.ts「一時状態の全経路破棄」.
+//   - 構造変更後の選択維持 (教訓 5.11): src/domain/selection/reresolve.test.ts
+//     「structure-change re-resolution」, src/ui/state/store.test.ts「re-resolves
+//     selection from a command result」, src/ui/consistency-binding.test.tsx
+//     「createLiveKnifeBinding — a clean axis-aligned split commits without conflict」
+//     and「makeCommand finding5 — split created set includes the new feature」.
 
 // Place one vertex by clicking the transient add-input layer (the overlay layer
 // the controller mounts above the map while drawing — 教訓 5.14).

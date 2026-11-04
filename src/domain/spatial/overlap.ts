@@ -352,7 +352,7 @@ function overlapArea(a: GeoMultiPolygon, b: GeoMultiPolygon): GeoMultiPolygon | 
 /**
  * Stable unordered-pair key: smaller id string first (normalised order). The
  * separator is NUL, written as the `\u0000` escape so the source stays a text file
- * for grep / diff (a raw NUL byte made git and grep treat the whole file as binary).
+ * (a raw NUL byte made grep and git's line-ending detection treat the file as binary).
  */
 function pairKey(x: FeatureId, y: FeatureId): string {
   const sx = idToString(x);
