@@ -1,4 +1,4 @@
-// VISUAL-A (discovery-only, NOT committed) — real-screen visual verification of
+// VISUAL-A (discovery-only) — real-screen visual verification of
 //   FR-22  リング編集: 既存地物へ穴を追加 (A1) / 飛び地を追加 (A2)
 //   FR-24  リング削除 (A3)
 //   FR-45  drill ツールで穴あけ = 新地物生成 (A4)

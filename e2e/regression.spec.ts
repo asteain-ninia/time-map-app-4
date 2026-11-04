@@ -7,14 +7,13 @@
 // prove the renderer makes NO network egress during a real session (FR-02), and
 // pin the two regression観点 as E2E.
 //
-// 依存ゲート (spec §依存 / §1.8): the full add/edit/split/merge mutation flows
-// require the live consistency-apply binding (a NEW domain責務, recorded
-// unassigned in docs/現状.md by U43). Until that is wired, the composite boots in
-// View mode with editing disabled, so the temp-state-discard / selection-
-// retention regressions cannot mutate domain state end-to-end. Those cases are
-// therefore SKELETON test.skip()s here (visible, not deleted) AND are double-fixed
-// as pure unit lenses in src/domain/perf/*.test.ts — so the regression観点 is held
-// by the unit layer now and the E2E activates once the binding lands (教訓 5.41).
+// 依存ゲート (spec §依存 / §1.8) は解消済み: the live consistency-apply binding (once
+// a NEW domain責務 recorded unassigned in docs/現状.md by U43) is wired, so the full
+// add/edit/split/merge mutation flows run through the built composite and the
+// temp-state-discard / selection-retention regressions mutate domain state
+// end-to-end below. No test.skip() skeleton remains in this file. The same
+// regression観点 are ALSO fixed as pure unit lenses in src/domain/perf/*.test.ts, so
+// the unit layer holds them independently of the E2E run (教訓 5.41).
 
 import { test, expect, type Page } from '@playwright/test';
 
@@ -28,11 +27,10 @@ import {
 } from './helpers';
 
 test.describe('FR-01 — 時間軸に沿った状態再現が live shell で成立する', () => {
-  // 依存ゲート: the U21 Timeline component is mounted into the composition root by
-  // the same live-binding work that enables editing (docs/現状.md 未割当). When the
-  // timeline IS wired, these activate automatically; until then they SKIP at
-  // runtime (visible, not deleted — 開発ガイド §1.8). The FR-01 time-axis logic is
-  // unit-fixed in domain/time (resolveAt) regardless.
+  // The U21 Timeline component is mounted into the composition root by the same
+  // live-binding work that enabled editing, so these run for real (nothing SKIPs at
+  // runtime). The FR-01 time-axis logic is unit-fixed in the domain
+  // (anchor-series resolveAt) regardless.
 
   test('stepping the timeline forward changes the displayed current time (FR-68 / FR-71)', async () => {
     const { app, page } = await launchApp();
@@ -142,11 +140,11 @@ test.describe('FR-02 — オフライン完結: レンダラは外部発信し�
   });
 });
 
-// --- 回帰観点 (依存ゲート: live consistency-apply binding 未実装) -----------------
+// --- 回帰観点 (live consistency-apply binding 配線済み) ---------------------------
 //
-// These activate once editing mode can mutate domain state through the live
-// binding. Held NOW by the pure unit lenses in src/domain/perf (一時状態破棄 /
-// 選択維持 の判定は U23/U24/U26/U28/U30/U35 の単体で固定済み; ここは E2E 化の枠).
+// Editing mode mutates domain state through the live binding, so these run
+// end-to-end. The same判定 are ALSO held by the pure unit lenses in src/domain/perf
+// (一時状態破棄 / 選択維持 の判定は U23/U24/U26/U28/U30/U35 の単体で固定済み).
 
 // Place one vertex by clicking the transient add-input layer (the overlay layer
 // the controller mounts above the map while drawing — 教訓 5.14).

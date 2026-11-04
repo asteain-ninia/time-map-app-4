@@ -1,4 +1,4 @@
-// VISUAL-B (discovery-only, NOT committed) — real-screen visual verification of
+// VISUAL-B (discovery-only) — real-screen visual verification of
 //   FR-20  面積表示 (property panel km² row)
 //   FR-87  エッジ頂点追加 (drag an edge-midpoint handle to insert a vertex)
 //   FR-87/88 頂点削除 (select a vertex handle → Delete) vs 地物削除 (no vertex → Delete)
