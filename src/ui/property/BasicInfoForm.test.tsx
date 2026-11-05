@@ -54,6 +54,7 @@ interface RenderOptions {
   readonly parentName?: string | null;
   readonly lengthKm?: number;
   readonly onSubmit?: (advance: boolean) => void;
+  readonly onEscape?: () => void;
 }
 
 function renderForm(options: RenderOptions = {}): {
@@ -72,6 +73,7 @@ function renderForm(options: RenderOptions = {}): {
       {...(options.parentName !== undefined ? { parentName: options.parentName } : {})}
       {...(options.lengthKm !== undefined ? { lengthKm: options.lengthKm } : {})}
       {...(options.onSubmit !== undefined ? { onSubmit: options.onSubmit } : {})}
+      {...(options.onEscape !== undefined ? { onEscape: options.onEscape } : {})}
     />,
   );
   return { onChange };
@@ -277,6 +279,38 @@ describe('Enter は「保存して次へ」（設計書 §I.2）', () => {
     renderForm({ onSubmit });
     fireEvent.keyDown(referenceInput(), { key: 'Enter' });
     expect(onSubmit).toHaveBeenCalledWith(true);
+  });
+
+  it.each([
+    ['名前欄', nameInput],
+    ['種別欄', kindInput],
+    ['参照名の欄', referenceInput],
+  ])('%s: IME の変換中の Enter は保存しない。確定のあとの Enter は保存する', (_n, input) => {
+    const onSubmit = vi.fn();
+    renderForm({ onSubmit });
+    fireEvent.compositionStart(input());
+    const prevented = !fireEvent.keyDown(input(), { key: 'Enter' });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(prevented).toBe(false);
+    fireEvent.compositionEnd(input());
+    fireEvent.keyDown(input(), { key: 'Enter' });
+    expect(onSubmit).toHaveBeenCalledWith(true);
+  });
+
+  it('印が無くても isComposing: true / keyCode 229 の Enter は保存しない', () => {
+    const onSubmit = vi.fn();
+    renderForm({ onSubmit });
+    fireEvent.keyDown(nameInput(), { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(referenceInput(), { key: 'Enter', keyCode: 229 });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('変換中の Escape は焦点を返さない（変換の取り消し）', () => {
+    const onEscape = vi.fn();
+    renderForm({ onEscape });
+    fireEvent.compositionStart(nameInput());
+    fireEvent.keyDown(nameInput(), { key: 'Escape' });
+    expect(onEscape).not.toHaveBeenCalled();
   });
 
   it('口が配線されていなければ既定のまま素通しする（honest stub）', () => {

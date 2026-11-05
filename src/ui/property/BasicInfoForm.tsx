@@ -19,7 +19,7 @@
 //
 // 「打ちかけの下書きをいつ捨てるか」（教訓 5.2 / 5.12 / N-04）もパネル側の責任になった。
 
-import { useMemo, type Ref } from 'react';
+import { useMemo, useRef, type Ref } from 'react';
 
 import type { Feature } from '../../domain/feature';
 
@@ -166,11 +166,29 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
     onEscape,
   } = props;
 
+  /** IME の変換中の印。名前・種別・参照名の 3 欄で 1 つを共有する（同時に変換できる欄は 1 つ）。 */
+  const composingRef = useRef(false);
+  const imeHandlers = {
+    onCompositionStart: () => {
+      composingRef.current = true;
+    },
+    onCompositionEnd: () => {
+      composingRef.current = false;
+    },
+  };
   /**
-   * 名前欄・種別欄の Enter（設計書 §I.2）。**Ctrl+Enter は保存だけして次へ進まない。**
+   * 名前欄・種別欄・参照名欄の Enter（設計書 §I.2）。**Ctrl+Enter は保存だけして次へ進まない。**
    * `onSubmit` が渡っていないとき（テスト・組み込み前）は既定のまま素通しする。
    */
   const onFieldKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
+    // **IME の変換中の Enter / Escape は、保存・焦点返しではない**（変換の確定・取り消し）。
+    // `isComposing` は環境によって載らないので、自前の印（compositionstart/end）とどちらかで
+    // 見る（`timeline/RailControls.tsx` の年入力と同じ）。さらに、変換確定の keydown が
+    // compositionend の後に `isComposing: false` で届く環境（Safari など）でも
+    // `keyCode === 229`（IME 処理中の印）は残るので、それも変換中として扱う。
+    if (composingRef.current || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) {
+      return;
+    }
     if (e.key === 'Escape') {
       // **焦点を一覧へ返す**（2026-09-06）。旧版は Escape で何も起きず、鍵盤だけでは
       // 欄から出られなかった（実測）。打ちかけは捨てない ―― 捨てるかどうかは
@@ -225,6 +243,7 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
           {...(props.nameInputRef !== undefined ? { ref: props.nameInputRef } : {})}
           data-pristine={props.pristine === true ? 'true' : 'false'}
           onChange={(e) => onChange({ name: e.target.value })}
+          {...imeHandlers}
           onKeyDown={onFieldKeyDown}
         />
       </label>
@@ -244,6 +263,7 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
           disabled={!editable}
           data-pristine={props.pristine === true ? 'true' : 'false'}
           onChange={(e) => onChange({ kindLabel: e.target.value })}
+          {...imeHandlers}
           onKeyDown={onFieldKeyDown}
         />
       </label>
@@ -263,6 +283,7 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
           disabled={!editable}
           data-pristine={props.pristine === true ? 'true' : 'false'}
           onChange={(e) => onChange({ referenceName: e.target.value })}
+          {...imeHandlers}
           onKeyDown={onFieldKeyDown}
         />
       </label>
