@@ -9,10 +9,12 @@
 //
 // 依存ゲート (spec §依存 / §1.8) は解消済み: the live consistency-apply binding is
 // wired, so the full add/edit/split/merge mutation flows run through the built
-// composite and the temp-state-discard / selection-retention regressions mutate
-// domain state end-to-end below. No test.skip() skeleton remains in this file. The
-// same regression観点 are ALSO pinned at the unit layer (files listed at the 回帰観点
-// section below), so they hold independently of the E2E run (教訓 5.41).
+// composite and both regression観点 below run end-to-end through the real UI. The
+// temp-state-discard cases only draft and discard (nothing is committed); the
+// selection-retention case commits a new area and then splits it, which mutates
+// domain state. No test.skip() skeleton remains in this file. The same regression
+// 観点 are ALSO pinned at the unit layer (files listed at the 回帰観点 section
+// below), so they hold independently of the E2E run (教訓 5.41).
 
 import { test, expect, type Page } from '@playwright/test';
 
@@ -141,8 +143,9 @@ test.describe('FR-02 — オフライン完結: レンダラは外部発信し�
 
 // --- 回帰観点 (live consistency-apply binding 配線済み) ---------------------------
 //
-// Editing mode mutates domain state through the live binding, so these run
-// end-to-end. The same判定 are ALSO held at the unit layer:
+// These run end-to-end through the real UI with editing enabled (only the
+// selection-retention case commits to domain state: an add, then a split). The
+// same判定 are ALSO held at the unit layer:
 //   - 一時状態の破棄 (教訓 5.2): src/domain/add/session.test.ts (startSession /
 //     resetSession), src/ui/add/useAddTool.test.tsx「transient discard」,
 //     src/ui/add/AddToolController.test.tsx「U23 integration: 全経路で破棄」; the
