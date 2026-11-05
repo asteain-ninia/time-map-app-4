@@ -18,8 +18,8 @@
 // (教訓 5.5/5.6): 再評価は入力経路でゲートせず、毎回母集合から導出する。
 //
 // 純粋: 母集合 + クエリ → 結果。マッチング判定は副作用なく Vitest 単体テスト可能
-// (NFR 5.8). 説明テキストは呼び出し側が toSearchableText (sanitize.ts) で素テキスト化
-// した値を渡す規約 (検索前サニタイズ, FR-116).
+// (NFR 5.8). 説明テキスト（作業メモ）は呼び出し側が toSearchableText (sanitize.ts) で
+// 整えた値を渡す規約 (FR-116).
 
 import type { FeatureId } from '../../domain/ids';
 
@@ -29,15 +29,15 @@ import type { FeatureKindAxis } from './axes';
  * One searchable record from the VISIBLE母集合. The caller (the adapter over
  * U32) builds these ONLY from features that passed the display resolution
  * (visibility.ts) at the current time — so a record existing here already means
- * "visible now" (教訓 5.3). `description` MUST be the sanitized素テキスト
- * (sanitize.toSearchableText), never raw Markdown/HTML (FR-116).
+ * "visible now" (教訓 5.3). `description` MUST be the作業メモ normalized by
+ * sanitize.toSearchableText (FR-116).
  */
 export interface SearchableFeature {
   readonly id: FeatureId;
   readonly kind: FeatureKindAxis;
   /** 名前 (FR-97). */
   readonly name: string;
-  /** 説明 — サニタイズ済み素テキスト (FR-98 / FR-116). */
+  /** 説明 — 整えた作業メモ (FR-98 / FR-116). */
   readonly description: string;
   /** 属性値 (種別ラベル FR-40 / 年代 FR-97 ほか) を文字列化した検索対象。 */
   readonly attributes: readonly string[];
@@ -77,7 +77,7 @@ function fold(s: string): string {
 
 /**
  * Search the VISIBLE母集合 for `normalizedQuery` (already validated/trimmed by
- * validation.validateSearchQuery). Matches name / sanitized description /
+ * validation.validateSearchQuery). Matches name / normalized description /
  * attribute values via substring (fold-normalized). Returns hits in母集合 order;
  * a feature absent from `corpus` (= not visible/present) can never appear
  * (教訓 5.3). Pure — same corpus + query ⇒ same result (教訓 5.5/5.6 再評価は

@@ -433,7 +433,7 @@
 }
 
 /* 畳める節の見出し（増分 2 の手直し D2 / 設計書 §C.6）。3 つの節（見た目・歴史の錨・
- * 詳細文書）で同じ見た目にする。 */
+ * 作業メモ）で同じ見た目にする。 */
 .style-section > summary,
 .anchor-section > summary,
 .detail-document > summary,
@@ -619,7 +619,7 @@
   border-top: 1px solid var(--c-border);
 }
 
-/* --- 詳細文書エディタ（FR-98 後段, サイドバー） ------------------------------ */
+/* --- 作業メモ（FR-98, サイドバー）。プレーンテキストで、書式は解釈しない ---------- */
 .detail-document {
   border-top: 1px solid var(--c-border);
   padding-top: 8px;
@@ -632,22 +632,21 @@
   gap: 8px;
 }
 
-.detail-document__modes {
-  display: flex;
-  gap: 4px;
-}
-
-/* 色の組（押された側の白い文字と青い地も）は土台から受ける。ここで文字の色を書くと、押された側が青地に暗い文字になる。 */
-.detail-document__modes button {
-  padding: 2px 10px;
-}
-
 .detail-document textarea {
   width: 100%;
   box-sizing: border-box;
   font-family: var(--font-mono, monospace);
   font-size: 12px;
   resize: vertical;
+}
+
+/* 打った文字をそのまま出す（改行を残し、長い語は枠の中で折り返す）。 */
+.detail-document__text,
+.detail-panel__memo {
+  margin: 0;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .detail-document__empty,

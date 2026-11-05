@@ -2,22 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import { toSearchableText } from './sanitize';
 
-describe('toSearchableText (検索前サニタイズ, FR-116)', () => {
-  it('strips HTML tags, leaving the text content', () => {
-    // tags become spaces; markdown markup chars (incl. parentheses) are stripped
-    // so the searchable素テキスト carries only the words.
-    expect(toSearchableText('<p>ローマ</p><script>alert(1)</script>')).toBe(
-      'ローマ alert 1',
-    );
-  });
-
-  it('strips Markdown markup so words still match', () => {
-    expect(toSearchableText('**ローマ** _帝国_ `コード`')).toBe('ローマ 帝国 コード');
-  });
-
-  it('drops link/image markup but keeps the visible words', () => {
-    expect(toSearchableText('[ローマ](feature:abc) ![図](img.png)')).toBe(
-      'ローマ feature:abc 図 img.png',
+describe('toSearchableText (検索前の整え, FR-116)', () => {
+  it('作業メモはプレーンテキストなので、記法や HTML の形をした文字もそのまま探せる', () => {
+    expect(toSearchableText('**ローマ** <b>帝国</b> [図](img.png)')).toBe(
+      '**ローマ** <b>帝国</b> [図](img.png)',
     );
   });
 
@@ -27,14 +15,7 @@ describe('toSearchableText (検索前サニタイズ, FR-116)', () => {
 
   it('drops invisible zero-width code points (not matched by \\s)', () => {
     // U+200B between words and a U+FEFF (BOM) at the edge must not leak into the
-    // searchable素テキスト nor split a word into two search tokens.
+    // searchable text nor split a word into two search tokens.
     expect(toSearchableText('﻿ローマ​帝国')).toBe('ローマ帝国');
-  });
-
-  it('does not match on tag names (no HTML leaks into search)', () => {
-    const text = toSearchableText('<strong class="x">語</strong>');
-    expect(text).toBe('語');
-    expect(text).not.toContain('strong');
-    expect(text).not.toContain('class');
   });
 });

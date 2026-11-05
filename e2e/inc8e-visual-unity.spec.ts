@@ -116,11 +116,6 @@ test.describe('見た目の統一（N-24 / N-25 / N-26 / N-28）', () => {
         await commitOneFace(page);
         await expectUnified(page, `${label} 素性欄`);
 
-        // 詳細文書の切替: 押された側は土台の色の組（青地に白い文字）
-        const { controls } = await readControlMetrics(page);
-        const pressed = controls.find((c) => c.testid?.startsWith('detail-doc-mode-') === true && c.pressed);
-        expect(pressed, `${label}: 詳細文書の押された側`).toBeDefined();
-        expect(pressed?.contrast ?? 0).toBeGreaterThanOrEqual(MIN_CONTRAST);
 
         await page.getByTestId('menu-tools').click();
         await page.getByTestId('menu-items-tools').locator('[data-command="tools.settings"]').click();

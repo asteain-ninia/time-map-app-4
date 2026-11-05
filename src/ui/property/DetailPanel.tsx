@@ -1,7 +1,8 @@
 // UI layer (U32 / property panel): one modal detail panel (FR-99後段 / FR-98).
 //
 // A draggable, independently-closable floating panel showing ALL of a feature's
-// attributes plus its detail document (sanitized Markdown). It reuses the shell's
+// attributes plus its 作業メモ (plain text — FR-98: no formatting, no images, no
+// in-document links; shown as React text, never as HTML). It reuses the shell's
 // DraggablePanel (drag handle + bring-to-front + close, 教訓 5.8 / 5.14): the
 // panel is an input-capturing front layer so a transparent backdrop never steals
 // the drag handle (教訓 5.14). Edit integration in detail mode is gated by the
@@ -9,28 +10,22 @@
 // the document read-only; the edit form lives in the sidebar panel.
 
 import type { Feature } from '../../domain/feature';
-import type { FeatureId } from '../../domain/ids';
 
 import { DraggablePanel } from '../shell/DraggablePanel';
 import type { Point } from '../shell/drag';
 import { formatYear } from '../timeline/time-display';
 
-import type { AssetResolver } from './contracts';
-import { MarkdownView } from './MarkdownView';
 import { PROPERTY_STRINGS, PROPERTY_TEXT, featureKindJaLabel } from './messages';
 
 export interface DetailPanelProps {
   readonly id: string;
   readonly feature: Feature;
-  /** The raw Markdown detail document for the feature ('' when none). */
+  /** The作業メモ (plain text) for the feature ('' when none). */
   readonly detailDocument: string;
-  readonly assetResolver: AssetResolver;
   readonly initialPosition: Point;
   readonly zIndex: number;
   readonly onFocusPanel?: (id: string) => void;
   readonly onClose?: (id: string) => void;
-  /** Object-reference link click → select the target feature (U22). */
-  readonly onSelectFeature?: (featureId: FeatureId) => void;
 }
 
 export function DetailPanel(props: DetailPanelProps): JSX.Element {
@@ -38,12 +33,10 @@ export function DetailPanel(props: DetailPanelProps): JSX.Element {
     id,
     feature,
     detailDocument,
-    assetResolver,
     initialPosition,
     zIndex,
     onFocusPanel,
     onClose,
-    onSelectFeature,
   } = props;
 
   return (
@@ -80,11 +73,15 @@ export function DetailPanel(props: DetailPanelProps): JSX.Element {
 
         <section className="detail-panel__document">
           <h4>{PROPERTY_STRINGS.detailDocumentTitle}</h4>
-          <MarkdownView
-            source={detailDocument}
-            assetResolver={assetResolver}
-            {...(onSelectFeature ? { onSelectFeature } : {})}
-          />
+          {detailDocument.length > 0 ? (
+            <p className="detail-panel__memo" data-testid="detail-panel-memo">
+              {detailDocument}
+            </p>
+          ) : (
+            <p className="detail-document__empty" data-testid="detail-panel-memo-empty">
+              {PROPERTY_STRINGS.detailDocEmpty}
+            </p>
+          )}
         </section>
       </div>
     </DraggablePanel>

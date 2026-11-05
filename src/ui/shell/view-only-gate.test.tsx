@@ -346,16 +346,13 @@ const CHANGE_PATHS: readonly ChangePath[] = [
     },
   },
   {
-    // 詳細文書に専用の保存ボタンがあった頃の名残ではない。増分 2 で保存の場所を素性欄の
-    // 下端の 1 本にまとめた（N-46）ので、本文も **同じ保存列** から確定する。経路として
-    // 別に残すのは、本文だけを直したときにも関門が効くことを見るためである。
-    name: '⑨ 詳細文書の保存（素性欄の保存列から）',
+    // 作業メモに専用の保存ボタンがあった頃の名残ではない。増分 2 で保存の場所を素性欄の
+    // 下端の 1 本にまとめた（N-46）ので、メモも **同じ保存列** から確定する。経路として
+    // 別に残すのは、メモだけを直したときにも関門が効くことを見るためである。
+    name: '⑨ 作業メモの保存（素性欄の保存列から）',
     canChange: (mode) => {
       const intents: PropertyEditIntent[] = [];
       renderPanel(mode, { editDispatch: { dispatchEdit: (i) => intents.push(i) } });
-      const toEdit = screen.queryByTestId('detail-doc-mode-edit');
-      if (toEdit === null) return false;
-      fireEvent.click(toEdit);
       const textarea = screen.queryByTestId('detail-doc-textarea');
       if (textarea === null) return false;
       fireEvent.change(textarea, { target: { value: '書き足した本文' } });

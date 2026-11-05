@@ -1235,14 +1235,13 @@ describe('増分 2 — 編集時刻は常に現在時刻（設計書 §D.3 / FR-
   // A3: 上書きのときは、その錨の開始と同じ時刻をそのまま渡す（年ちょうどなら年へ
   // 丸める＝上の 1 本）。**年ちょうどでない開始を持つ錨だけが編集できない**のを直した。
 
-  it('保存の対象に種別ラベルと詳細文書が含まれる（設計書 §C.6 の「保存の対象」）', () => {
+  it('保存の対象に種別ラベルと作業メモが含まれる（設計書 §C.6 の「保存の対象」）', () => {
     const intents: PropertyEditIntent[] = [];
     renderPanel(storeAt(timePointYear(1200)), { dispatchEdit: (i) => intents.push(i) });
 
     fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.kindLabelLabel), {
       target: { value: '国' },
     });
-    fireEvent.click(screen.getByTestId('detail-doc-mode-edit'));
     fireEvent.change(screen.getByTestId('detail-doc-textarea'), {
       target: { value: '本文' },
     });
@@ -1254,9 +1253,9 @@ describe('増分 2 — 編集時刻は常に現在時刻（設計書 §D.3 / FR-
     expect(intents[0]!.attributes.detailDocument).toBe('本文');
   });
 
-  it('詳細文書に専用の保存ボタンは無い（N-46 を揃えた結果）', () => {
+  it('作業メモに専用の保存ボタンは無い（N-46 を揃えた結果）', () => {
     renderPanel(storeAt(timePointYear(1200)));
-    fireEvent.click(screen.getByTestId('detail-doc-mode-edit'));
+    expect(screen.getByTestId('detail-doc-textarea')).toBeInTheDocument();
     expect(screen.queryByTestId('detail-doc-save')).not.toBeInTheDocument();
   });
 });

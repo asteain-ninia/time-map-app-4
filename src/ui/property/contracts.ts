@@ -77,18 +77,6 @@ export interface GoverningAnchorSeries {
 }
 
 /**
- * Resolves a ZIP-internal asset RELATIVE reference (e.g. `images/x.png`) to a
- * display-usable source string (e.g. a blob/object URL), or `null` when it does
- * not resolve. The real implementation lives in the persistence unit (asset I/O
- * / ZIP read); this unit only USES the contract so it never fetches an external
- * URL (FR-02 offline完結, spec §やらないこと). A `null` result is rendered as a
- * SAFE broken image — it never falls back to the raw外部 href.
- */
-export interface AssetResolver {
-  resolveAsset(relativeReference: string): string | null;
-}
-
-/**
  * The edit-command dispatch port (U16 → command base). The property unit builds
  * the EDIT INTENT (which feature, which anchor's start time as the edit time,
  * which new values) and hands it off; command application + undo/redo history is
@@ -244,9 +232,10 @@ export interface PropertyEditValues {
   /** 使用パレット（テーマ名）— the style attribute (FR-100 / U33 AC1). */
   readonly paletteTheme: string;
   /**
-   * 詳細文書（FR-98）の生 Markdown。空文字は「文書なし」（ドメインが absent へ
-   * 正規化する — 唯一の空の形）。**同じ保存で一緒に確定する**ので、名前と文書を
-   * 続けて直しても取り消しは 1 手で済む（N-46）。
+   * 作業メモ（FR-98。プレーンテキストで、書式・画像・文書内リンクを解釈しない）。
+   * 空文字は「メモなし」（ドメインが absent へ正規化する — 唯一の空の形）。
+   * **同じ保存で一緒に確定する**ので、名前とメモを続けて直しても取り消しは 1 手で
+   * 済む（N-46）。保存形式の欄の名前は `detailDocument` のまま。
    */
   readonly detailDocument: string;
 }

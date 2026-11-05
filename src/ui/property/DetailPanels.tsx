@@ -12,7 +12,7 @@ import type { FeatureId } from '../../domain/ids';
 
 import { ZOrder } from '../shell/z-order';
 
-import type { AssetResolver, FeatureLookup } from './contracts';
+import type { FeatureLookup } from './contracts';
 import { DetailPanel } from './DetailPanel';
 import {
   type DetailPanelsState,
@@ -30,11 +30,9 @@ export interface DetailPanelsController {
 export interface DetailPanelsProps {
   readonly state: DetailPanelsState;
   readonly featureLookup: FeatureLookup;
-  readonly assetResolver: AssetResolver;
-  /** Resolve a feature's raw Markdown detail document ('' when none). */
+  /** Resolve a feature's作業メモ ('' when none). */
   readonly detailDocumentOf: (featureId: FeatureId) => string;
   readonly onClose: (id: string) => void;
-  readonly onSelectFeature?: (featureId: FeatureId) => void;
   /**
    * **時刻が動いたら描き直す**ための口（増分 8E / 設計書 §J.4 の結合点 #12）。
    *
@@ -64,10 +62,8 @@ export function DetailPanels(props: DetailPanelsProps): JSX.Element {
   const {
     state,
     featureLookup,
-    assetResolver,
     detailDocumentOf,
     onClose,
-    onSelectFeature,
   } = props;
 
   // 現在時刻を購読する（結合点 #12）。値そのものは使わず、変わったら描き直すだけ。
@@ -100,12 +96,10 @@ export function DetailPanels(props: DetailPanelsProps): JSX.Element {
             id={panel.id}
             feature={feature}
             detailDocument={detailDocumentOf(panel.featureId)}
-            assetResolver={assetResolver}
             initialPosition={panel.position}
             zIndex={zorder.indexOf(panel.id) + 1}
             onFocusPanel={handleFocus}
             onClose={onClose}
-            {...(onSelectFeature ? { onSelectFeature } : {})}
           />
         );
       })}

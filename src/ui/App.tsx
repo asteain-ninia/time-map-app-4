@@ -42,7 +42,6 @@ import {
   openPanel,
   intervalRejectionMessage,
   type DetailPanelsState,
-  type AssetResolver,
   type EditDispatch,
   type AnchorIntervalEditDispatch,
   type FeatureLookup as PropertyFeatureLookup,
@@ -4248,10 +4247,6 @@ export function App(): JSX.Element {
         onOpenDetail,
         editDispatch: propertyEditDispatch,
         anchorIntervalDispatch,
-        // FR-98 後段: the 詳細文書 editor in the sidebar property panel (the floating
-        // DetailPanel stays view-only). The preview resolves no assets yet (the same
-        // honest NO_ASSET_RESOLVER the detail panels use — 文書内画像アセットは別タスク).
-        assetResolver: NO_ASSET_RESOLVER,
         onDeleteFeature: propertyDeleteFeature,
         // 増分 2 の中身 3: 素性欄の「この年に錨を作る」を、メニューと Ctrl+K と
         // **同じコマンド 1 本**へ繋ぐ（権限の関門も可否の判定もそこで 1 回だけ
@@ -4753,27 +4748,23 @@ export function App(): JSX.Element {
               }}
             />
             {/* HB3-11: the feature detail panels (FR-99後段) — draggable/closable, one
-                per feature, showing all attributes (dl) + an empty document-body stub.
-                Selecting from a panel promotes through the SAME store.setActiveFeature
-                path every selection uses (no second selection source, 教訓 5.29). */}
+                per feature, showing all attributes (dl) + the作業メモ as plain text
+                (FR-98: no in-document links, so the panel never changes the selection). */}
             <DetailPanels
               state={detailPanels}
               featureLookup={detailFeatureLookup}
               // 増分 8E（結合点 #12）: 年を動かしてその地物が無くなったら、その場で消す。
               liveStore={store}
-              assetResolver={NO_ASSET_RESOLVER}
-              // FR-98: the LIVE detail document, resolved at the CURRENT time per call
+              // FR-98: the LIVE作業メモ, resolved at the CURRENT time per call
               // (the SAME「現在時刻で都度解決」discipline detailFeatureLookup uses —
-              // never a stale capture, 教訓 5.6). Was an honest '' stub until the
-              // FR-98 editor landed; the floating panel itself stays VIEW-ONLY (the
-              // edit surface is the sidebar PropertyPanel).
+              // never a stale capture, 教訓 5.6). The floating panel itself stays
+              // VIEW-ONLY (the edit surface is the sidebar PropertyPanel).
               detailDocumentOf={(fid) =>
                 featuresAt(store.getState().domain, store.getState().currentTime).find(
                   (f) => f.id === fid,
                 )?.detailDocument ?? ''
               }
               onClose={(id) => setDetailPanels((s) => closeDetailPanel(s, id))}
-              onSelectFeature={(fid) => store.getState().setActiveFeature(fid)}
             />
             {/* HB-10 観測フック (Ctrl+Y redo の挙動 E2E): mirror the live undo/redo
                 stack availability into hidden markers (既存 app-active-feature 方式).
@@ -5103,9 +5094,6 @@ const KNIFE_DEFAULT_COLOR = withFillOpacity(
 
 /** HB3-11: base screen position for the first detail panel (later panels cascade). */
 const DETAIL_PANEL_BASE_POS = { x: 160, y: 120 };
-/** HB3-11: detail documents are an honest empty stub for now (文書本体保存は別タスク) and
- *  carry no embedded assets, so the asset resolver always returns null (safe broken-image). */
-const NO_ASSET_RESOLVER: AssetResolver = { resolveAsset: () => null };
 
 /**
  * Mount {@link AddToolController} with the live FACE parent candidates (FR-77 親面).

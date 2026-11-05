@@ -35,10 +35,10 @@ export interface FeatureReadModel {
   /** 名前 (FR-97). */
   readonly name: string;
   /**
-   * 説明 — the RAW Markdown source (FR-98). The adapter sanitizes it to素テキスト
+   * 説明 — the feature's作業メモ (FR-98, plain text). The adapter normalizes it
    * via toSearchableText BEFORE it enters the search corpus (FR-116).
    */
-  readonly descriptionMarkdown: string;
+  readonly workingMemo: string;
   /** 属性値 (種別ラベル FR-40 / 年代 FR-97 ほか) already stringified for search. */
   readonly attributeValues: readonly string[];
 }
@@ -72,7 +72,7 @@ export function toDisplayMeta(record: FeatureReadModel): FeatureDisplayMeta {
 
 /**
  * Build a search corpus record from a U32 read record: the description is
- * sanitized to素テキスト here (the search-side sanitize入口, FR-116), and the
+ * normalized here (the search-side入口, FR-116), and the
  * coarse kind-axis is derived through the single mapping (axes.kindAxisOf). The
  * caller passes ONLY records that are visible at the current time (the visible
  * 母集合, 教訓 5.3) so a non-visible feature never enters the corpus.
@@ -82,7 +82,7 @@ export function toSearchableFeature(record: FeatureReadModel): SearchableFeature
     id: record.id,
     kind: kindAxisOf(record.kind),
     name: record.name,
-    description: toSearchableText(record.descriptionMarkdown),
+    description: toSearchableText(record.workingMemo),
     attributes: record.attributeValues,
   };
 }

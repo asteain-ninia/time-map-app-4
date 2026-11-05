@@ -69,7 +69,6 @@ import {
   type AnchorStartEditStore,
   PropertyDraftStatusStore,
   type AnchorSeriesLookup,
-  type AssetResolver,
   type EditDispatch,
   type AnchorIntervalEditDispatch,
   type FeatureLookup,
@@ -158,8 +157,6 @@ export interface SidebarContentDeps<S> {
    * from {@link editDispatch}, which only rewrites the snapshot, never the interval.
    */
   readonly anchorIntervalDispatch?: AnchorIntervalEditDispatch;
-  /** FR-98 / FR-02: ZIP-internal asset resolution for the 詳細文書 preview. */
-  readonly assetResolver?: AssetResolver;
   readonly onOpenDetail?: (featureId: FeatureId) => void;
   /** FR-85: delete the given feature (the property-panel「地物を削除」button's confirm). */
   readonly onDeleteFeature?: (featureId: FeatureId) => void;
@@ -261,7 +258,6 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
     calendar,
     editDispatch,
     anchorIntervalDispatch,
-    assetResolver,
     onOpenDetail,
     onDeleteFeature,
     onCreateAnchorHere,
@@ -359,7 +355,6 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
       editDispatch={dispatch}
       calendar={calendar}
       {...(anchorIntervalDispatch ? { anchorIntervalDispatch } : {})}
-      {...(assetResolver ? { assetResolver } : {})}
       {...(onOpenDetail ? { onOpenDetail } : {})}
       {...(onDeleteFeature ? { onDeleteFeature } : {})}
       {...(onCreateAnchorHere ? { onCreateAnchorHere } : {})}
@@ -499,7 +494,6 @@ function PropertyPanelHost<S>(props: {
   readonly editDispatch: EditDispatch;
   readonly calendar: Calendar;
   readonly anchorIntervalDispatch?: AnchorIntervalEditDispatch;
-  readonly assetResolver?: AssetResolver;
   readonly onOpenDetail?: (featureId: FeatureId) => void;
   readonly onDeleteFeature?: (featureId: FeatureId) => void;
   readonly onCreateAnchorHere?: (featureId: FeatureId) => void;
@@ -661,7 +655,6 @@ function PropertyPanelHost<S>(props: {
       resolveAreaKm2={resolveAreaKm2}
       resolveLengthKm={resolveLengthKm}
       {...(props.anchorIntervalDispatch ? { anchorIntervalDispatch: props.anchorIntervalDispatch } : {})}
-      {...(props.assetResolver ? { assetResolver: props.assetResolver } : {})}
       {...(props.onOpenDetail ? { onOpenDetail: props.onOpenDetail } : {})}
       {...(props.onDeleteFeature ? { onDeleteFeature: props.onDeleteFeature } : {})}
       {...(props.onCreateAnchorHere ? { onCreateAnchorHere: props.onCreateAnchorHere } : {})}

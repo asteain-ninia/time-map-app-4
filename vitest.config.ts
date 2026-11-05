@@ -97,11 +97,10 @@ export default defineConfig({
       // (domain consistency/geometry + render feature-layer), so they run in node.
       'src/ui/conflict/**/*.test.ts',
       // U32 property-panel pure-logic tests: selection-display judgment (FR-83),
-      // object-link classification (FR-98), 時間バー time↔pixel mapping + label
-      // occupancy (FR-60), open-detail-panels model (FR-99), edit-intent no-op
-      // guard (FR-97). These import only pure `.ts` (domain + time-display), so
-      // they run in node without a DOM. Markdown sanitize + React component
-      // operation tests are `.test.tsx` (jsdom; covered by the .tsx glob below).
+      // 時間バー time↔pixel mapping + label occupancy (FR-60), open-detail-panels
+      // model (FR-99), edit-intent no-op guard (FR-97). These import only pure
+      // `.ts` (domain + time-display), so they run in node without a DOM. React
+      // component operation tests are `.test.tsx` (jsdom; covered by the .tsx glob below).
       'src/ui/property/**/*.test.ts',
       // U40 map-interaction pure-logic tests: the (mode × button × hit) dispatch
       // decision + drag threshold, the pan camera-center math (over U17's

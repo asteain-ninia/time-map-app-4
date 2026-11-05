@@ -1,5 +1,5 @@
-// U32: detail-panel drag / multiple / layering / markdown link tests (FR-99 /
-// FR-98, 受け入れ基準 3 / 4, 教訓 5.8 / 5.14 / 5.19).
+// U32: detail-panel drag / multiple / layering / plain-text 作業メモ tests (FR-99 /
+// FR-98, 受け入れ基準 3, 教訓 5.8 / 5.14).
 
 /// <reference types="@testing-library/jest-dom" />
 
@@ -14,15 +14,14 @@ import {
 } from '../../domain/feature';
 import { asFeatureId, asVertexId, type FeatureId } from '../../domain/ids';
 
-import type { AssetResolver, FeatureLookup } from './contracts';
+import type { FeatureLookup } from './contracts';
 import { DetailPanels } from './DetailPanels';
-import { MarkdownView } from './MarkdownView';
 import {
   type DetailPanelsState,
   openPanel,
   panelIdFor,
 } from './detail-panels';
-import { objectLinkHref } from './object-link';
+import { PROPERTY_STRINGS } from './messages';
 
 const color = createColorInfo(true, '#111111', '#222222', '#333333');
 const fA = asFeatureId('A');
@@ -35,7 +34,6 @@ function feat(id: FeatureId, name: string): Feature {
 const featureLookup: FeatureLookup = {
   featureAt: (id) => (id === fA ? feat(fA, '城A') : id === fB ? feat(fB, '城B') : null),
 };
-const noAssets: AssetResolver = { resolveAsset: () => null };
 
 function twoOpen(): DetailPanelsState {
   let s = openPanel({ panels: [] }, fA, { x: 50, y: 50 });
@@ -49,7 +47,6 @@ describe('DetailPanels — 複数同時 / 個別ドラッグ / 個別閉じ (FR-
       <DetailPanels
         state={twoOpen()}
         featureLookup={featureLookup}
-        assetResolver={noAssets}
         detailDocumentOf={() => ''}
         onClose={() => {}}
       />,
@@ -71,7 +68,6 @@ describe('DetailPanels — 複数同時 / 個別ドラッグ / 個別閉じ (FR-
       <DetailPanels
         state={openPanel({ panels: [] }, aggId, { x: 40, y: 40 })}
         featureLookup={aggLookup}
-        assetResolver={noAssets}
         detailDocumentOf={() => ''}
         onClose={() => {}}
       />,
@@ -85,7 +81,6 @@ describe('DetailPanels — 複数同時 / 個別ドラッグ / 個別閉じ (FR-
       <DetailPanels
         state={twoOpen()}
         featureLookup={featureLookup}
-        assetResolver={noAssets}
         detailDocumentOf={() => ''}
         onClose={() => {}}
       />,
@@ -108,7 +103,6 @@ describe('DetailPanels — 複数同時 / 個別ドラッグ / 個別閉じ (FR-
       <DetailPanels
         state={twoOpen()}
         featureLookup={featureLookup}
-        assetResolver={noAssets}
         detailDocumentOf={() => ''}
         onClose={() => {}}
       />,
@@ -131,7 +125,6 @@ describe('DetailPanels — 複数同時 / 個別ドラッグ / 個別閉じ (FR-
       <DetailPanels
         state={twoOpen()}
         featureLookup={featureLookup}
-        assetResolver={noAssets}
         detailDocumentOf={() => ''}
         onClose={onClose}
       />,
@@ -141,43 +134,33 @@ describe('DetailPanels — 複数同時 / 個別ドラッグ / 個別閉じ (FR-
     expect(onClose).toHaveBeenCalledWith(panelIdFor(fA));
   });
 
-  it('shows all attributes and the rendered detail document', () => {
+  it('shows all attributes and the作業メモ as plain text (書式を解釈しない)', () => {
     render(
       <DetailPanels
         state={openPanel({ panels: [] }, fA, { x: 0, y: 0 })}
         featureLookup={featureLookup}
-        assetResolver={noAssets}
-        detailDocumentOf={() => '**重要**な城'}
+        detailDocumentOf={() => '**重要**な城\n[行く](feature:B)'}
         onClose={() => {}}
       />,
     );
     expect(screen.getByTestId(`detail-panel-${fA}`)).toBeInTheDocument();
-    const md = screen.getByTestId('markdown-view');
-    expect(md.innerHTML).toContain('<strong>重要</strong>');
-  });
-});
-
-describe('MarkdownView — object-reference link click (FR-98, 教訓 5.19)', () => {
-  it('clicking a feature: link selects the target feature', () => {
-    const onSelect = vi.fn();
-    const doc = `[行く](${objectLinkHref(fB)})`;
-    render(<MarkdownView source={doc} assetResolver={noAssets} onSelectFeature={onSelect} />);
-    const link = screen.getByTestId('markdown-view').querySelector('a')!;
-    fireEvent.click(link);
-    expect(onSelect).toHaveBeenCalledWith(fB);
+    const memo = screen.getByTestId('detail-panel-memo');
+    expect(memo.textContent).toBe('**重要**な城\n[行く](feature:B)');
+    expect(memo.querySelector('strong')).toBeNull();
+    expect(memo.querySelector('a')).toBeNull();
   });
 
-  it('clicking an external link does NOT select a feature', () => {
-    const onSelect = vi.fn();
+  it('shows the empty notice when the feature has no作業メモ', () => {
     render(
-      <MarkdownView
-        source="[ext](https://example.com)"
-        assetResolver={noAssets}
-        onSelectFeature={onSelect}
+      <DetailPanels
+        state={openPanel({ panels: [] }, fA, { x: 0, y: 0 })}
+        featureLookup={featureLookup}
+        detailDocumentOf={() => ''}
+        onClose={() => {}}
       />,
     );
-    const link = screen.getByTestId('markdown-view').querySelector('a')!;
-    fireEvent.click(link);
-    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.getByTestId('detail-panel-memo-empty')).toHaveTextContent(
+      PROPERTY_STRINGS.detailDocEmpty,
+    );
   });
 });

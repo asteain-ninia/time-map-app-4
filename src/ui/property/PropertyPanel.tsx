@@ -83,7 +83,6 @@ import type {
   AnchorIntervalEditDispatch,
   AnchorIntervalEditIntent,
   AnchorSeriesLookup,
-  AssetResolver,
   EditDispatch,
   FeatureLookup,
   GoverningAnchorSeries,
@@ -120,11 +119,6 @@ export interface PropertyPanelProps<S> {
    */
   readonly anchorIntervalDispatch?: AnchorIntervalEditDispatch;
   readonly calendar: Calendar;
-  /**
-   * FR-98 / FR-02: resolves ZIP-internal image references for the 詳細文書 preview.
-   * Defaults to "no asset resolves" (safe broken image) when the host has none.
-   */
-  readonly assetResolver?: AssetResolver;
   /**
    * Resolve the owner of a vertex (U22 / U03). Used to evaluate the RAW owner set
    * for the display judgment (教訓 5.10). Defaults to "no owner" so a host that
@@ -303,13 +297,6 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     });
   }, [nameFieldFocus]);
 
-
-  // FR-98: preview asset resolution — default to "nothing resolves" (safe broken
-  // image, never a raw external fetch) when the host wired none.
-  const assetResolver = useMemo<AssetResolver>(
-    () => props.assetResolver ?? { resolveAsset: () => null },
-    [props.assetResolver],
-  );
 
   // Raw selection inputs (教訓 5.10): each is read from the store's mirror of
   // U22's truth. The display judgment evaluates these raw values directly.
@@ -874,15 +861,6 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     ownSeries !== null &&
     pendingDiscard === null;
 
-  // FR-98: an object-reference (feature:) link in the preview promotes the target
-  // through the SAME store.setActiveFeature path every selection uses (教訓 5.29).
-  const handleSelectFromDocument = useCallback(
-    (featureId: FeatureId): void => {
-      store.getState().setActiveFeature(featureId);
-    },
-    [store],
-  );
-
   /**
    * 本物の存続期間（U-23: 正本は錨の並び）を 1 行にする（増分 2 の手直し B3）。
    *
@@ -1200,8 +1178,6 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
               editable={editable}
               draft={draft.detailDocument}
               onDraftChange={patchDetailDocument}
-              assetResolver={assetResolver}
-              onSelectFeature={handleSelectFromDocument}
             />
 
             {/* **削除の入口 B**（設計書 §A.3 / 増分 7 の中身 5）。「全部の年から消す」は

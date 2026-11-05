@@ -166,13 +166,6 @@ describe('押された状態の色の組（教訓 5.104）', () => {
       .map(({ path, selector }) => `${path}: ${selector}`);
     expect(offenders).toEqual([]);
   });
-
-  it('詳細文書の切替は色の組を土台から受ける', () => {
-    const property = allCss.find(({ path }) => path.endsWith('property.css'))?.css ?? '';
-    const modes = ruleBody('.detail-document__modes button', property);
-    expect(decl(modes, 'color')).toBeUndefined();
-    expect(decl(modes, 'background')).toBeUndefined();
-  });
 });
 
 describe('右クリックメニュー', () => {

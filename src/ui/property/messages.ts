@@ -150,23 +150,19 @@ export const PROPERTY_STRINGS = {
   // -- detail panel (FR-99 / FR-98) ------------------------------------------
   openDetailButton: '詳細表示',
   detailPanelTitlePrefix: '詳細: ',
-  detailDocumentTitle: '詳細文書',
-  /** 畳んだ節の見出し（設計書 §C.6 の「▸ 詳細文書（0 字）」）。 */
+  /** 作業メモ（FR-98。プレーンテキスト）。内部の欄の名前は detailDocument のまま。 */
+  detailDocumentTitle: '作業メモ',
+  /** 畳んだ節の見出し（設計書 §C.6 の「▸ 詳細文書（0 字）」の後継）。 */
   detailDocumentTitleWithLength: (length: number): string =>
-    `${'詳細文書'}（${length.toLocaleString('ja-JP')} 字）`,
+    `${'作業メモ'}（${length.toLocaleString('ja-JP')} 字）`,
   detailAttributesTitle: '属性',
-  brokenImageAlt: '画像を表示できません',
 
-  // -- 詳細文書の編集 (FR-98 後段, サイドバー PropertyPanel) -------------------
-  /** The 閲覧 (sanitized preview) toggle of the詳細文書 editor. */
-  detailDocViewToggle: '閲覧',
-  /** The 編集 (raw Markdown textarea) toggle of the詳細文書 editor. */
-  detailDocEditToggle: '編集',
-  /** aria-label of the raw Markdown textarea. */
-  detailDocTextareaLabel: '詳細文書（Markdown）',
-  /** Shown when the詳細文書 has no content yet (preview placeholder). */
-  detailDocEmpty: '詳細文書はまだありません。',
-  /** 詳細文書に専用の保存ボタンが無くなったことを言う（N-46 を揃えた結果）。 */
+  // -- 作業メモの編集 (FR-98, サイドバー PropertyPanel) ------------------------
+  /** aria-label of the作業メモ textarea. */
+  detailDocTextareaLabel: '作業メモ',
+  /** Shown when the作業メモ has no content yet. */
+  detailDocEmpty: '作業メモはまだありません。',
+  /** 作業メモに専用の保存ボタンが無いことを言う（N-46 を揃えた結果）。 */
   detailDocSaveHint: '名前や見た目と一緒に、下の保存ボタンで確定します。',
 
   // -- 地物種別 (種別) の日本語表示ラベル (要件定義書 §4) --------------------
@@ -412,14 +408,14 @@ export function featureKindJaLabel(kind: FeatureKind): string {
  * "NaN km²" — the row is honest about an unresolvable value without crashing.
  */
 /**
- * The WRITE-side over-length rejection for a 詳細文書 draft (FR-98). Shown BEFORE any
+ * The WRITE-side over-length rejection for a 作業メモ draft (FR-98). Shown BEFORE any
  * dispatch (the domain RangeError is the last防波堤, not the UX). Names the actual and
  * maximum lengths so the user knows how far over they are (honest, 教訓 5.26).
  */
 export function detailDocumentTooLongMessage(length: number): string {
   const max = MAX_DETAIL_DOCUMENT_LENGTH.toLocaleString('ja-JP');
   const actual = length.toLocaleString('ja-JP');
-  return `詳細文書が長すぎるため保存できません（${actual} 文字 / 上限 ${max} 文字）。`;
+  return `作業メモが長すぎるため保存できません（${actual} 文字 / 上限 ${max} 文字）。`;
 }
 
 /**
@@ -476,7 +472,7 @@ export const ANCHOR_DIFF_STRINGS = {
     `親が変わった: ${before ?? 'なし'} → ${after ?? 'なし'}`,
   shape: '形が変わった',
   style: '見た目が変わった',
-  detailDocument: '詳細文書が変わった',
+  detailDocument: '作業メモが変わった',
   /** 複数の変化を 1 行に並べるときの区切り。 */
   separator: '／',
 } as const;

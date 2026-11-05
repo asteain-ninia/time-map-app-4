@@ -3,7 +3,7 @@
 // U31 owns the "地物を削除" button + confirmation dialog (FR-85). U32 owns the
 // property panel itself (FR-83 / FR-97), the anchor list + 時間バー切替 (FR-84 /
 // FR-60), the draggable・複数同時 modal detail panels (FR-99), and the
-// markdown-it + DOMPurify detail-document renderer (FR-98). Both share this
+// plain-text 作業メモ section (FR-98). Both share this
 // directory; this barrel re-exports both units' public surface.
 
 // --- U31: delete control (FR-85) -------------------------------------------
@@ -13,7 +13,7 @@ export {
   DeleteFeatureButton,
 } from './DeleteFeatureButton';
 
-// --- U32: property panel + anchor views + detail panels + markdown ---------
+// --- U32: property panel + anchor views + detail panels + 作業メモ ----------
 
 // Components
 export { PropertyPanel, type PropertyPanelProps } from './PropertyPanel';
@@ -37,13 +37,11 @@ export {
   type DetailPanelsController,
   closeDetailPanel,
 } from './DetailPanels';
-export { MarkdownView, type MarkdownViewProps } from './MarkdownView';
 
 // Contracts (the ports U32 consumes)
 export type {
   FeatureLookup,
   AnchorSeriesLookup,
-  AssetResolver,
   EditDispatch,
   PropertyEditIntent,
   PropertyEditValues,
@@ -54,7 +52,7 @@ export type {
 } from './contracts';
 export { ANCHOR_INTERVAL_OP } from './contracts';
 
-// Pure logic: 詳細文書 edit plan — WRITE guard / no-op / canonical empty (FR-98)
+// Pure logic: 作業メモ edit plan — WRITE guard / no-op / canonical empty (FR-98)
 export {
   DETAIL_DOCUMENT_PLAN,
   type DetailDocumentPlan,
@@ -71,23 +69,6 @@ export {
   decideDisplay,
   targetFeatureIdOf,
 } from './selection-display';
-
-// Pure logic: object-reference link classification (FR-98, 教訓 5.19)
-export {
-  OBJECT_LINK_SCHEME,
-  LINK_KIND,
-  type LinkKind,
-  type ClassifiedLink,
-  classifyLink,
-  objectLinkHref,
-} from './object-link';
-
-// Pure logic: markdown render + sanitize (FR-98 / FR-116)
-export {
-  renderDetailMarkdown,
-  type RenderOptions,
-  BROKEN_IMAGE_SRC,
-} from './markdown';
 
 // Pure logic: 時間バー mapping (FR-60)
 export {
