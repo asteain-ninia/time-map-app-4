@@ -210,6 +210,42 @@ describe('本当の変更では止まる', () => {
   });
 });
 
+describe('参照名の引き継ぎ（withCarried の参照名の分岐）', () => {
+  const featureAt = (series: AnchorSeries, year: number): Feature | undefined =>
+    series.entries
+      .find((e) => e.start.year === year)
+      ?.anchor.snapshot.features.find((f) => f.id === fid);
+
+  it('参照名を付けると、前と同じ値の錨へ引き継がれ、別の値に変わっている錨で止まる', () => {
+    const before = leaf(fid, '名');
+    const after = withReferenceName(before, '出界百科: A');
+    const base = seriesOf(
+      at(0, [before]),
+      at(2000, [before]),
+      at(2500, [withReferenceName(before, '別の参照名')]),
+      at(3000, [withReferenceName(before, '別の参照名')]),
+    );
+    const { before: b, after: a } = carry(before, after);
+    const next = applyCarryForward(base, timePointYear(1000), fid, b, a, cal);
+    expect(featureAt(next, 2000)?.referenceName).toBe('出界百科: A');
+    expect(featureAt(next, 2500)?.referenceName).toBe('別の参照名');
+    expect(featureAt(next, 3000)?.referenceName).toBe('別の参照名');
+  });
+
+  it('参照名を外す（空文字）と、引き継いだ先の錨でも鍵ごと無くなる', () => {
+    const before = withReferenceName(leaf(fid, '名'), '出界百科: A');
+    const after = withReferenceName(before, '');
+    const base = seriesOf(at(0, [before]), at(2000, [before]), at(3000, [before]));
+    const { before: b, after: a } = carry(before, after);
+    const next = applyCarryForward(base, timePointYear(1000), fid, b, a, cal);
+    for (const year of [2000, 3000]) {
+      const feature = featureAt(next, year);
+      expect(feature).toBeDefined();
+      expect('referenceName' in (feature as Feature)).toBe(false);
+    }
+  });
+});
+
 describe('押す前に見せるための予告（carryForwardTargets / nextDivergingEntry）', () => {
   const before = leaf(fid, '旧名');
   const after = leaf(fid, '新名');
