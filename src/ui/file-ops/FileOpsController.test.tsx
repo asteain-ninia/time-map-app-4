@@ -116,7 +116,7 @@ function validPng(): Uint8Array {
 /** A LoadResponse that succeeds, carrying a fresh empty-project manifest. */
 function okLoad(): LoadResponse {
   const manifest: Manifest = serialize(buildEmptyProject());
-  return { ok: true, path: '/tmp/loaded.gimoza', manifest, baseMapImage: new Uint8Array(), attachments: [] };
+  return { ok: true, path: '/tmp/loaded.gimoza', manifest, baseMapImage: new Uint8Array() };
 }
 
 afterEach(() => {
@@ -327,7 +327,6 @@ describe('キュー済み保存の宛先は直列化「実行時」に再評価�
       path: '/tmp/a.gimoza',
       manifest: serialize(buildEmptyProject()),
       baseMapImage: new Uint8Array(),
-      attachments: [],
       commitToken: 'tok-a',
     }));
     const api = makeApi({ save, saveAs, load });
@@ -741,7 +740,6 @@ describe('プロジェクト設定の永続化 + ロード時反映 (二重真�
         path: '/tmp/p.gimoza',
         manifest: savedManifest!,
         baseMapImage: new Uint8Array(),
-        attachments: [],
       })),
     });
     render(<FileOpsController store={storeB} registry={registryB} api={apiB} calendar={CAL} />);
@@ -781,7 +779,6 @@ describe('プロジェクト設定の永続化 + ロード時反映 (二重真�
         path: '/tmp/other.gimoza',
         manifest: serialize(loadedWithUi),
         baseMapImage: new Uint8Array(),
-        attachments: [],
       })),
     });
     render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
@@ -825,7 +822,6 @@ describe('プロジェクト設定の永続化 + ロード時反映 (二重真�
         path: '/tmp/old.gimoza',
         manifest: oldManifest,
         baseMapImage: new Uint8Array(),
-        attachments: [],
       })),
     });
     render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
@@ -1047,13 +1043,11 @@ describe('baseMapImage を load→save で保持 (BUG #6 — 0バイト書き込
     const store = makeStore();
     const registry = new CommandRegistry();
     const mapBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]); // PNG-ish marker
-    const attachmentBytes = new Uint8Array([9, 8, 7]);
     const loaded: LoadResponse = {
       ok: true,
       path: '/tmp/loaded.gimoza',
       manifest: serialize(buildEmptyProject()),
       baseMapImage: mapBytes,
-      attachments: [{ name: 'attach-1.png', bytes: attachmentBytes }],
     };
     let savedReq: SaveRequest | null = null;
     const api = makeApi({
@@ -1075,8 +1069,6 @@ describe('baseMapImage を load→save で保持 (BUG #6 — 0バイト書き込
     await waitFor(() => expect(savedReq).not.toBeNull());
     expect(savedReq!.baseMapImage).toEqual(mapBytes);
     expect(savedReq!.baseMapImage.length).toBeGreaterThan(0);
-    expect(savedReq!.attachments).toHaveLength(1);
-    expect(savedReq!.attachments[0]!.bytes).toEqual(attachmentBytes);
   });
 
   it('a NEW project saves zero base-map bytes (no carry-over from a previous load)', async () => {
@@ -1090,7 +1082,6 @@ describe('baseMapImage を load→save で保持 (BUG #6 — 0バイト書き込
         path: '/tmp/loaded.gimoza',
         manifest: serialize(buildEmptyProject()),
         baseMapImage: mapBytes,
-        attachments: [],
       })),
       save: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/p.gimoza' }; }),
       saveAs: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/p.gimoza' }; }),
@@ -1106,15 +1097,12 @@ describe('baseMapImage を load→save で保持 (BUG #6 — 0バイト書き込
     await dispatchSave(registry);
     await waitFor(() => expect(savedReq).not.toBeNull());
     expect(savedReq!.baseMapImage.length).toBe(0);
-    expect(savedReq!.attachments).toHaveLength(0);
   });
 });
 
 describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在 .gimoza = 旧manifest+新asset の回帰)', () => {
   const BYTES_A = new Uint8Array([0xa1, 0xa2, 0xa3]);
   const BYTES_B = new Uint8Array([0xb1, 0xb2, 0xb3]);
-  const ATTACH_A = [{ name: 'a.png', bytes: new Uint8Array([1, 1, 1]) }];
-  const ATTACH_B = [{ name: 'b.png', bytes: new Uint8Array([2, 2, 2]) }];
 
   /** A clean project A carrying its own asset bytes (the ESTABLISHED project). */
   function cleanLoadA(): LoadResponse {
@@ -1123,7 +1111,6 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
       path: '/tmp/a.gimoza',
       manifest: serialize(buildEmptyProject()),
       baseMapImage: BYTES_A,
-      attachments: ATTACH_A,
     };
   }
 
@@ -1137,7 +1124,6 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
       path: base.path,
       manifest: base.manifest,
       baseMapImage: BYTES_B,
-      attachments: ATTACH_B,
     };
   }
 
@@ -1207,7 +1193,6 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.manifest.histories).toHaveLength(0); // still project A (domain never swapped)
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
-    expect(savedReqs[0]!.attachments).toEqual(ATTACH_A);
 
     // 4) …and the DISPLAY never flipped to B's base map (視覚バグの半面).
     expect(pushes).toEqual([BYTES_A]);
@@ -1236,7 +1221,6 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.manifest.histories).toHaveLength(0);
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
-    expect(savedReqs[0]!.attachments).toEqual(ATTACH_A);
   });
 
   it('二度とも Unresolved で読み込みが中断した時も、直前プロジェクトの asset のまま', async () => {
@@ -1265,7 +1249,6 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     await dispatchSave(registry);
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
-    expect(savedReqs[0]!.attachments).toEqual(ATTACH_A);
     expect(pushes).toEqual([BYTES_A]);
     alertSpy.mockRestore();
   });
@@ -1287,7 +1270,6 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     await dispatchSave(registry);
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_B);
-    expect(savedReqs[0]!.attachments).toEqual(ATTACH_B);
   });
 
   it('D&D 経路でも同じ: 修復中止したドロップは旧 asset / 旧表示を保つ (教訓 5.6 同一フロー)', async () => {
@@ -1336,7 +1318,6 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.manifest.histories).toHaveLength(0);
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
-    expect(savedReqs[0]!.attachments).toEqual(ATTACH_A);
     expect(pushes).toEqual([BYTES_A]);
   });
 
@@ -1352,7 +1333,6 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     await dispatchSave(registry);
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
-    expect(savedReqs[0]!.attachments).toEqual(ATTACH_A);
     expect(pushes).toEqual([BYTES_A]);
   });
 
@@ -1371,7 +1351,6 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
       path: '/tmp/dropped.gimoza',
       manifest: serialize(buildEmptyProject()), // consistent ⇒ reflects directly
       baseMapImage: BYTES_B,
-      attachments: ATTACH_B,
       commitToken: 'tok-drop',
     };
     const api = makeApi({
@@ -1405,7 +1384,6 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     await dispatchSave(registry);
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_B);
-    expect(savedReqs[0]!.attachments).toEqual(ATTACH_B);
   });
 
   it('LOW#3(b): 修復ダイアログ表示中に発火した2度目の開くは B の staged capture を破棄しない (runExclusive 早期 return)', async () => {
@@ -1434,7 +1412,6 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     await dispatchSave(registry);
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_B);
-    expect(savedReqs[0]!.attachments).toEqual(ATTACH_B);
   });
 
   it('LOW#3(c): reflect が例外を投げた読み込みは stage を破棄し、次の保存へ持ち越さない (runExclusive finally)', async () => {
@@ -1453,7 +1430,6 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
       path: '/tmp/b.gimoza',
       manifest: serialize(buildEmptyProject()),
       baseMapImage: BYTES_B,
-      attachments: ATTACH_B,
     };
     const queue: LoadResponse[] = [cleanLoadA(), loadB];
     const api = makeApi({
@@ -1502,7 +1478,6 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     await dispatchSave(registry);
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
-    expect(savedReqs[0]!.attachments).toEqual(ATTACH_A);
   });
 });
 
@@ -1514,7 +1489,6 @@ describe('HIGH-2 fail-safe: commitLoadedPath の失敗を握り潰さず、宛�
       path,
       manifest: serialize(buildEmptyProject()),
       baseMapImage: new Uint8Array(),
-      attachments: [],
       commitToken: token,
     };
   }
@@ -1829,7 +1803,7 @@ function brokenLoad(): LoadResponse {
     },
   };
   const manifest: Manifest = serialize(project);
-  return { ok: true, path: '/tmp/broken.gimoza', manifest, baseMapImage: new Uint8Array(), attachments: [] };
+  return { ok: true, path: '/tmp/broken.gimoza', manifest, baseMapImage: new Uint8Array() };
 }
 
 describe('E2E 専用の投入口 window.__E2E_HARNESS__.loadProject（E2E_TEST=1 のときだけ）', () => {
@@ -1911,7 +1885,6 @@ describe('増分 8D: 以前の保存から開く — 世代は保存先になら
       path: '/d/w.gimoza.bak.0001790000000000-0000',
       manifest: serialize(buildEmptyProject()),
       baseMapImage: new Uint8Array(),
-      attachments: [],
       commitToken: 'tok-backup',
       restoredFrom: { sourceName: 'w.gimoza', savedAtMs: ENTRY.savedAtMs },
     };

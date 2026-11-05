@@ -32,7 +32,7 @@ paths:
 ### 5.18 空配列・空オブジェクトは真値である
 - 正しい道: 論理和による短絡評価のデフォルト補完に頼らず、型や状態を明示的に判定する。0 件・親なし・未ホバーも有効な状態として扱う。
 - 誤った道の兆候: `x || []`、`x || {}`（現在 src に 0 件）や、配列の真偽で「あるか」を判定している。空を未設定と同一視して、分岐が逆になる。
-- 確かめ方: `src/render/add-batch.test.ts`、`src/domain/add/session.test.ts`、`src/shell/io/tmap.test.ts`（添付 0 件）、`src/shell/io/backup.test.ts`（0 件で初回保存）、`e2e/grid-toggle.spec.ts`。個別の回帰のみで、書き方を止める lint は無い。
+- 確かめ方: `src/render/add-batch.test.ts`、`src/domain/add/session.test.ts`、`src/shell/io/backup.test.ts`（0 件で初回保存）、`e2e/grid-toggle.spec.ts`。個別の回帰のみで、書き方を止める lint は無い。
 
 ### 5.19 分岐識別子は型定義・定数・ファクトリを経由する
 - 正しい道: 種別・モード名・設定キーの分岐は型定義・定数・ファクトリを経由する（`defineCommandKind`、`HIT_KIND`、`FILTER_AXIS`、網羅確認は `assertNever`）。

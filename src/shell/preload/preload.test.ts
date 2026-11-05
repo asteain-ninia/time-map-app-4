@@ -87,14 +87,14 @@ describe('preload exposes the typed TimeMapApi (受け入れ基準4)', () => {
 describe('each API method invokes the correct shared channel (受け入れ基準4/6)', () => {
   it('save → IPC_CHANNEL.Save', async () => {
     const api = buildApi();
-    const req = { manifest: { version: 'tmap/1' }, baseMapImage: new Uint8Array(), attachments: [] };
+    const req = { manifest: { version: 'tmap/1' }, baseMapImage: new Uint8Array() };
     await api.save(req as never);
     expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.Save, req);
   });
 
   it('saveAs → IPC_CHANNEL.SaveAs', async () => {
     const api = buildApi();
-    const req = { manifest: { version: 'tmap/1' }, baseMapImage: new Uint8Array(), attachments: [] };
+    const req = { manifest: { version: 'tmap/1' }, baseMapImage: new Uint8Array() };
     await api.saveAs(req as never);
     expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.SaveAs, req);
   });

@@ -27,7 +27,7 @@ import { SHELL_IO_STRINGS } from './strings';
  *   1. unzip + extract (readTmap) — corrupt/missing-entry → reject;
  *   2. parseManifest (Zod boundary) — version/schema mismatch → reject, NEVER
  *      migrate (spec §やらないこと);
- *   3. success → return the typed manifest + extracted assets.
+ *   3. success → return the typed manifest + the base-map image.
  */
 export function loadTmapBytes(path: string, bytes: Uint8Array): LoadResponse {
   const extracted = readTmap(bytes);
@@ -54,6 +54,5 @@ export function loadTmapBytes(path: string, bytes: Uint8Array): LoadResponse {
     path,
     manifest: parsed.manifest,
     baseMapImage: extracted.contents.baseMapImage,
-    attachments: extracted.contents.attachments,
   };
 }

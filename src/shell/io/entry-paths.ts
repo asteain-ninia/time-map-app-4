@@ -7,7 +7,11 @@
 // Layout inside a `.gimoza` ZIP container:
 //   manifest.json            — the manifest JSON (FR-103/104), version先頭
 //   assets/basemap.img       — the base-map image bytes (FR-103)
-//   assets/attachments/<name>— each attached document image (FR-103)
+//
+// 添付画像の領域（`assets/attachments/`）は持たない。FR-98 を作業メモと参照名に改めた
+// （2026-11-03）ので、地物の資料の本文は本アプリの外が正本で、本アプリは複製も保持も
+// しない。古いファイルにその領域があっても、読み込みは上の 2 つしか取り出さず、
+// 次の保存では書かない。
 //
 // Pure const module (shell layer). No Electron, no fs.
 
@@ -16,23 +20,3 @@ export const MANIFEST_ENTRY = 'manifest.json';
 
 /** Fixed path of the base-map image entry. */
 export const BASEMAP_ENTRY = 'assets/basemap.img';
-
-/** Directory prefix under which attached images are stored. */
-export const ATTACHMENTS_DIR = 'assets/attachments/';
-
-/** Build the ZIP entry path for an attachment of the given name. */
-export function attachmentEntry(name: string): string {
-  return `${ATTACHMENTS_DIR}${name}`;
-}
-
-/**
- * Recover an attachment's name from its entry path, or `undefined` if the path
- * is not under the attachments directory. Used by the reader to map ZIP entries
- * back to {@link NamedAsset} names through the SAME convention the writer used.
- */
-export function attachmentNameOf(entryPath: string): string | undefined {
-  if (!entryPath.startsWith(ATTACHMENTS_DIR)) return undefined;
-  const name = entryPath.slice(ATTACHMENTS_DIR.length);
-  // A bare directory entry (empty remainder) is not an attachment.
-  return name.length === 0 ? undefined : name;
-}

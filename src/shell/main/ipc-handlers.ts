@@ -23,20 +23,12 @@ import {
 import { appPrefsWriteFailedMessage } from '../io/app-prefs';
 import { loadTmapBytes } from '../io/load';
 import { saveTmap, type SaveEnv } from '../io/save';
-import { ATTACHMENTS_DIR } from '../io/entry-paths';
 import {
   MAX_TMAP_BYTES,
   MAX_TMAP_ENTRY_BYTES,
   MAX_TMAP_TOTAL_BYTES,
   type ReadTmapCaps,
 } from '../io/tmap';
-
-/**
- * ZIP のファイル名フィールドは 65,535 バイト(UTF-8)が仕様上限。超過は zipSync が
- * throw して保存 IPC が例外終了するため(Sol 2周目 #3)、添付名は
- * `assets/attachments/` プレフィックスを足してもこの上限に収まる長さに制限する。
- */
-const MAX_ATTACHMENT_NAME_BYTES = 65535 - Buffer.byteLength(ATTACHMENTS_DIR, 'utf8');
 import {
   DEFAULT_APP_PREFS,
   IPC_CHANNEL,
@@ -298,16 +290,11 @@ const FILE_TOO_LARGE_MSG = SHELL_MAIN_STRINGS.fileTooLarge(Math.floor(MAX_TMAP_B
  * renderer-supplied {@link SaveRequest} is UNTRUSTED at this boundary (a renderer
  * bug — or a compromised renderer — must not make main atomic-write a file the
  * loader would then reject, 教訓6.4.15 片側shim の再発防止). Checks, in order:
- *   1. structural shape (bytes are real Uint8Arrays; attachments well-formed),
- *   2. attachment names: non-empty, no path separators, and not the special `.` /
- *      `..` SEGMENTS (a hostile name would otherwise become a ZIP entry path
- *      outside `assets/attachments/`). A mere `..` SUBSTRING (e.g. `map..v2.png`)
- *      is a legal basename once separators are banned, so it is NOT rejected
- *      (Sol review #5: the reader accepts such names — reject would strand them),
- *   3. per-entry byte caps INCLUDING the manifest JSON itself (Sol review #4:
+ *   1. structural shape (the base-map bytes are a real Uint8Array),
+ *   2. per-entry byte caps INCLUDING the manifest JSON itself (Sol review #4:
  *      the reader caps the manifest entry too, so an over-cap manifest would
  *      save fine yet never re-open — the exact WRITE⊆READ break this guards),
- *   4. the manifest round-trips through the SAME Zod boundary the loader uses
+ *   3. the manifest round-trips through the SAME Zod boundary the loader uses
  *      (parseManifest): never write a `.gimoza` that cannot be re-opened.
  * Returns a Japanese message on failure, or `null` when the request is sound.
  * `caps` is test-injectable; production uses the reader's own constants.
@@ -320,25 +307,7 @@ export function validateSaveRequest(req: SaveRequest, caps: ReadTmapCaps = {}): 
   if (req.baseMapImage.length > maxEntry) {
     return SHELL_MAIN_STRINGS.baseMapTooLarge;
   }
-  if (!Array.isArray(req.attachments)) return SHELL_MAIN_STRINGS.saveRequestInvalid;
   let totalBytes = req.baseMapImage.length;
-  for (const asset of req.attachments) {
-    if (typeof asset !== 'object' || asset === null) return SHELL_MAIN_STRINGS.saveRequestInvalid;
-    const { name, bytes } = asset as { name: unknown; bytes: unknown };
-    if (typeof name !== 'string' || name.length === 0) return SHELL_MAIN_STRINGS.saveRequestInvalid;
-    if (name.includes('/') || name.includes('\\') || name === '.' || name === '..') {
-      return SHELL_MAIN_STRINGS.attachmentNameInvalid(name);
-    }
-    // ZIP 仕様のファイル名上限 (Sol 2周目 #3): 超過は zipSync throw → IPC 例外終了。
-    if (Buffer.byteLength(name, 'utf8') > MAX_ATTACHMENT_NAME_BYTES) {
-      return SHELL_MAIN_STRINGS.attachmentNameTooLong(name.slice(0, 32));
-    }
-    if (!(bytes instanceof Uint8Array)) return SHELL_MAIN_STRINGS.saveRequestInvalid;
-    if (bytes.length > maxEntry) {
-      return SHELL_MAIN_STRINGS.attachmentTooLarge(name);
-    }
-    totalBytes += bytes.length;
-  }
   // The manifest ENTRY cap (Sol review #4): measured on the SAME JSON bytes the
   // writer will embed (strToU8(JSON.stringify(...)) in buildTmap). Buffer.byteLength
   // counts UTF-8 bytes without materialising them. A cyclic / non-serializable
@@ -431,7 +400,6 @@ async function runSave(deps: IpcDeps, target: string, req: SaveRequest): Promise
       {
         manifest: req.manifest,
         baseMapImage: req.baseMapImage,
-        attachments: req.attachments,
       },
       deps.maxGenerations ?? DEFAULT_MAX_GENERATIONS,
       // 増分 8D の手直し: 「以前の保存から開く」の一覧に出している世代は間引かない。未保存の

@@ -25,7 +25,7 @@ function tmapWithManifest(manifest: unknown): Uint8Array {
 describe('loadTmapBytes routes through the Zod boundary (受け入れ基準5)', () => {
   it('a valid .gimoza loads and returns the typed manifest + assets', () => {
     const manifest = serialize(richValidProject());
-    const bytes = buildTmap({ manifest, baseMapImage: baseMap, attachments: [] });
+    const bytes = buildTmap({ manifest, baseMapImage: baseMap });
     const res = loadTmapBytes('/d/world.gimoza', bytes);
     expect(res.ok).toBe(true);
     if (!res.ok) return;

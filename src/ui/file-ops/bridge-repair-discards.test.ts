@@ -64,7 +64,6 @@ function okLoad(project: DomainProject, path: string) {
     path,
     manifest: serialize(project),
     baseMapImage: new Uint8Array(),
-    attachments: [],
   };
 }
 
@@ -90,7 +89,6 @@ function makeHost() {
     buildSaveRequest: () => ({
       manifest: serialize(brokenProject()),
       baseMapImage: new Uint8Array(),
-      attachments: [],
     }),
     needsSaveAs: () => false,
     onSaved: () => undefined,

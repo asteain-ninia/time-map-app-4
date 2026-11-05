@@ -238,7 +238,6 @@ describe('世代の地物数の覚え書き（増分 8D の手直し）', () => 
   const good = buildTmap({
     manifest: { histories: [{ entries: [{ anchor: { snapshot: { features: [{ id: 'a' }, { id: 'b' }] } } }] }] },
     baseMapImage: new Uint8Array([1]),
-    attachments: [],
   });
 
   it('同じパス・大きさ・更新時刻なら覚えた数を使い、読まない。どれかが変われば数え直す', async () => {

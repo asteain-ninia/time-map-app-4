@@ -68,7 +68,6 @@ import {
 import { getCalendar } from '../src/domain/time/calendar';
 import { normalize } from '../src/domain/time/normalized';
 import { timePointYear, type TimePoint } from '../src/domain/time/time-point';
-import type { NamedAsset } from '../src/shell/ipc/contract';
 import { buildTmap, readTmap } from '../src/shell/io/tmap';
 
 // --- 設定値 -----------------------------------------------------------------
@@ -301,7 +300,6 @@ function shapeOf(manifest: Manifest): Shape {
 
 interface Assets {
   readonly baseMapImage: Uint8Array;
-  readonly attachments: readonly NamedAsset[];
 }
 
 /** 保存 1 回の内訳（アプリの保存経路と同じ順序）。 */
@@ -336,7 +334,6 @@ function saveOnce(project: DomainProject, assets: Assets, outPath: string): Save
   const zipBytes = buildTmap({
     manifest,
     baseMapImage: assets.baseMapImage,
-    attachments: assets.attachments,
   });
   const s2 = performance.now();
   writeFileSync(outPath, zipBytes);
@@ -697,7 +694,6 @@ function main(): void {
   const baseProject = manifestToProject(parsed.manifest);
   const assets: Assets = {
     baseMapImage: extracted.contents.baseMapImage,
-    attachments: extracted.contents.attachments,
   };
 
   // --- 編集対象を決める ---

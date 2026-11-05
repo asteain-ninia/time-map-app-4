@@ -3,7 +3,7 @@
 //
 // THE SEAM, IN ONE PLACE (the review's finding): U15's `LoadResponse` and the
 // flow's `LoadTransport` are SHAPED DIFFERENTLY on purpose —
-//   - success: `LoadResponse` carries `{ path, manifest, baseMapImage, attachments }`
+//   - success: `LoadResponse` carries `{ path, manifest, baseMapImage }`
 //     while the flow needs `{ path, parse: ParseResult }`. We wrap the already-
 //     Zod-validated `manifest` (main validated it, FR-104/116) into a `ParseResult`
 //     Ok so the SAME `classifyLoad` path handles loaded files and any parse case.

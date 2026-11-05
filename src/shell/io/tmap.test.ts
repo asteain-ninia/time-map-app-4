@@ -1,32 +1,21 @@
-// U15 受け入れ基準1: .gimoza (ZIP) round-trip — manifest + base-map + 複数添付画像
-// が欠落・破損なく往復できる。エントリパス規約が単一の真実源であること。
+// U15 受け入れ基準1: .gimoza (ZIP) round-trip — manifest + base-map が欠落・破損なく
+// 往復できる。エントリパス規約が単一の真実源であること。添付画像の領域は持たない
+// （FR-98 の改定〔2026-11-03〕で地物の資料の本文は本アプリの外が正本になった）。
 
-import { zipSync } from 'fflate';
+import { unzipSync, zipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 
 import { serialize } from '../../domain/persistence/serialize';
 import { richValidProject } from '../../domain/persistence/fixtures';
-import {
-  attachmentEntry,
-  attachmentNameOf,
-  ATTACHMENTS_DIR,
-  BASEMAP_ENTRY,
-  MANIFEST_ENTRY,
-} from './entry-paths';
+import { BASEMAP_ENTRY, MANIFEST_ENTRY } from './entry-paths';
 import { buildTmap, countFeaturesInTmap, countManifestFeatures, readTmap } from './tmap';
-import type { NamedAsset } from '../ipc/contract';
 
 const baseMap = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]); // PNG-ish bytes
-const attachments: NamedAsset[] = [
-  { name: 'attach-2.png', bytes: new Uint8Array([9, 8, 7]) },
-  { name: 'attach-1.png', bytes: new Uint8Array([1, 1, 1, 1]) },
-  { name: 'attach-3.png', bytes: new Uint8Array([42]) },
-];
 
 describe('tmap ZIP round-trip', () => {
-  it('round-trips the manifest, base-map and ALL attachments (受け入れ基準1)', () => {
+  it('round-trips the manifest and the base-map (受け入れ基準1)', () => {
     const manifest = serialize(richValidProject());
-    const zip = buildTmap({ manifest, baseMapImage: baseMap, attachments });
+    const zip = buildTmap({ manifest, baseMapImage: baseMap });
 
     const read = readTmap(zip);
     expect(read.ok).toBe(true);
@@ -36,38 +25,30 @@ describe('tmap ZIP round-trip', () => {
     expect(read.contents.manifest).toEqual(manifest);
     // base-map bytes intact.
     expect(Array.from(read.contents.baseMapImage)).toEqual(Array.from(baseMap));
-    // ALL attachments present (片落としなし), name + bytes intact.
-    expect(read.contents.attachments).toHaveLength(attachments.length);
-    for (const original of attachments) {
-      const got = read.contents.attachments.find((a) => a.name === original.name);
-      expect(got).toBeDefined();
-      expect(Array.from(got!.bytes)).toEqual(Array.from(original.bytes));
-    }
+    // 書くのはこの 2 つだけ（添付の領域は無い）。
+    expect(Object.keys(unzipSync(zip)).sort()).toEqual([BASEMAP_ENTRY, MANIFEST_ENTRY].sort());
   });
 
-  it('handles 0 attachments as a valid count (教訓5.18)', () => {
+  it('古いファイルの添付の領域は読み飛ばし、書き直すと残らない（後方互換は作らない）', () => {
     const manifest = serialize(richValidProject());
-    const zip = buildTmap({ manifest, baseMapImage: baseMap, attachments: [] });
-    const read = readTmap(zip);
+    const old = zipSync({
+      [MANIFEST_ENTRY]: new TextEncoder().encode(JSON.stringify(manifest)),
+      [BASEMAP_ENTRY]: baseMap,
+      'assets/attachments/attach-1.png': new Uint8Array([9, 8, 7]),
+    });
+    const read = readTmap(old);
     expect(read.ok).toBe(true);
     if (!read.ok) return;
-    expect(read.contents.attachments).toEqual([]);
+    expect(read.contents.manifest).toEqual(manifest);
+    expect(Object.keys(read.contents).sort()).toEqual(['baseMapImage', 'manifest']);
+    const rewritten = buildTmap(read.contents);
+    expect(Object.keys(unzipSync(rewritten)).sort()).toEqual(
+      [BASEMAP_ENTRY, MANIFEST_ENTRY].sort(),
+    );
   });
 });
 
 describe('entry-path convention is the single source of truth (受け入れ基準1)', () => {
-  it('reader recovers attachment names through the same convention the writer used', () => {
-    const name = 'pic.png';
-    expect(attachmentNameOf(attachmentEntry(name))).toBe(name);
-    expect(attachmentEntry(name).startsWith(ATTACHMENTS_DIR)).toBe(true);
-  });
-
-  it('non-attachment entries are not mistaken for attachments', () => {
-    expect(attachmentNameOf(MANIFEST_ENTRY)).toBeUndefined();
-    expect(attachmentNameOf(BASEMAP_ENTRY)).toBeUndefined();
-    expect(attachmentNameOf(ATTACHMENTS_DIR)).toBeUndefined();
-  });
-
   it('a ZIP whose manifest was written at a NON-standard path is rejected (proves both sides share one path)', () => {
     // Writer used the wrong manifest path; reader (using MANIFEST_ENTRY) cannot find it.
     const zip = zipSync({
@@ -128,7 +109,6 @@ describe('readTmap size caps (Codex MED)', () => {
     const bytes = buildTmap({
       manifest: { v: 1 },
       baseMapImage: new Uint8Array(100), // expands to 100 bytes > cap 10
-      attachments: [],
     });
     const res = readTmap(bytes, { maxEntryBytes: 10 });
     expect(res.ok).toBe(false);
@@ -141,7 +121,6 @@ describe('readTmap size caps (Codex MED)', () => {
     const bytes = buildTmap({
       manifest: { v: 1 },
       baseMapImage: new Uint8Array([9, 9]),
-      attachments: [{ name: 'a.png', bytes: new Uint8Array([1]) }],
     });
     const res = readTmap(bytes);
     expect(res.ok).toBe(true);
@@ -151,13 +130,13 @@ describe('readTmap size caps (Codex MED)', () => {
 // GPT-5.6 Sol レビュー #2 — 展開後「合計」サイズ上限(個別には通る複数エントリの合算 OOM 封鎖)。
 describe('readTmap total-size cap (Sol review #2)', () => {
   it('rejects when the SUMMED expanded size exceeds the total cap', () => {
-    const bytes = buildTmap({
-      manifest: { v: 1 },
-      baseMapImage: new Uint8Array(40),
-      attachments: [
-        { name: 'a.png', bytes: new Uint8Array(40) },
-        { name: 'b.png', bytes: new Uint8Array(40) },
-      ],
+    // 本アプリは書かない余計なエントリも合計に数える（古いファイルの添付の領域など。
+    // 読み飛ばすエントリでも、展開の費用は掛かるので上限から外さない）。
+    const bytes = zipSync({
+      [MANIFEST_ENTRY]: new TextEncoder().encode('{"v":1}'),
+      [BASEMAP_ENTRY]: new Uint8Array(40),
+      'assets/attachments/a.png': new Uint8Array(40),
+      'assets/attachments/b.png': new Uint8Array(40),
     });
     // Each entry is well under the per-entry cap (60) but the sum exceeds 100.
     const res = readTmap(bytes, { maxEntryBytes: 60, maxTotalBytes: 100 });
@@ -178,11 +157,10 @@ describe('readTmap completeness + ZIP tolerance (Sol round-3 #2/#4)', () => {
     const full = buildTmap({
       manifest: { v: 1 },
       baseMapImage: new Uint8Array([1, 2, 3]),
-      attachments: [{ name: 'a.png', bytes: new Uint8Array([9, 9, 9]) }],
     });
     // Cut off the tail (central directory + EOCD). unzipSync needs the central
     // directory to enumerate entries, so a truncated container is corrupt — never a
-    // silently-partial project that a later save would persist with lost attachments.
+    // silently-partial project that a later save would persist with lost entries.
     const truncated = full.slice(0, Math.floor(full.length / 2));
     const res = readTmap(truncated);
     expect(res.ok).toBe(false);
@@ -194,7 +172,6 @@ describe('readTmap completeness + ZIP tolerance (Sol round-3 #2/#4)', () => {
     const bytes = buildTmap({
       manifest: { v: 1 },
       baseMapImage: new Uint8Array(500),
-      attachments: [{ name: 'a.png', bytes: new Uint8Array([1]) }],
     });
     const res = readTmap(bytes, { maxEntryBytes: 1000 });
     expect(res.ok).toBe(true);
@@ -230,7 +207,6 @@ describe('countFeaturesInTmap / countManifestFeatures（増分 8D）', () => {
     const bytes = buildTmap({
       manifest: serialize(richValidProject()),
       baseMapImage: baseMap,
-      attachments,
     });
     const counted = countFeaturesInTmap(bytes);
     expect(counted).toBe(countManifestFeatures(serialize(richValidProject())));
@@ -240,7 +216,7 @@ describe('countFeaturesInTmap / countManifestFeatures（増分 8D）', () => {
   it('壊れた ZIP・マニフェストの無い ZIP・大きすぎる入れ物は null（例外にしない）', () => {
     expect(countFeaturesInTmap(new Uint8Array([1, 2, 3]))).toBeNull();
     expect(countFeaturesInTmap(zipSync({ [BASEMAP_ENTRY]: baseMap }))).toBeNull();
-    const ok = buildTmap({ manifest: serialize(richValidProject()), baseMapImage: baseMap, attachments });
+    const ok = buildTmap({ manifest: serialize(richValidProject()), baseMapImage: baseMap });
     expect(countFeaturesInTmap(ok, { maxContainerBytes: 10 })).toBeNull();
   });
 });

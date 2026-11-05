@@ -2,12 +2,14 @@
 // 受け取り共有型どおりの戻り値を返す。チャネル名は共有契約から（偶然一致に頼らない）。
 // 保存/名前を付けて保存/読込/D&D の各操作が IPC を通って I/O に到達する（受け入れ基準6）。
 
+import { unzipSync } from 'fflate';
 import { describe, expect, it, vi } from 'vitest';
 
 import { serialize } from '../../domain/persistence/serialize';
 import { richValidProject } from '../../domain/persistence/fixtures';
 import { MAX_BASE_MAP_IMAGE_BYTES } from '../../domain/basemap/index';
-import { buildTmap } from '../io/tmap';
+import { BASEMAP_ENTRY, MANIFEST_ENTRY } from '../io/entry-paths';
+import { buildTmap, readTmap } from '../io/tmap';
 import {
   DEFAULT_APP_PREFS,
   IPC_CHANNEL,
@@ -50,7 +52,7 @@ import type { SaveEnv } from '../io/save';
 const baseMap = new Uint8Array([1, 2, 3]);
 
 function makeSaveReq(): SaveRequest {
-  return { manifest: serialize(richValidProject()), baseMapImage: baseMap, attachments: [] };
+  return { manifest: serialize(richValidProject()), baseMapImage: baseMap };
 }
 
 /** A deps fixture with a memory disk + spy ports. */
@@ -126,7 +128,7 @@ function makeDeps(overrides: Partial<IpcDeps> = {}): {
       showOpenImageDialog: vi.fn(async () => '/d/pic.png'),
     },
     readFile: {
-      readFile: vi.fn(async () => buildTmap({ manifest: serialize(richValidProject()), baseMapImage: baseMap, attachments: [] })),
+      readFile: vi.fn(async () => buildTmap({ manifest: serialize(richValidProject()), baseMapImage: baseMap })),
       // Small by default so the FR-04 pre-read size cap (handleOpenImage) is a no-op.
       statSize: vi.fn(async () => 1024),
     },
@@ -738,19 +740,18 @@ describe('保存側 runtime validation (validateSaveRequest / Codex MED)', () =>
     expect(disk.size).toBe(0);
   });
 
-  it('パス区切りを含む添付資産名は拒否される (ZIP エントリパス逸脱の封鎖)', async () => {
-    const { deps, saveCalls } = makeDeps();
-    const bad: SaveRequest = {
+  it('保存要求に余計な添付の欄が付いていても、ファイルには背景地図とマニフェストしか書かない（FR-98 の改定）', async () => {
+    const { deps, disk } = makeDeps();
+    const withStaleKey = {
       ...makeSaveReq(),
       attachments: [{ name: '../evil.png', bytes: new Uint8Array([1]) }],
-    };
-    const res = await handleSaveAs(deps, bad);
-    expect(res.ok).toBe(false);
-    if (res.ok) return;
-    expect(res.reason).toBe('write-failed');
-    if (res.reason !== 'write-failed') return;
-    expect(res.message).toContain('添付資産名');
-    expect(saveCalls).toHaveLength(0);
+    } as unknown as SaveRequest;
+    const res = await handleSaveAs(deps, withStaleKey);
+    expect(res.ok).toBe(true);
+    const written = [...disk.values()].find((bytes) => readTmap(bytes).ok);
+    expect(written).toBeDefined();
+    const names = Object.keys(unzipSync(written!));
+    expect(names.sort()).toEqual([BASEMAP_ENTRY, MANIFEST_ENTRY].sort());
   });
 
   it('正当な保存要求は従来どおり書ける (validation は素通り)', async () => {
@@ -842,27 +843,6 @@ describe('sender allowlist (isTrustedSender / Codex MED)', () => {
 
 // GPT-5.6 Sol レビュー #4/#5 — 保存検証の過不足の是正。
 describe('validateSaveRequest — Sol レビュー #4/#5 の是正', () => {
-  it('#5: 連続ピリオドを含むだけの正当な添付名 (map..final.png) は受理される', async () => {
-    const { deps, disk } = makeDeps();
-    const ok: SaveRequest = {
-      ...makeSaveReq(),
-      attachments: [{ name: 'map..final.png', bytes: new Uint8Array([1]) }],
-    };
-    const res = await handleSaveAs(deps, ok);
-    expect(res.ok).toBe(true);
-    expect(disk.size).toBeGreaterThan(0);
-  });
-
-  it('#5: 特殊セグメントそのもの (`..` / `.`) と区切り文字入りは引き続き拒否', () => {
-    for (const name of ['..', '.', 'a/b.png', 'a\\b.png']) {
-      const bad: SaveRequest = {
-        ...makeSaveReq(),
-        attachments: [{ name, bytes: new Uint8Array([1]) }],
-      };
-      expect(validateSaveRequest(bad)).not.toBeNull();
-    }
-  });
-
   it('#4: manifest の JSON バイト長がエントリ上限を超える保存は拒否 (WRITE⊆READ 対称)', () => {
     const req = makeSaveReq();
     // Inject a small cap: the fixture manifest's own JSON is far larger than 64B.
@@ -874,38 +854,23 @@ describe('validateSaveRequest — Sol レビュー #4/#5 の是正', () => {
   });
 });
 
-// Sol レビュー2周目 #2/#3 — 保存側の合計上限と添付名長。
-describe('validateSaveRequest — Sol round-2 #2/#3', () => {
+// Sol レビュー2周目 #2 — 保存側の合計上限。
+describe('validateSaveRequest — Sol round-2 #2', () => {
   it('#2: 各エントリは上限内でも合計が読込上限を超える保存は拒否 (WRITE⊆READ)', () => {
     const req: SaveRequest = {
       ...makeSaveReq(),
       baseMapImage: new Uint8Array(60),
-      attachments: [
-        { name: 'a.png', bytes: new Uint8Array(60) },
-        { name: 'b.png', bytes: new Uint8Array(60) },
-      ],
     };
-    const message = validateSaveRequest(req, { maxEntryBytes: 100_000, maxTotalBytes: 150 });
+    // 背景地図（60）とマニフェストは、どちらも単独ではエントリ上限に収まるが、合計は上限を 1 超える。
+    const manifestBytes = Buffer.byteLength(JSON.stringify(req.manifest), 'utf8');
+    const message = validateSaveRequest(req, {
+      maxEntryBytes: 100_000,
+      maxTotalBytes: manifestBytes + 59,
+    });
     expect(message).not.toBeNull();
     expect(message).toContain('全体のサイズ');
     // 実キャップでは同じ要求が通る(正当保存の非退行)。
     expect(validateSaveRequest(req)).toBeNull();
-  });
-
-  it('#3: ZIP 名前フィールド上限を超える添付名は拒否され、IPC 例外にならない', async () => {
-    const longName = 'a'.repeat(65_517);
-    const bad: SaveRequest = {
-      ...makeSaveReq(),
-      attachments: [{ name: longName, bytes: new Uint8Array([1]) }],
-    };
-    expect(validateSaveRequest(bad)).toContain('長すぎます');
-    // ハンドラ経由でも contract どおりの write-failed で返る(promise rejection しない)。
-    const { deps, saveCalls } = makeDeps();
-    const res = await handleSaveAs(deps, bad);
-    expect(res.ok).toBe(false);
-    if (res.ok) return;
-    expect(res.reason).toBe('write-failed');
-    expect(saveCalls).toHaveLength(0);
   });
 });
 

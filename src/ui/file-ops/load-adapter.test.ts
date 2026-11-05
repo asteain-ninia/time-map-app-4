@@ -27,7 +27,6 @@ describe('loadTransportFrom (U15 LoadResponse → LoadTransport, 教訓 5.33)', 
       path: '/tmp/p.gimoza',
       manifest: MANIFEST,
       baseMapImage: new Uint8Array(),
-      attachments: [],
     };
     const transport = loadTransportFrom(response);
     expect(transport.ok).toBe(true);

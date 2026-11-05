@@ -74,7 +74,6 @@ function okLoad(): LoadResponse {
     path: LOADED_PATH,
     manifest,
     baseMapImage: new Uint8Array(),
-    attachments: [],
   };
 }
 

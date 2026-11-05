@@ -23,9 +23,6 @@ export const SHELL_MAIN_STRINGS = {
   // --- 保存要求の点検（ipc-handlers.ts の validateSaveRequest） ---
   saveRequestInvalid: '保存要求の形式が不正です。',
   baseMapTooLarge: '背景地図画像が大きすぎるため保存できません。',
-  attachmentNameInvalid: (name: string): string => `添付資産名が不正です: ${name}`,
-  attachmentNameTooLong: (head: string): string => `添付資産名が長すぎます: ${head}…`,
-  attachmentTooLarge: (name: string): string => `添付資産 ${name} が大きすぎるため保存できません。`,
   saveDataInvalid: '保存データが検証に失敗しました。お手数ですが開発者へ報告してください。',
   manifestTooLarge: 'プロジェクトデータが大きすぎるため保存できません。',
   projectTooLarge: 'プロジェクト全体のサイズが大きすぎるため保存できません。',

@@ -81,7 +81,7 @@ describe('saveTmap end-to-end (受け入れ基準1/2/7)', () => {
     const { env, disk } = makeMemoryEnv();
     const manifest = serialize(richValidProject());
 
-    const res = await saveTmap(env, TARGET, { manifest, baseMapImage: baseMap, attachments: [] }, 10);
+    const res = await saveTmap(env, TARGET, { manifest, baseMapImage: baseMap }, 10);
     expect(res.ok).toBe(true);
 
     const written = disk.get(TARGET);
@@ -102,7 +102,7 @@ describe('saveTmap end-to-end (受け入れ基準1/2/7)', () => {
     const res = await saveTmap(
       failingEnv,
       TARGET,
-      { manifest: serialize(richValidProject()), baseMapImage: baseMap, attachments: [] },
+      { manifest: serialize(richValidProject()), baseMapImage: baseMap },
       10,
     );
     expect(res.ok).toBe(false);
@@ -121,7 +121,7 @@ describe('repeated saves keep ≤ maxGenerations backups (受け入れ基準3)',
     // share a millisecond — the sequence (教訓5.37) must keep them distinct AND
     // pruning must still cap at 10.
     for (let i = 0; i < 15; i++) {
-      const res = await saveTmap(env, TARGET, { manifest, baseMapImage: baseMap, attachments: [] }, 10);
+      const res = await saveTmap(env, TARGET, { manifest, baseMapImage: baseMap }, 10);
       expect(res.ok).toBe(true);
     }
     const backups = [...disk.keys()]
@@ -136,7 +136,7 @@ describe('一覧に出している世代は、フォルダの書き方が違っ�
     const { env, disk } = makeMemoryEnv();
     const manifest = serialize(richValidProject());
     for (let i = 0; i < 2; i++) {
-      await saveTmap(env, TARGET, { manifest, baseMapImage: baseMap, attachments: [] }, 2);
+      await saveTmap(env, TARGET, { manifest, baseMapImage: baseMap }, 2);
     }
     const oldest = [...disk.keys()].filter((p) => p.startsWith(`${TARGET}.bak.`)).sort()[0]!;
     const oldestName = oldest.slice(oldest.lastIndexOf('/') + 1);
@@ -145,7 +145,7 @@ describe('一覧に出している世代は、フォルダの書き方が違っ�
     await saveTmap(
       env,
       TARGET,
-      { manifest, baseMapImage: baseMap, attachments: [] },
+      { manifest, baseMapImage: baseMap },
       2,
       new Set([protectedPath]),
     );

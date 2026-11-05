@@ -3,13 +3,7 @@
 // and the save pipeline — exported together so the persistence-IO surface moves
 // as one change unit (教訓5.31).
 
-export {
-  MANIFEST_ENTRY,
-  BASEMAP_ENTRY,
-  ATTACHMENTS_DIR,
-  attachmentEntry,
-  attachmentNameOf,
-} from './entry-paths';
+export { MANIFEST_ENTRY, BASEMAP_ENTRY } from './entry-paths';
 
 export {
   buildTmap,

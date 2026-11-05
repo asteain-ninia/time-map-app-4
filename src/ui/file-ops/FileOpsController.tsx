@@ -36,7 +36,6 @@ import { formatYear } from '../timeline/time-display';
 import type {
   BackupListing,
   LoadResponse,
-  NamedAsset,
   RestoredFrom,
   SaveRequest,
   TimeMapApi,
@@ -385,14 +384,14 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
 
   // BUG #6 (data-loss) fix — the loaded ASSET BYTES, retained between load and save.
   //
-  // The base-map image and attachment bytes live ONLY on the IPC `LoadResponse`
+  // The base-map image bytes live ONLY on the IPC `LoadResponse`
   // (they are NOT part of `DomainProject`, which carries just a `baseMap.source`
-  // reference). Previously `buildSaveRequest` shipped `new Uint8Array()` / `[]` for
+  // reference). Previously `buildSaveRequest` shipped `new Uint8Array()` for
   // them, so the FIRST save overwrote the on-disk `.gimoza` with a zero-byte base-map
   // asset — permanently losing the loaded map image on round-trip. The renderer is
   // the only place that holds these bytes after a load, so we retain them here and
   // re-ship them on save until the live asset units rebind the base map. A new /
-  // empty project carries no assets (empty image + no attachments). The ref holds the
+  // empty project carries no assets (an empty image). The ref holds the
   // assets of the COMMITTED project only: it is updated when a load reflects into the
   // domain (promotePendingAssets, see the staging holder below) or when FR-04 replaces
   // the base map, and reset on a new-project init, mirroring the save context's
@@ -400,20 +399,18 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   /** The asset bytes belonging to one project (the save round-trip payload). */
   interface LoadedAssets {
     readonly baseMapImage: Uint8Array;
-    readonly attachments: readonly NamedAsset[];
   }
   const loadedAssetsRef = useRef<LoadedAssets>({
     baseMapImage: new Uint8Array(),
-    attachments: [],
   });
   const resetLoadedAssets = useCallback(() => {
-    loadedAssetsRef.current = { baseMapImage: new Uint8Array(), attachments: [] };
+    loadedAssetsRef.current = { baseMapImage: new Uint8Array() };
   }, []);
 
   // UC1 (data-loss) fix — the STAGING holder for a load's asset bytes.
   //
   // The capture seam (below) is the ONLY place the renderer ever sees the raw
-  // `LoadResponse.baseMapImage` / `.attachments` (the load-adapter strips them, BUG #6),
+  // `LoadResponse.baseMapImage` (the load-adapter strips it, BUG #6),
   // but that seam fires the moment the IPC read succeeds — LONG BEFORE the flow knows
   // whether the file will actually become the live project. Between the two lie the
   // FR-106 repair dialog, its retry, and the reject branches, EVERY one of which can end
@@ -421,7 +418,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // pushing the DISPLAY bytes at the capture seam therefore left, on a repair 中止:
   //   - the domain on the PREVIOUS project, but the retained assets on the NEW file, so
   //     the next 保存 / 自動保存 wrote 旧 manifest + 新 asset into one `.gimoza` — a
-  //     corrupt, self-inconsistent file (the manifest's base-map/attachment references
+  //     corrupt, self-inconsistent file (the manifest's base-map references
   //     no longer describe the embedded bytes);
   //   - the displayed base map flipped to the file the user just refused to open.
   // So the capture is now TWO-STAGE: the seam only STAGES the bytes here, and
@@ -647,7 +644,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     // BUG #6 fix (capture half): wrap the U15 load calls so a successful load KEEPS its
     // asset bytes before the load-adapter strips them (the adapter keeps only path +
     // manifest). This is the only seam where the renderer sees the raw
-    // `LoadResponse.baseMapImage` / `.attachments`; without keeping them here the bytes
+    // `LoadResponse.baseMapImage`; without keeping them here the bytes
     // are gone by the time a save assembles its request.
     //
     // UC1 fix (the two-stage half): the seam only STAGES them. Success HERE means "the
@@ -662,7 +659,6 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       if (response.ok) {
         pendingAssetsRef.current = {
           baseMapImage: response.baseMapImage,
-          attachments: response.attachments,
         };
         // UC1 round-2: stage the save-destination token beside the assets — both are
         // promoted from reflectProject and discarded on every non-reflecting exit, so the
@@ -727,8 +723,8 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         }),
         ...(bundle === null ? {} : { bundles: [toSavedBundle(bundle)] }),
       };
-      // BUG #6 fix: ship the RETAINED asset bytes (the base-map image + attachments
-      // captured on the last successful load), NOT zero bytes. Without this the first
+      // BUG #6 fix: ship the RETAINED asset bytes (the base-map image captured on
+      // the last successful load), NOT zero bytes. Without this the first
       // save wrote an empty base-map asset over the loaded one, permanently losing the
       // map image on a load→save round-trip. A new/empty project retains empty assets,
       // so this is a no-op there. The live asset units can later update the ref when
@@ -738,7 +734,6 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         // The manifest is serialized from the current domain (U14 serialize).
         manifest: serialize(domainToSave),
         baseMapImage: assets.baseMapImage,
-        attachments: assets.attachments,
       };
     };
     return {
@@ -1205,8 +1200,8 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       // ファイルの名前が出て、一覧と世代の数も前のファイルのものになっていた。待たない ――
       // 次の保存はこのあとに送られるので、主プロセスは先にこれを受け取る（commitLoadedPath と同じ）。
       if (api !== null) void api.forgetSaveTarget().catch(() => undefined);
-      // BUG #6 fix: a new project has NO loaded assets — drop any retained base-map /
-      // attachment bytes from a previously-loaded project so 新規 after a load does not
+      // BUG #6 fix: a new project has NO loaded assets — drop any retained base-map
+      // bytes from a previously-loaded project so 新規 after a load does not
       // write the old project's map image into the new file (教訓 5.2 全経路で破棄).
       resetLoadedAssets();
       // S7: a new project reverts the DISPLAY to the bundled preset (FR-03) — push empty

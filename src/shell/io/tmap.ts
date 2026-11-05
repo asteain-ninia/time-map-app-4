@@ -7,12 +7,15 @@
 // U15 — the `.gimoza` ZIP container read/write ADAPTERS (技術方針 2.12 / FR-103).
 //
 // PURE & Electron-free (受け入れ基準7): `buildTmap` assembles a ZIP byte array
-// from a manifest value + binary assets; `readTmap` parses ZIP bytes back into
+// from a manifest value + the base-map image; `readTmap` parses ZIP bytes back into
 // the same parts. Both use the SINGLE entry-path convention (entry-paths.ts).
 // ZIP I/O is fflate's synchronous `zipSync` / `unzipSync` (技術方針: ZIP入出力
 // は fflate).
 //
-// The manifest is stored as UTF-8 JSON text. Binary assets are stored verbatim.
+// The manifest is stored as UTF-8 JSON text. The base-map image is stored verbatim.
+// There is no attachment area (FR-98 の改定〔2026-11-03〕で地物の資料は本アプリの外が
+// 正本になった): any other entry an old file carries is ignored on read (it still
+// counts toward the size caps below) and is not written back on the next save.
 // `readTmap` returns a discriminated result: the manifest is returned as a raw
 // `unknown` (parsed JSON) — it is DELIBERATELY NOT validated here. Zod validation
 // is the load adapter's job through `parseManifest` (R8 / 受け入れ基準5). This
@@ -20,23 +23,15 @@
 
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 
-import type { NamedAsset } from '../ipc/contract';
-import {
-  attachmentEntry,
-  attachmentNameOf,
-  BASEMAP_ENTRY,
-  MANIFEST_ENTRY,
-} from './entry-paths';
+import { BASEMAP_ENTRY, MANIFEST_ENTRY } from './entry-paths';
 import { SHELL_IO_STRINGS } from './strings';
 
-/** Inputs to {@link buildTmap}: the manifest value plus the binary assets. */
+/** Inputs to {@link buildTmap}: the manifest value plus the base-map image. */
 export interface TmapContents {
   /** The manifest value to JSON-encode (already serialized by U14). */
   readonly manifest: unknown;
   /** Base-map image bytes. */
   readonly baseMapImage: Uint8Array;
-  /** Attached document images (may be empty — 0 is a valid count, 教訓5.18). */
-  readonly attachments: readonly NamedAsset[];
 }
 
 /** What {@link readTmap} extracts from a `.gimoza` byte stream. */
@@ -44,7 +39,6 @@ export interface ExtractedTmap {
   /** The raw, NOT-yet-validated manifest (parsed JSON). */
   readonly manifest: unknown;
   readonly baseMapImage: Uint8Array;
-  readonly attachments: readonly NamedAsset[];
 }
 
 /**
@@ -81,24 +75,19 @@ export type ReadTmapResult =
     };
 
 /**
- * Assemble a `.gimoza` ZIP byte array from the manifest + assets (FR-103). The
- * manifest JSON entry is written first (its `version`先頭 is preserved by the
- * serializer). Attachments are placed under the shared attachments directory.
- * Pure: same input → same bytes (fflate `zipSync` with default settings).
+ * Assemble a `.gimoza` ZIP byte array from the manifest + base-map image (FR-103).
+ * The manifest JSON entry is written first (its `version`先頭 is preserved by the
+ * serializer). Pure: same input → same bytes (fflate `zipSync` with default settings).
  */
 export function buildTmap(contents: TmapContents): Uint8Array {
-  const files: Record<string, Uint8Array> = {
+  return zipSync({
     [MANIFEST_ENTRY]: strToU8(JSON.stringify(contents.manifest)),
     [BASEMAP_ENTRY]: contents.baseMapImage,
-  };
-  for (const asset of contents.attachments) {
-    files[attachmentEntry(asset.name)] = asset.bytes;
-  }
-  return zipSync(files);
+  });
 }
 
 /**
- * Extract the manifest + assets from `.gimoza` bytes (FR-103). Never throws for
+ * Extract the manifest + base-map image from `.gimoza` bytes (FR-103). Never throws for
  * the expected failure paths: a corrupt ZIP, a missing required entry, or
  * malformed manifest JSON all return a discriminated `ok:false` result so the
  * caller can map them to a 拒否理由 (受け入れ基準5). The manifest is returned as
@@ -213,21 +202,13 @@ export function readTmap(bytes: Uint8Array, caps: ReadTmapCaps = {}): ReadTmapRe
     };
   }
 
-  const attachments: NamedAsset[] = [];
-  for (const [entryPath, entryBytes] of Object.entries(entries)) {
-    const name = attachmentNameOf(entryPath);
-    if (name !== undefined) attachments.push({ name, bytes: entryBytes });
-  }
-  // Stable order so round-trips compare deterministically (名前昇順).
-  attachments.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-
-  return { ok: true, contents: { manifest, baseMapImage, attachments } };
+  return { ok: true, contents: { manifest, baseMapImage } };
 }
 
 /**
  * 保存ファイルの中の **地物の数**（増分 8D。世代の一覧の「地物数」の列）。
  *
- * 世代の一覧は 10 個前後のファイルを一度に読むので、背景地図や添付は展開しない
+ * 世代の一覧は 10 個前後のファイルを一度に読むので、背景地図などは展開しない
  * ―― **マニフェストの 1 エントリだけ**を取り出して数える。数えるのは全部の歴史・全部の
  * 錨の写しに出てくる地物 ID の **種類の数**（同じ地物が 100 個の錨に出ても 1 と数える）。
  *

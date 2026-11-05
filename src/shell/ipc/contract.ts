@@ -157,8 +157,9 @@ export const MAIN_TO_RENDERER_CHANNELS: readonly IpcChannel[] = [
 
 /**
  * A save request carries the already-serialized manifest (a plain, JSON-safe
- * value produced by U14 `serialize`) plus the binary assets to embed in the
- * `.gimoza` ZIP: the base-map image and the attached document images. The
+ * value produced by U14 `serialize`) plus the base-map image to embed in the
+ * `.gimoza` ZIP. There are no attached images: FR-98 の改定（2026-11-03）で地物の
+ * 資料の本文は本アプリの外が正本になり、本アプリは複製も保持もしない. The
  * renderer never touches `fs`; it ships bytes through this typed channel and
  * main performs the atomic write.
  */
@@ -167,16 +168,6 @@ export interface SaveRequest {
   readonly manifest: Manifest;
   /** Base-map image bytes (the ZIP base-map asset). */
   readonly baseMapImage: Uint8Array;
-  /** Attached document images, keyed by the manifest-referenced asset name. */
-  readonly attachments: readonly NamedAsset[];
-}
-
-/** A binary asset (an image) addressed by a stable name within the ZIP. */
-export interface NamedAsset {
-  /** Asset name as referenced from the manifest (e.g. `attach-1.png`). */
-  readonly name: string;
-  /** The raw image bytes. */
-  readonly bytes: Uint8Array;
 }
 
 /** Outcome of a save (atomic write). Discriminated so failure is explicit. */
@@ -188,7 +179,7 @@ export type SaveResponse =
 
 /**
  * Outcome of a load. Success carries the parsed (Zod-validated, FR-104/116)
- * manifest plus the extracted binary assets. Failure carries a reason and a
+ * manifest plus the extracted base-map image. Failure carries a reason and a
  * 日本語 message (拒否理由は通知と戻り値の両方で, 教訓5.26).
  */
 export type LoadResponse =
@@ -197,7 +188,6 @@ export type LoadResponse =
       readonly path: string;
       readonly manifest: Manifest;
       readonly baseMapImage: Uint8Array;
-      readonly attachments: readonly NamedAsset[];
       /**
        * UC1 round-2 保存宛先の遅延昇格: an opaque token main mints per successful read.
        * Main STAGES `{ token, path }` instead of promoting the save target on read; the
