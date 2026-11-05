@@ -10,6 +10,7 @@ import { createBasicAttributes, createColorInfo } from '../../domain/attributes'
 import {
   createAggregateFeature,
   createPointFeature,
+  withReferenceName,
   type Feature,
 } from '../../domain/feature';
 import { asFeatureId, asVertexId, type FeatureId } from '../../domain/ids';
@@ -148,6 +149,26 @@ describe('DetailPanels — 複数同時 / 個別ドラッグ / 個別閉じ (FR-
     expect(memo.textContent).toBe('**重要**な城\n[行く](feature:B)');
     expect(memo.querySelector('strong')).toBeNull();
     expect(memo.querySelector('a')).toBeNull();
+  });
+
+  it('shows the参照名 row (名前だけ。無ければ「（なし）」)', () => {
+    const named: FeatureLookup = {
+      featureAt: (id) =>
+        id === fA ? withReferenceName(feat(fA, '城A'), '出界百科: 城A') : id === fB ? feat(fB, '城B') : null,
+    };
+    render(
+      <DetailPanels
+        state={twoOpen()}
+        featureLookup={named}
+        detailDocumentOf={() => ''}
+        onClose={() => {}}
+      />,
+    );
+    const rows = screen.getAllByTestId('detail-panel-reference-name');
+    expect(rows.map((r) => r.textContent)).toEqual([
+      '出界百科: 城A',
+      PROPERTY_STRINGS.referenceNameNone,
+    ]);
   });
 
   it('shows the empty notice when the feature has no作業メモ', () => {

@@ -1,7 +1,7 @@
 // UI layer (U32 / property panel): basic-info display + edit form (FR-97 / FR-99
 // 前段, 教訓 5.13 / 5.24 / 5.12).
 //
-// Shows the target feature's basic attributes (名前・種別ラベル)、派生の面積・存続期間、
+// Shows the target feature's basic attributes (名前・種別ラベル・参照名)、派生の面積・存続期間、
 // and color info (自動配色許可・塗り色・選択時色・境界色). One `editable` judgment
 // controls the WHOLE form (教訓 5.13): in view mode every input is disabled — there is
 // no per-widget permission check.
@@ -12,7 +12,7 @@
 //   1. 保存列は素性欄の**下端に固定**する（設計書 §C.6 / C7。現物は保存ボタンの
 //      `offsetTop` が 755.8px で初期表示の外にあり、誰も見なかった）。下端に置くには
 //      ボタンがフォームの外＝パネルの最後の子でなければならない。
-//   2. 保存の対象は名前・種別ラベル・見た目・**詳細文書**の 4 つで、詳細文書は別の
+//   2. 保存の対象は名前・種別ラベル・参照名・見た目・**作業メモ**で、作業メモは別の
 //      セクションが持っている（設計書 §C.6 の「保存の対象」）。**押さないと保存され
 //      ない場所が 2 つある**状態（N-46）を 1 つに揃えるには、下書きを両方の上（パネル）
 //      で持つしかない。
@@ -64,7 +64,7 @@ export interface BasicInfoFormProps {
   /**
    * 上位領域（親）の表示名。無ければ `null`、引けなければ `undefined`（行を出さない）。
    * **値は表示だけで、変えるのは下の 3 ボタンである**（設計書 §C.6 の「保存の対象」:
-   * 保存ボタンが受け持つのは名前・種別・見た目・詳細文書の 4 つだけで、親は別経路）。
+   * 保存ボタンが受け持つのは名前・種別・参照名・見た目・作業メモだけで、親は別経路）。
    */
   readonly parentName?: string | null;
   /**
@@ -231,7 +231,7 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
 
       {/*
         FR-40 — 種別ラベル（「州」「都市」など）。データ構造にも保存形式にも最初から
-        あるのに **入力欄がどこにも無かった**（現状.md R5）。保存の対象 4 つのうちの
+        あるのに **入力欄がどこにも無かった**（現状.md R5）。保存の対象の
         1 つ（設計書 §C.6）なので、名前の隣に置く。空欄＝付いていない。
       */}
       <label className="basic-info__field">
@@ -244,6 +244,25 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
           disabled={!editable}
           data-pristine={props.pristine === true ? 'true' : 'false'}
           onChange={(e) => onChange({ kindLabel: e.target.value })}
+          onKeyDown={onFieldKeyDown}
+        />
+      </label>
+
+      {/*
+        FR-98 — 参照名（本アプリの外にある資料を指す名前 1 件）。種別と同じ 1 行の欄で、
+        Enter の「保存して次へ」も同じ。本アプリは名前を持つだけで、資料を開きも辿りもしない。
+        空欄＝付いていない。
+      */}
+      <label className="basic-info__field">
+        <span>{PROPERTY_STRINGS.referenceNameLabel}</span>
+        <input
+          type="text"
+          aria-label={PROPERTY_STRINGS.referenceNameLabel}
+          placeholder={PROPERTY_STRINGS.referenceNamePlaceholder}
+          value={draft.referenceName}
+          disabled={!editable}
+          data-pristine={props.pristine === true ? 'true' : 'false'}
+          onChange={(e) => onChange({ referenceName: e.target.value })}
           onKeyDown={onFieldKeyDown}
         />
       </label>

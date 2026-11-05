@@ -1,7 +1,7 @@
 // UI layer (U32 / property panel): one modal detail panel (FR-99後段 / FR-98).
 //
 // A draggable, independently-closable floating panel showing ALL of a feature's
-// attributes plus its 作業メモ (plain text — FR-98: no formatting, no images, no
+// attributes (参照名 included) plus its 作業メモ (plain text — FR-98: no formatting, no images, no
 // in-document links; shown as React text, never as HTML). It reuses the shell's
 // DraggablePanel (drag handle + bring-to-front + close, 教訓 5.8 / 5.14): the
 // panel is an input-capturing front layer so a transparent backdrop never steals
@@ -56,6 +56,11 @@ export function DetailPanel(props: DetailPanelProps): JSX.Element {
             <dd>{feature.attributes.name}</dd>
             <dt>{PROPERTY_TEXT.detailKindLabel}</dt>
             <dd>{featureKindJaLabel(feature.kind)}</dd>
+            {/* FR-98 / FR-99: 参照名（外の資料を指す名前 1 件）。名前を出すだけで、開かない。 */}
+            <dt>{PROPERTY_STRINGS.referenceNameLabel}</dt>
+            <dd data-testid="detail-panel-reference-name">
+              {feature.referenceName ?? PROPERTY_STRINGS.referenceNameNone}
+            </dd>
             <dt>{PROPERTY_STRINGS.startYearLabel}</dt>
             <dd>{formatYear(feature.attributes.startYear)}</dd>
             <dt>{PROPERTY_STRINGS.endYearLabel}</dt>

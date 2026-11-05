@@ -613,7 +613,7 @@ function AnchorIntervalEditor(props: {
 
       <p className="anchor-interval__hint">{PROPERTY_STRINGS.intervalGranularityHint}</p>
       {/* N-46: 同じ画面に「押さないと保存されない」ものと「押した瞬間に効く」ものが
-          同居していた。素性の 4 つは下端の保存列に揃えたので、ここが唯一の即時確定に
+          同居していた。素性の保存の対象は下端の保存列に揃えたので、ここが唯一の即時確定に
           なる。**即時であることを書いておく**（取り消しは Ctrl+Z 1 手）。 */}
       <p className="anchor-interval__hint">{PROPERTY_STRINGS.intervalImmediateHint}</p>
 

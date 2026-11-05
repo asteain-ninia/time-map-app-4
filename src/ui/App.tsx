@@ -3902,8 +3902,8 @@ export function App(): JSX.Element {
 
   /**
    * 素性の保存（増分 2）。**編集時刻は現在時刻**で、パネルが年へ丸めて渡してくる
-   * （設計書 §D.3 / 裁定 §N-2 の (A)）。保存の対象は名前・種別ラベル・見た目・詳細文書の
-   * 4 つ（§C.6）で、1 回の押下＝1 つの取り消し単位に収まる。
+   * （設計書 §D.3 / 裁定 §N-2 の (A)）。保存の対象は名前・種別ラベル・参照名・見た目・
+   * 作業メモ（§C.6）で、1 回の押下＝1 つの取り消し単位に収まる。
    */
   const propertyEditDispatch = useMemo<EditDispatch>(
     () => ({
@@ -3915,33 +3915,37 @@ export function App(): JSX.Element {
           throw new Error(PROPERTY_TEXT.editTargetMissingAtTime);
         }
         const v = intent.attributes;
-        const nextFeature = withDetailDocument(
-          withKindLabel(
-            withColor(
-              // 飾りの開始年／終了年は保存の対象ではない（A7 / GPT#8）。地物が持って
-              // いる値をそのまま持ち越す（画面では読み取り専用に出している）。
-              withAttributes(
-                feature,
-                createBasicAttributes(
-                  v.name,
-                  feature.attributes.startYear,
-                  feature.attributes.endYear,
+        const nextFeature = withReferenceName(
+          withDetailDocument(
+            withKindLabel(
+              withColor(
+                // 飾りの開始年／終了年は保存の対象ではない（A7 / GPT#8）。地物が持って
+                // いる値をそのまま持ち越す（画面では読み取り専用に出している）。
+                withAttributes(
+                  feature,
+                  createBasicAttributes(
+                    v.name,
+                    feature.attributes.startYear,
+                    feature.attributes.endYear,
+                  ),
+                ),
+                createColorInfo(
+                  v.autoColorEnabled,
+                  v.fillColor,
+                  v.selectedColor,
+                  v.borderColor,
+                  v.paletteTheme,
+                  v.fillOpacity,
+                  v.selectedOpacity,
                 ),
               ),
-              createColorInfo(
-                v.autoColorEnabled,
-                v.fillColor,
-                v.selectedColor,
-                v.borderColor,
-                v.paletteTheme,
-                v.fillOpacity,
-                v.selectedOpacity,
-              ),
+              // 空文字 = 付いていない（ドメインが absent へ正規化する唯一の空の形）。
+              v.kindLabel === '' ? undefined : v.kindLabel,
             ),
-            // 空文字 = 付いていない（ドメインが absent へ正規化する唯一の空の形）。
-            v.kindLabel === '' ? undefined : v.kindLabel,
+            v.detailDocument,
           ),
-          v.detailDocument,
+          // 空文字 = 付いていない（withReferenceName が absent へ正規化する）。
+          v.referenceName,
         );
         // Attribute / style edit: geometry is unchanged, so no vertex body moves.
         const snapshot: FeatureSnapshot = { feature: nextFeature, vertices: [] };
@@ -5650,6 +5654,7 @@ import {
   withColor,
   withDetailDocument,
   withKindLabel,
+  withReferenceName,
   type Feature,
 } from '../domain/feature';
 import type { FeatureId, RingId, VertexId } from '../domain/ids';

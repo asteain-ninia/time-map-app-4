@@ -81,6 +81,8 @@ const nameInput = (): HTMLInputElement =>
   screen.getByLabelText(PROPERTY_STRINGS.nameLabel) as HTMLInputElement;
 const kindInput = (): HTMLInputElement =>
   screen.getByLabelText(PROPERTY_STRINGS.kindLabelLabel) as HTMLInputElement;
+const referenceInput = (): HTMLInputElement =>
+  screen.getByLabelText(PROPERTY_STRINGS.referenceNameLabel) as HTMLInputElement;
 const borderInput = (): HTMLInputElement =>
   screen.getByLabelText(PROPERTY_STRINGS.borderColorLabel) as HTMLInputElement;
 
@@ -119,6 +121,18 @@ describe('素性欄のフォームは親が持つ値を映すだけ（制御さ�
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith({ kindLabel: '城' });
     expect(kindInput().value).toBe('国');
+  });
+
+  it('参照名を打つと「参照名だけ」を親へ返す（種別と同じ扱い、FR-98）', () => {
+    const { onChange } = renderForm({
+      values: { ...committedValues, referenceName: '出界百科: 織田領' },
+    });
+    expect(referenceInput().value).toBe('出界百科: 織田領');
+    fireEvent.change(referenceInput(), { target: { value: '出界百科: 羽柴領' } });
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith({ referenceName: '出界百科: 羽柴領' });
+    expect(referenceInput().value).toBe('出界百科: 織田領');
   });
 });
 
@@ -255,6 +269,13 @@ describe('Enter は「保存して次へ」（設計書 §I.2）', () => {
     const onSubmit = vi.fn();
     renderForm({ onSubmit });
     fireEvent.keyDown(kindInput(), { key: 'Enter' });
+    expect(onSubmit).toHaveBeenCalledWith(true);
+  });
+
+  it('参照名の欄の Enter も同じ', () => {
+    const onSubmit = vi.fn();
+    renderForm({ onSubmit });
+    fireEvent.keyDown(referenceInput(), { key: 'Enter' });
     expect(onSubmit).toHaveBeenCalledWith(true);
   });
 

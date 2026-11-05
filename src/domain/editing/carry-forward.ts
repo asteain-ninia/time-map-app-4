@@ -19,8 +19,8 @@
 // 書き換えた錨が何本あっても **1 回の押下＝1 つの取り消し単位** である（この module は
 // 系列を丸ごと作り替えて返すので、呼び出し側の 1 コマンドに収まる）。
 //
-// **引き継ぐのは保存の対象 4 つ（名前・種別ラベル・見た目・詳細文書）だけ**である
-// （設計書 §C.6「保存の対象」）。形（頂点）と親（所属）は引き継がない — 形の編集は
+// **引き継ぐのは保存の対象（名前・種別ラベル・参照名・見た目・作業メモ）だけ**である
+// （設計書 §C.6「保存の対象」。参照名は FR-98 の改定〔2026-11-03〕で足した）。形（頂点）と親（所属）は引き継がない — 形の編集は
 // 別の意味を持つし、親の変更は古い親と新しい親の両方に錨を立てる別経路である。
 // 飾りの開始年／終了年も引き継がない（保存の対象ではない、GPT#8）。
 //
@@ -34,6 +34,7 @@ import {
   withColor,
   withDetailDocument,
   withKindLabel,
+  withReferenceName,
   type Feature,
 } from '../feature';
 import type { FeatureId } from '../ids';
@@ -42,7 +43,7 @@ import { compare } from '../time/normalized';
 import type { TimePoint } from '../time/time-point';
 
 /**
- * 引き継ぐ属性の平たい形。**保存の対象 4 つ**（名前・種別ラベル・見た目・詳細文書）を
+ * 引き継ぐ属性の平たい形。**保存の対象**（名前・種別ラベル・参照名・見た目・作業メモ）を
  * 1 つずつ独立に持つ。「無い」は空文字で表す（ドメイン側の absent と 1 対 1、教訓 5.18）。
  *
  * UI の `PropertyEditValues` はこの形をそのまま含むので、画面側は下書きを変換せずに
@@ -52,6 +53,7 @@ import type { TimePoint } from '../time/time-point';
 export interface CarriedAttributes {
   readonly name: string;
   readonly kindLabel: string;
+  readonly referenceName: string;
   readonly detailDocument: string;
   readonly autoColorEnabled: boolean;
   readonly fillColor: string;
@@ -66,6 +68,7 @@ export interface CarriedAttributes {
 export const CARRIED_ATTRIBUTE = {
   Name: 'name',
   KindLabel: 'kindLabel',
+  ReferenceName: 'referenceName',
   DetailDocument: 'detailDocument',
   AutoColorEnabled: 'autoColorEnabled',
   FillColor: 'fillColor',
@@ -87,6 +90,7 @@ export function carriedAttributesOf(feature: Feature): CarriedAttributes {
   return {
     name: feature.attributes.name,
     kindLabel: feature.kindLabel ?? '',
+    referenceName: feature.referenceName ?? '',
     detailDocument: feature.detailDocument ?? '',
     autoColorEnabled: feature.color.autoColorEnabled,
     fillColor: feature.color.fillColor,
@@ -226,6 +230,9 @@ function withCarried(
   }
   if (set.has(CARRIED_ATTRIBUTE.KindLabel)) {
     next = withKindLabel(next, after.kindLabel === '' ? undefined : after.kindLabel);
+  }
+  if (set.has(CARRIED_ATTRIBUTE.ReferenceName)) {
+    next = withReferenceName(next, after.referenceName);
   }
   if (set.has(CARRIED_ATTRIBUTE.DetailDocument)) {
     next = withDetailDocument(next, after.detailDocument);

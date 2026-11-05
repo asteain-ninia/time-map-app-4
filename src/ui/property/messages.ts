@@ -52,6 +52,14 @@ export const PROPERTY_STRINGS = {
    */
   kindLabelLabel: '種別',
   kindLabelPlaceholder: '例: 州・都市（空欄可）',
+  /**
+   * FR-98 の参照名（本アプリの外にある資料を指す名前 1 件）。本アプリは名前を持つだけで、
+   * 資料を開きも辿りもしない。
+   */
+  referenceNameLabel: '参照名',
+  referenceNamePlaceholder: '例: 外の資料の題名（空欄可）',
+  /** 詳細表示のパネルで、参照名が付いていないときに値の欄へ出す語。 */
+  referenceNameNone: '（なし）',
   /** 本物の存続期間（錨の並びが正本, U-23）の行見出し。 */
   existenceLabel: '続く',
   /** 存続期間の「終わりが決まっていない」側の言い方。 */
@@ -468,6 +476,8 @@ export const ANCHOR_DIFF_STRINGS = {
   name: (before: string, after: string): string => `名前が変わった: ${before} → ${after}`,
   kindLabel: (before: string | null, after: string | null): string =>
     `種別が変わった: ${before ?? '（なし）'} → ${after ?? '（なし）'}`,
+  referenceName: (before: string | null, after: string | null): string =>
+    `参照名が変わった: ${before ?? '（なし）'} → ${after ?? '（なし）'}`,
   parent: (before: string | null, after: string | null): string =>
     `親が変わった: ${before ?? 'なし'} → ${after ?? 'なし'}`,
   shape: '形が変わった',

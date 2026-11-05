@@ -162,10 +162,10 @@ export type AnchorIntervalEditIntent =
     };
 
 /*
- * 詳細文書に専用の dispatch 口があった（DetailDocumentDispatch / DetailDocumentEditIntent）。
- * **増分 2 で無くした**（N-46 / 設計書 §C.6 の「保存の対象」）。素性欄の保存の対象は
- * 名前・種別ラベル・見た目・**詳細文書**の 4 つと決めたので、詳細文書は
- * {@link PropertyEditValues.detailDocument} として同じ 1 本の保存経路を通る。
+ * 詳細文書（いまの作業メモ）に専用の dispatch 口があった（DetailDocumentDispatch /
+ * DetailDocumentEditIntent）。**増分 2 で無くした**（N-46 / 設計書 §C.6 の「保存の対象」）。
+ * 作業メモは {@link PropertyEditValues.detailDocument} として、名前・種別ラベル・参照名・
+ * 見た目と同じ 1 本の保存経路を通る。
  * こうすると「押さないと保存されない」場所が画面に 1 つになり、名前と文書を続けて直しても
  * **取り消しは 1 手**で済む（以前は別々の取り消し単位だった）。
  */
@@ -191,23 +191,24 @@ export interface PropertyEditIntent {
   readonly attributes: PropertyEditValues;
 }
 
-/** The editable基本情報 values (FR-97 / FR-100): basic attributes + 種別ラベル +
- * color info + 使用パレット + 詳細文書. paletteTheme is part of the single anchor
+/** The editable基本情報 values (FR-97 / FR-100 / FR-98): basic attributes + 種別ラベル +
+ * 参照名 + color info + 使用パレット + 作業メモ. paletteTheme is part of the single anchor
  * edit so a palette change is one undo unit alongside the other style attributes
  * (U33 AC1 / FR-59).
  *
- * **保存の対象は 4 つ**（設計書 §C.6 の「保存の対象」）: 名前・種別ラベル・見た目
- * （色・不透明度・パレット）・詳細文書。**親（所属）は含まない** — 親の変更は
+ * **保存の対象**（設計書 §C.6 の「保存の対象」）: 名前・種別ラベル・参照名・見た目
+ * （色・不透明度・パレット）・作業メモ。**親（所属）は含まない** — 親の変更は
  * `applyAffiliationProposal` という別の経路で、古い親と新しい親の両方に錨を立てる
  * ので、1 つの保存ボタンでは表せない（増分 7）。
  *
- * 種別ラベルと詳細文書がここに載ったのは増分 2 である。前者は入力欄がどこにも無く
+ * 種別ラベルと詳細文書（いまの作業メモ）がここに載ったのは増分 2、参照名は FR-98 の
+ * 改定（2026-11-03）である。前者は入力欄がどこにも無く
  * （現状.md R5）、後者は**別の保存ボタン**を持っていて「押さないと保存されない」場所が
  * 画面に 2 つあった（N-46）。1 回の押下＝1 つの取り消し単位に揃えた。
  *
  * **飾りの開始年／終了年はここに載せない**（増分 2 の手直し A7 / GPT#8）。載っていた
  * ときは「表示専用の飾り」と説明した欄を触っただけで現在年に新しい錨が立ち、保存量と
- * 取り消し履歴が増えていた。契約どおり保存の対象は 4 つだけにし、飾りの 2 欄は
+ * 取り消し履歴が増えていた。契約どおり保存の対象だけを載せ、飾りの 2 欄は
  * 読み取り専用の表示にした（値は地物が持っているものをそのまま出す）。
  *
  * この型は**ドメインの {@link CarriedAttributes} と同じ形**である（構造的に代入できる）。
@@ -221,6 +222,11 @@ export interface PropertyEditValues {
    * 「付いていない」を意味する（ドメイン側で absent へ正規化される）。
    */
   readonly kindLabel: string;
+  /**
+   * 参照名（FR-98）。本アプリの外にある資料を指す名前 1 件。本アプリは名前を持つだけで、
+   * 資料を開きも辿りもしない。空文字は「付いていない」（ドメインが absent へ正規化する）。
+   */
+  readonly referenceName: string;
   readonly autoColorEnabled: boolean;
   readonly fillColor: string;
   /** 通常表示色の透過度（アルファ, 0..1）— a persisted style attribute (U33 AC1・AC5). */

@@ -26,10 +26,11 @@ describe('edit-intent (教訓 5.24 / 5.15)', () => {
     const v = valuesFromFeature(feature);
     expect(v).toEqual({
       name: '織田領',
-      // 種別ラベルと詳細文書も **保存の対象 4 つ** のうちの 2 つである（増分 2 /
-      // 設計書 §C.6）。付いていない状態は **空文字** で表す（ドメイン側では absent）。
+      // 種別ラベル・参照名・作業メモも **保存の対象** である（増分 2 / 設計書 §C.6 /
+      // FR-98）。付いていない状態は **空文字** で表す（ドメイン側では absent）。
       // 唯一の空の形にしておかないと、no-op 判定が undefined と '' で食い違う。
       kindLabel: '',
+      referenceName: '',
       detailDocument: '',
       autoColorEnabled: true,
       fillColor: '#111111',
@@ -51,6 +52,11 @@ describe('edit-intent (教訓 5.24 / 5.15)', () => {
 
   it('isNoOpEdit is false when any field changed', () => {
     const changed = { ...valuesFromFeature(feature), name: '羽柴領' };
+    expect(isNoOpEdit(feature, changed)).toBe(false);
+  });
+
+  it('isNoOpEdit is false when only the参照名 changed (FR-98 も保存の対象)', () => {
+    const changed = { ...valuesFromFeature(feature), referenceName: '出界百科: 織田領' };
     expect(isNoOpEdit(feature, changed)).toBe(false);
   });
 

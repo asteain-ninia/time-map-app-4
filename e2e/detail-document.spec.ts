@@ -17,6 +17,8 @@
 
 import { test, expect } from '@playwright/test';
 
+import { PROPERTY_STRINGS } from '../src/ui/property/messages';
+
 import { commitOneFace, launchApp, openPropertySection } from './helpers';
 
 test.describe('fr98 — 作業メモの編集（サイドバー編集面 + フローティング閲覧面）', () => {
@@ -41,6 +43,11 @@ test.describe('fr98 — 作業メモの編集（サイドバー編集面 + フ�
       const textarea = section.getByTestId('detail-doc-textarea');
       await expect(textarea).toBeVisible();
       await textarea.fill('**重要**な城の記録');
+      // 参照名（外の資料を指す名前 1 件）も同じ保存列で一緒に確定する（FR-98）。
+      await page
+        .getByTestId('basic-info')
+        .getByLabel(PROPERTY_STRINGS.referenceNameLabel)
+        .fill('出界百科: 城');
       // セクションに専用の保存ボタンは無く、下端の保存列へ案内する（N-46）。
       await expect(section.getByTestId('detail-doc-save')).toHaveCount(0);
       await expect(section.getByTestId('detail-doc-save-hint')).toBeVisible();
@@ -55,6 +62,8 @@ test.describe('fr98 — 作業メモの編集（サイドバー編集面 + フ�
       const panelMemo = panel.getByTestId('detail-panel-memo');
       await expect(panelMemo).toHaveText('**重要**な城の記録');
       await expect(panelMemo.locator('strong')).toHaveCount(0);
+      const panelRef = panel.getByTestId('detail-panel-reference-name');
+      await expect(panelRef).toHaveText('出界百科: 城');
 
       // 追加の道具を外す: the armed add tool keeps an (empty) session past Idle, which
       // SUSPENDS the global shortcuts (bughunt3 H2) — Ctrl+Z would be swallowed.
@@ -67,10 +76,12 @@ test.describe('fr98 — 作業メモの編集（サイドバー編集面 + フ�
       await page.keyboard.press('Control+z');
       await expect(panelMemo).toHaveCount(0);
       await expect(panel.getByTestId('detail-panel-memo-empty')).toBeVisible();
+      await expect(panelRef).toHaveText(PROPERTY_STRINGS.referenceNameNone);
 
       // --- Ctrl+Y: redo replays the SAME memo (教訓 5.23 対称). ---
       await page.keyboard.press('Control+y');
       await expect(panelMemo).toHaveText('**重要**な城の記録');
+      await expect(panelRef).toHaveText('出界百科: 城');
     } finally {
       await app.close();
     }

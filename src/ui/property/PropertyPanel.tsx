@@ -17,8 +17,8 @@
 //   - 集約地物の下位領域は自分の系列を持たないので、**編集が実際に書き込まれる系列**
 //     （親の系列）を `governingSeriesOf` で引いて判定する（設計書 §C.6 / §N-15）。
 //
-// 下書き（名前・種別ラベル・見た目・詳細文書）は **このパネルが 1 つだけ持つ**。保存列は
-// 素性欄の下端に固定してあり（設計書 §C.6 / C7）、1 回の押下で 4 つとも確定する
+// 下書き（名前・種別ラベル・参照名・見た目・作業メモ）は **このパネルが 1 つだけ持つ**。保存列は
+// 素性欄の下端に固定してあり（設計書 §C.6 / C7）、1 回の押下で全部が確定する
 // （N-46: 「押さないと保存されない」場所が 2 つあった状態を 1 つに揃えた）。
 //
 // 錨を選ぶと現在時刻がその錨の開始時刻へ同期する（FR-84 前半は維持）。これは今までと
@@ -250,6 +250,7 @@ interface DraftSeed {
 const EMPTY_VALUES: PropertyEditValues = {
   name: '',
   kindLabel: '',
+  referenceName: '',
   detailDocument: '',
   autoColorEnabled: false,
   fillColor: '',
@@ -529,7 +530,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     [currentTime, governing, feature, calendar, existence],
   );
 
-  // --- 下書き（名前・種別ラベル・見た目・詳細文書の 4 つ、設計書 §C.6） --------
+  // --- 下書き（名前・種別ラベル・参照名・見た目・作業メモ、設計書 §C.6） ------
   const baseline = useMemo<PropertyEditValues>(
     () => (feature === null ? EMPTY_VALUES : valuesFromFeature(feature)),
     [feature],
@@ -772,7 +773,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     // **入力欄そのものを無くしたので不要になった**（A7 / GPT#8）。飾りの年は読み取り
     // 専用になり、保存には地物が持っている値がそのまま載る（読み込み時の schema が
     // 既に範囲を保証している）。
-    // FR-98 の WRITE ガード（長すぎる詳細文書）。ドメインの RangeError は最後の防波堤で
+    // FR-98 の WRITE ガード（長すぎる作業メモ）。ドメインの RangeError は最後の防波堤で
     // あって UX ではない。判定は単一真実源 planDetailDocumentEdit を通す（教訓 5.29）。
     const docPlan = planDetailDocumentEdit(feature, draft.detailDocument);
     if (docPlan.kind === DETAIL_DOCUMENT_PLAN.TooLong) {

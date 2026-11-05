@@ -15,6 +15,7 @@ import {
   withColor,
   withDetailDocument,
   withKindLabel,
+  withReferenceName,
   type Feature,
 } from '../feature';
 import { asAnchorId, asFeatureId, asRingId, asVertexId } from '../ids';
@@ -79,8 +80,8 @@ const carry = (before: Feature, after: Feature) => ({
   after: carriedAttributesOf(after),
 });
 
-describe('changedCarriedAttributes — 引き継ぐのは保存の対象 4 つだけ', () => {
-  it('名前・種別ラベル・詳細文書・見た目の変化を拾う', () => {
+describe('changedCarriedAttributes — 引き継ぐのは保存の対象だけ', () => {
+  it('名前・種別ラベル・参照名・作業メモ・見た目の変化を拾う', () => {
     const base = leaf(fid, 'A');
     expect(
       changedCarriedAttributes(carriedAttributesOf(base), carriedAttributesOf(leaf(fid, 'B'))),
@@ -89,6 +90,10 @@ describe('changedCarriedAttributes — 引き継ぐのは保存の対象 4 つ�
     const withKind = withKindLabel(base, '州');
     expect(changedCarriedAttributes(carriedAttributesOf(base), carriedAttributesOf(withKind)))
       .toEqual(['kindLabel']);
+
+    const withRef = withReferenceName(base, '出界百科: A');
+    expect(changedCarriedAttributes(carriedAttributesOf(base), carriedAttributesOf(withRef)))
+      .toEqual(['referenceName']);
 
     const withDoc = withDetailDocument(base, '本文');
     expect(changedCarriedAttributes(carriedAttributesOf(base), carriedAttributesOf(withDoc)))

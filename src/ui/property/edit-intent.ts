@@ -29,7 +29,7 @@ import type { PropertyEditIntent, PropertyEditValues } from './contracts';
 /**
  * 2 つの値が **すべての項目で** 等しいか。下書きを作り直すかどうかの判定に使う。
  *
- * 以前は「キーを並べ替えて連結した署名文字列」で比べていたが、詳細文書が値に加わって
+ * 以前は「キーを並べ替えて連結した署名文字列」で比べていたが、作業メモが値に加わって
  * 上限 10 万字の本文まで毎レンダー連結することになるので、項目ごとの比較に替えた
  * （意味は同じ・費用だけ下がる）。項目が増えたら型エラーになるよう、{@link
  * valuesFromFeature} と同じ形を明示的に並べる。
@@ -38,6 +38,7 @@ export function propertyValuesEqual(a: PropertyEditValues, b: PropertyEditValues
   return (
     a.name === b.name &&
     a.kindLabel === b.kindLabel &&
+    a.referenceName === b.referenceName &&
     a.detailDocument === b.detailDocument &&
     a.autoColorEnabled === b.autoColorEnabled &&
     a.fillColor === b.fillColor &&
@@ -58,10 +59,11 @@ export function propertyValuesEqual(a: PropertyEditValues, b: PropertyEditValues
 export function valuesFromFeature(feature: Feature): PropertyEditValues {
   return {
     name: feature.attributes.name,
-    // 種別ラベル・詳細文書は「無い」を空文字で表す（ドメイン側では absent）。
+    // 種別ラベル・参照名・作業メモは「無い」を空文字で表す（ドメイン側では absent）。
     // 唯一の空の形にしておかないと、no-op 判定が undefined と '' で食い違う
     // （教訓 5.18: 空文字も値である）。
     kindLabel: feature.kindLabel ?? '',
+    referenceName: feature.referenceName ?? '',
     detailDocument: feature.detailDocument ?? '',
     autoColorEnabled: feature.color.autoColorEnabled,
     fillColor: feature.color.fillColor,
@@ -80,9 +82,10 @@ export function valuesFromFeature(feature: Feature): PropertyEditValues {
  * field-by-field drift cannot creep in.
  */
 export function isNoOpEdit(feature: Feature, next: PropertyEditValues): boolean {
-  // 種別ラベルと詳細文書も保存の対象なので、no-op 判定に必ず含める（設計書 §C.6）。
-  // 片方だけ直したときに「何も起きない」ようでは、保存の対象を 4 つと宣言した意味が無い。
+  // 種別ラベル・参照名・作業メモも保存の対象なので、no-op 判定に必ず含める（設計書 §C.6）。
+  // 1 つだけ直したときに「何も起きない」ようでは、保存の対象と宣言した意味が無い。
   if ((feature.kindLabel ?? '') !== next.kindLabel) return false;
+  if ((feature.referenceName ?? '') !== next.referenceName) return false;
   if ((feature.detailDocument ?? '') !== next.detailDocument) return false;
   // 飾りの開始年／終了年は保存の対象ではない（A7）ので、地物が持っている値をそのまま
   // 使う。ここで下書きの値を混ぜると「触っていない飾りの年」で no-op 判定が動く。

@@ -10,10 +10,10 @@
 //
 // **比べる語彙は「保存の対象」と同じ広さでなければならない**（増分 2 の手直し B1 /
 // バグ狩り #1 / GPT#3 / 設計 B4）。旧版は名前・種別ラベル・親・頂点だけを見ていたので、
-//   - 見た目だけ・詳細文書だけを直して作った錨が、集約地物の下位領域の錨表から消えた、
+//   - 見た目だけ・詳細文書（いまの作業メモ）だけを直して作った錨が、集約地物の下位領域の錨表から消えた、
 //   - その行の文が「この地物に関する変化はありません」と **嘘をついた**、
 //   - リングの構成だけが変わった錨（穴を開けた・外周を分けた）も落ちた。
-// いまは保存の対象 4 つ（名前・種別ラベル・見た目・詳細文書）＋親＋形の全部を見る。
+// いまは保存の対象（名前・種別ラベル・参照名・見た目・作業メモ）＋親＋形の全部を見る。
 // 形は頂点の並びと座標に加えて、**地物の種類・リングの種別 / ID / 親リング / 境界**まで
 // 見る。
 //
@@ -47,15 +47,17 @@ export const ANCHOR_CHANGE = {
   Disappeared: 'disappeared',
   Name: 'name',
   KindLabel: 'kindLabel',
+  /** 参照名（FR-98）。 */
+  ReferenceName: 'referenceName',
   Parent: 'parent',
   Shape: 'shape',
   /**
-   * 見た目（塗り色・境界色・不透明度・パレット・自動配色）。**保存の対象 4 つのうちの
+   * 見た目（塗り色・境界色・不透明度・パレット・自動配色）。**保存の対象の
    * 1 つ**なのに旧版は見ていなかったので、見た目だけを歴史にした錨が子の錨表から消え、
    * 行の文も「変化はありません」と嘘をついた（B1）。
    */
   Style: 'style',
-  /** 詳細文書（同上）。 */
+  /** 作業メモ（同上。欄名は詳細文書のまま）。 */
   DetailDocument: 'detailDocument',
 } as const;
 
@@ -221,6 +223,13 @@ export function changesBetween(
       after: after.kindLabel ?? null,
     });
   }
+  if ((before.referenceName ?? '') !== (after.referenceName ?? '')) {
+    changes.push({
+      kind: ANCHOR_CHANGE.ReferenceName,
+      before: before.referenceName ?? null,
+      after: after.referenceName ?? null,
+    });
+  }
   if (before.parentId !== after.parentId) {
     changes.push({
       kind: ANCHOR_CHANGE.Parent,
@@ -258,6 +267,8 @@ export function changeSentence(change: AnchorChange): string {
       return ANCHOR_DIFF_STRINGS.name(change.before ?? '', change.after ?? '');
     case ANCHOR_CHANGE.KindLabel:
       return ANCHOR_DIFF_STRINGS.kindLabel(change.before, change.after);
+    case ANCHOR_CHANGE.ReferenceName:
+      return ANCHOR_DIFF_STRINGS.referenceName(change.before, change.after);
     case ANCHOR_CHANGE.Parent:
       return ANCHOR_DIFF_STRINGS.parent(change.before, change.after);
     case ANCHOR_CHANGE.Shape:

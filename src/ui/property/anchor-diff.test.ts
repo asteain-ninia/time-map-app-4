@@ -19,6 +19,7 @@ import {
   withDetailDocument,
   withKindLabel,
   withParentId,
+  withReferenceName,
   type Feature,
 } from '../../domain/feature';
 import { getCalendar } from '../../domain/time/calendar';
@@ -31,6 +32,7 @@ import {
   ANCHOR_CHANGE,
   ANCHOR_DIFF_STRINGS,
   anchorRowsOf,
+  changeSentence,
   changesBetween,
   diffSentence,
   existenceRunsOf,
@@ -103,6 +105,21 @@ describe('changesBetween — その地物に何が起きたか', () => {
     // 逆向き（外した）も拾う。
     expect(changesBetween(after, before, child, nameOf).map((c) => c.kind)).toEqual([
       ANCHOR_CHANGE.KindLabel,
+    ]);
+  });
+
+  it('参照名の付け外しも、前後の値つきで拾う（FR-98）', () => {
+    const before = entryAt(0, [pointNamed('アアウェン州')]);
+    const after = entryAt(1200, [withReferenceName(pointNamed('アアウェン州'), '出界百科: 州')]);
+    const changes = changesBetween(before, after, child, nameOf);
+    expect(changes).toEqual([
+      { kind: ANCHOR_CHANGE.ReferenceName, before: null, after: '出界百科: 州' },
+    ]);
+    expect(changeSentence(changes[0]!)).toBe(
+      ANCHOR_DIFF_STRINGS.referenceName(null, '出界百科: 州'),
+    );
+    expect(changesBetween(after, before, child, nameOf).map((c) => c.kind)).toEqual([
+      ANCHOR_CHANGE.ReferenceName,
     ]);
   });
 

@@ -1009,7 +1009,7 @@ describe('PropertyPanel — 飾りの開始年／終了年は読み取り専用�
     expect(screen.getByTestId('decorative-end-year')).toBeInTheDocument();
   });
 
-  it('保存の意図に開始年／終了年は載らない（保存の対象は 4 つだけ）', () => {
+  it('保存の意図に開始年／終了年は載らない（保存の対象だけが載る）', () => {
     const intents: PropertyEditIntent[] = [];
     renderYearPanel({ dispatchEdit: (i) => intents.push(i) });
     fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
@@ -1027,6 +1027,7 @@ describe('PropertyPanel — 飾りの開始年／終了年は読み取り専用�
         'kindLabel',
         'name',
         'paletteTheme',
+        'referenceName',
         'selectedColor',
         'selectedOpacity',
       ].sort(),
@@ -1235,12 +1236,15 @@ describe('増分 2 — 編集時刻は常に現在時刻（設計書 §D.3 / FR-
   // A3: 上書きのときは、その錨の開始と同じ時刻をそのまま渡す（年ちょうどなら年へ
   // 丸める＝上の 1 本）。**年ちょうどでない開始を持つ錨だけが編集できない**のを直した。
 
-  it('保存の対象に種別ラベルと作業メモが含まれる（設計書 §C.6 の「保存の対象」）', () => {
+  it('保存の対象に種別ラベル・参照名・作業メモが含まれる（設計書 §C.6 の「保存の対象」）', () => {
     const intents: PropertyEditIntent[] = [];
     renderPanel(storeAt(timePointYear(1200)), { dispatchEdit: (i) => intents.push(i) });
 
     fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.kindLabelLabel), {
       target: { value: '国' },
+    });
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.referenceNameLabel), {
+      target: { value: '出界百科: 国' },
     });
     fireEvent.change(screen.getByTestId('detail-doc-textarea'), {
       target: { value: '本文' },
@@ -1250,6 +1254,7 @@ describe('増分 2 — 編集時刻は常に現在時刻（設計書 §D.3 / FR-
     // **1 回の押下で 1 つの取り消し単位**（N-46: 保存の契機が 2 つに割れていた）。
     expect(intents).toHaveLength(1);
     expect(intents[0]!.attributes.kindLabel).toBe('国');
+    expect(intents[0]!.attributes.referenceName).toBe('出界百科: 国');
     expect(intents[0]!.attributes.detailDocument).toBe('本文');
   });
 
