@@ -16,6 +16,7 @@ import {
   hasNoChildren,
   isTopLevel,
   normalizeDetailDocument,
+  normalizeReferenceName,
   pruneVertexStore,
   referencedVertexIds,
   toShapelessAggregate,
@@ -28,6 +29,7 @@ import {
   withLineVertexIds,
   withParentId,
   withPointVertexId,
+  withReferenceName,
   type Feature,
 } from './feature';
 import { createVertex, createVertexStore } from './vertex';
@@ -150,7 +152,7 @@ describe('feature withXxx coverage', () => {
   });
 });
 
-describe('detailDocument (FR-98) — 詳細文書は kindLabel と同型の任意共有フィールド', () => {
+describe('detailDocument (FR-98) — 作業メモは kindLabel と同型の任意共有フィールド', () => {
   const doc = '# ローマ\n\n**建国**は紀元前753年。';
 
   it('withDetailDocument attaches the document and preserves every other field', () => {
@@ -293,6 +295,64 @@ describe('detailDocument (FR-98) — 詳細文書は kindLabel と同型の任�
           );
           for (const i of steps) f = transitions[i]!(f);
           return f.detailDocument === document;
+        },
+      ),
+    );
+  });
+});
+
+describe('referenceName (FR-98) — 参照名は 1 件の任意共有フィールド', () => {
+  const ref = '出界百科: ローマ';
+
+  it('withReferenceName attaches the name, preserves every other field, and clears on undefined / ""', () => {
+    const f = createLeafFeature(asFeatureId('f'), attrs, color, createShape(), {
+      kindLabel: '王国',
+      detailDocument: 'メモ',
+    });
+    const named = withReferenceName(f, ref);
+    expect(named.referenceName).toBe(ref);
+    expect(named.kindLabel).toBe('王国');
+    expect(named.detailDocument).toBe('メモ');
+    expect(named.shape).toBe(f.shape);
+    expect('referenceName' in f).toBe(false);
+    expect('referenceName' in withReferenceName(named, undefined)).toBe(false);
+    expect('referenceName' in withReferenceName(named, '')).toBe(false);
+  });
+
+  it("'' is normalized to absent at the constructor boundary too (buildCommon)", () => {
+    expect(
+      'referenceName' in
+        createPointFeature(asFeatureId('g'), attrs, color, asVertexId('v'), { referenceName: '' }),
+    ).toBe(false);
+    expect(normalizeReferenceName('')).toBeUndefined();
+    expect(normalizeReferenceName(undefined)).toBeUndefined();
+    expect(normalizeReferenceName(ref)).toBe(ref);
+  });
+
+  it('property: EVERY identity-preserving with系/遷移 application preserves referenceName', () => {
+    const transitions: ReadonlyArray<(f: Feature) => Feature> = [
+      (f) => withParentId(f, asFeatureId('new-parent')),
+      (f) => withKindLabel(f, 'ラベル'),
+      (f) => withDetailDocument(f, 'メモ'),
+      (f) => withDetailDocument(f, undefined),
+      (f) => withAttributes(f, createBasicAttributes('改名', 1, 99)),
+      (f) =>
+        f.kind === FEATURE_KIND.Aggregate
+          ? withAggregateChildIds(f, [asFeatureId('c2')])
+          : toShapelessAggregate(f, [asFeatureId('c1')]),
+      (f) => (f.kind === FEATURE_KIND.Leaf ? promoteFeature(f, [asFeatureId('c1')]) : f),
+    ];
+    fc.assert(
+      fc.property(
+        fc.string({ minLength: 1, maxLength: 40 }),
+        fc.array(fc.integer({ min: 0, max: transitions.length - 1 }), { maxLength: 8 }),
+        (name, steps) => {
+          let f: Feature = withReferenceName(
+            createLeafFeature(asFeatureId('f'), attrs, color, createShape(), { directDomain: true }),
+            name,
+          );
+          for (const i of steps) f = transitions[i]!(f);
+          return f.referenceName === name;
         },
       ),
     );

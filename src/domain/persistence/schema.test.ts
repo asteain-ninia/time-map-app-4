@@ -204,7 +204,7 @@ describe('schema — logical completeness (受け入れ基準1, FR-103)', () => 
   });
 });
 
-describe('詳細文書 detailDocument (FR-98) — optional 追記 on tmap/1, WRITE⊆READ bound', () => {
+describe('作業メモ detailDocument (FR-98) — optional 追記 on tmap/1, WRITE⊆READ bound', () => {
   /** The first persisted feature of the first history entry (as a mutable record). */
   function firstFeature(clone: ReturnType<typeof structuredClone<ReturnType<typeof serialize>>>) {
     return clone.histories[0]!.entries[0]!.anchor.snapshot.features[0]! as Record<
@@ -262,6 +262,37 @@ describe('詳細文書 detailDocument (FR-98) — optional 追記 on tmap/1, WRI
         }
     expect(clone.version).toBe(SCHEMA_VERSION); // still tmap/1 — no migration branch.
     expect(manifestSchema.safeParse(clone).success).toBe(true);
+  });
+});
+
+describe('参照名 referenceName (FR-98) — 任意の文字列 1 件', () => {
+  function firstFeature(clone: ReturnType<typeof structuredClone<ReturnType<typeof serialize>>>) {
+    return clone.histories[0]!.entries[0]!.anchor.snapshot.features[0]! as Record<
+      string,
+      unknown
+    >;
+  }
+
+  it('accepts a feature carrying a referenceName (集約にも載る — featureCommon の欄)', () => {
+    const clone = structuredClone(serialize(richValidProject()));
+    const aggHistory = clone.histories.find((h) => h.featureId === 'agg-1')!;
+    const agg = aggHistory.entries[0]!.anchor.snapshot.features.find(
+      (f) => f.kind === 'aggregate',
+    )! as Record<string, unknown>;
+    agg['referenceName'] = '出界百科: 連邦';
+    expect(manifestSchema.safeParse(clone).success).toBe(true);
+  });
+
+  it('rejects a non-string referenceName with a path', () => {
+    const clone = structuredClone(serialize(richValidProject()));
+    firstFeature(clone)['referenceName'] = ['二件目は持てない'];
+    const parsed = manifestSchema.safeParse(clone);
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(
+        parsed.error.issues.some((issue) => issue.path[issue.path.length - 1] === 'referenceName'),
+      ).toBe(true);
+    }
   });
 });
 

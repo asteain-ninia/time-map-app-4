@@ -3,7 +3,7 @@
 // 引数:
 //   --catalog <catalog.json>   `npm run ui-text:catalog` が書いた目録（必須）
 //   --tour <ディレクトリ>       巡回（`npm run e2e:tour`）が書いた場面の置き場（必須。`scenes/*.json`）
-//   --project <.gimoza>        利用者のデータの語（地物の名前・種別・詳細文書）を拾うファイル（何本でも）
+//   --project <.gimoza>        利用者のデータの語（地物の名前・種別・参照名・作業メモ）を拾うファイル（何本でも）
 //   --out <ディレクトリ>        `match.json` と `match.md` の書き出し先（既定は --tour と同じ）
 // 巡回が書いた `user-words.json`（合成データの名前など）があれば、それも利用者のデータとして取り除く。
 
@@ -33,7 +33,7 @@ function required(name: string): string {
   return v;
 }
 
-/** 地物の名前・種別・詳細文書を、保存ファイルの中身から全部拾う。 */
+/** 地物の名前・種別・参照名・作業メモを、保存ファイルの中身から全部拾う。 */
 function wordsFromProject(path: string): string[] {
   const entries = unzipSync(readFileSync(path));
   const manifest = entries['manifest.json'];
@@ -46,7 +46,7 @@ function wordsFromProject(path: string): string[] {
     }
     if (v === null || typeof v !== 'object') return;
     for (const [k, x] of Object.entries(v)) {
-      if ((k === 'name' || k === 'kindLabel' || k === 'projectName') && typeof x === 'string' && x !== '') out.add(x);
+      if ((k === 'name' || k === 'kindLabel' || k === 'referenceName' || k === 'projectName') && typeof x === 'string' && x !== '') out.add(x);
       else if ((k === 'detailDocument' || k === 'projectDescription') && typeof x === 'string') {
         for (const line of x.split('\n')) if (line.trim() !== '') out.add(line.trim());
       } else visit(x);

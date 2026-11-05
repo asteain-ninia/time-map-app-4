@@ -213,10 +213,10 @@ export const shapeSchema = z
 // 不正状態を表現不能に (技術方針 2.10): an aggregate has NO `shape` key (its area
 // is the runtime union of children — FR-35); a leaf HAS a `shape`. `.strict()`
 // means a `shape` accidentally placed on an aggregate is REJECTED, and a
-// `childIds` on a leaf is REJECTED. kindLabel/parentId/detailDocument are
-// optional (key-absent).
+// `childIds` on a leaf is REJECTED. kindLabel/parentId/detailDocument/referenceName
+// are optional (key-absent).
 
-// The maximum accepted length of a詳細文書 (FR-98) is DEFINED on the domain side
+// The maximum accepted length of a作業メモ (FR-98; 欄名は詳細文書のまま) is DEFINED on the domain side
 // (feature.ts, next to the field and its birth-time RangeError guard) and merely
 // RESTATED here at the READ boundary — the same single-source pattern as
 // MAX_COORDINATE_MAGNITUDE / MAX_YEAR above (persistence imports domain, never
@@ -231,11 +231,14 @@ const featureCommon = {
   color: colorInfoSchema,
   kindLabel: z.string().optional(),
   parentId: idSchema.optional(),
-  // 詳細文書 (FR-98) — optional (key-absent) so every pre-document manifest still
-  // parses (tmap/1 への optional 追記; alpha/palette/ui 追記と同型, version bump
-  // なし). The serializer never writes the key for an absent document, and the
-  // deserialize boundary collapses a legacy '' to absent (canonical empty form).
+  // 作業メモ (FR-98。プレーンテキスト。欄名は詳細文書だった頃のまま) — optional
+  // (key-absent). The serializer never writes the key for an absent memo, and the
+  // deserialize boundary collapses a hand-crafted '' to absent (canonical empty form).
   detailDocument: z.string().max(MAX_DETAIL_DOCUMENT_LENGTH).optional(),
+  // 参照名 (FR-98): 本アプリの外にある資料を指す名前 1 件。optional (key-absent)。
+  // 種別ラベルと同じく上限は持たない。リリース前なので版は上げない（所有者の裁定
+  // 2026-09-03「保存形式の後方互換は不要」。鍵の無いファイルは参照名なしとして読む）。
+  referenceName: z.string().optional(),
   // 分け残し（直轄領）の印（FR-37 / 所有者の裁定 2026-09-07「名前で判定しない」）。
   // 値は true だけ（印なしは鍵ごと書かない）。リリース前なので版は上げない
   // （所有者の裁定 2026-09-03「保存形式の後方互換は不要」。印の無い古いファイルも

@@ -3,7 +3,7 @@
 // The discriminant is the literal `kind` field; a `switch` over features is
 // exhaustiveness-checked via `assertNever`. Each variant carries the shared
 // fields (id, attributes, color, optional kindLabel, optional parentId,
-// optional detailDocument) plus its own variant-specific data.
+// optional detailDocument, optional referenceName) plus its own variant-specific data.
 //
 // KEY INVARIANTS expressed in the types:
 //   - Aggregate has NO `shape` field (FR-35). Its area is the runtime union of
@@ -20,8 +20,13 @@
 //     VertexId[]), never embedded (tech policy R6).
 //   - `kindLabel` (FR-40) is a free display-only string with no bearing on
 //     consistency checks.
-//   - `detailDocument` (FR-98) is a free raw-markdown string with no bearing on
-//     consistency checks; '' is normalized to absent (one canonical empty form).
+//   - `detailDocument` (FR-98) is the 作業メモ: free PLAIN text (no formatting,
+//     no embedded images, no in-document links) with no bearing on consistency
+//     checks; '' is normalized to absent (one canonical empty form). The key keeps
+//     its 詳細文書-era name (the save format is not renamed).
+//   - `referenceName` (FR-98) is the 参照名: ONE free string naming a material that
+//     lives OUTSIDE this app (the app never copies or holds the material). Same
+//     discipline as detailDocument: no bearing on consistency, '' → absent.
 
 import { assertNever } from './assert-never';
 import type { BasicAttributes, ColorInfo } from './attributes';
@@ -49,8 +54,9 @@ export interface FeatureCommon {
   /** Parent in the forest (FR-34). Absent <=> this feature is top-level. */
   readonly parentId?: FeatureId;
   /**
-   * 詳細文書 (FR-98): free raw-markdown text with NO bearing on consistency
-   * checks (kindLabel と完全同型の規律). Absent if not set; the empty string is
+   * 作業メモ (FR-98。保存形式の欄名は詳細文書だった頃のまま): free PLAIN text —
+   * no formatting, no embedded images, no in-document links — with NO bearing on
+   * consistency checks (kindLabel と完全同型の規律). Absent if not set; the empty string is
    * NOT a representable state — every construction/update path normalizes ''
    * to absent via {@link normalizeDetailDocument}, so equality / round-trip
    * never has to distinguish「空文書」from「文書なし」. Living on FeatureCommon
@@ -58,6 +64,14 @@ export interface FeatureCommon {
    * color (ユーザー確定済みの per-anchor 方針).
    */
   readonly detailDocument?: string;
+  /**
+   * 参照名 (FR-98): 本アプリの外にある資料を指す名前を **1 件だけ**持つ自由な文字列。
+   * 資料の本文は外が正本で、本アプリは複製も保持もしない（名前を持つだけで、開きも
+   * 辿りもしない）。整合性の判定には関与しない。空文字は表せない状態で、作る経路と
+   * 書き換える経路の全部が {@link normalizeReferenceName} で absent へ揃える
+   * （detailDocument と同じ規律）。錨の写しごとに持つ点も名前・作業メモと同じ。
+   */
+  readonly referenceName?: string;
   /**
    * **分け残し（直轄領）の印**（FR-37 / 所有者の裁定 2026-09-07「名前で判定してはいけない。
    * データの印で見分ける」）。形を持つ末端が子を得たとき、その「元の形 − 子の和」として
@@ -147,13 +161,15 @@ export interface OptionalCommonFields {
   readonly kindLabel?: string;
   readonly parentId?: FeatureId;
   readonly detailDocument?: string;
+  /** 参照名（{@link FeatureCommon.referenceName}）。 */
+  readonly referenceName?: string;
   /** 分け残し（直轄領）の印（{@link FeatureCommon.directDomain}）。 */
   readonly directDomain?: true;
 }
 
 /**
  * The maximum allowed length (in UTF-16 code units, i.e. `string.length` — the
- * same measure Zod's `z.string().max()` uses) of a詳細文書 (FR-98).
+ * same measure Zod's `z.string().max()` uses) of a作業メモ (FR-98; 内部名は詳細文書).
  *
  * SINGLE shared bound, defined HERE on the domain side (the import direction is
  * persistence → domain, never the reverse — the `MAX_COORDINATE_MAGNITUDE` /
@@ -173,7 +189,7 @@ export interface OptionalCommonFields {
 export const MAX_DETAIL_DOCUMENT_LENGTH = 100_000;
 
 /**
- * Canonicalize a詳細文書 value: `''`(空文書) collapses to `undefined`(absent), so
+ * Canonicalize a作業メモ value: `''`(空のメモ) collapses to `undefined`(absent), so
  * there is exactly ONE representation of「文書なし」everywhere (教訓 5.30 単一真実源).
  * This is enforced at BOTH construction boundaries — {@link buildCommon} (which every
  * constructor and the persistence deserializer funnel through, so even a hand-crafted
@@ -200,6 +216,19 @@ export function normalizeDetailDocument(detailDocument: string | undefined): str
   return detailDocument;
 }
 
+/**
+ * Canonicalize a参照名 (FR-98): `''` collapses to `undefined` (absent), the same
+ * single canonical-empty rule as {@link normalizeDetailDocument}. Enforced at both
+ * construction boundaries ({@link buildCommon} — every constructor and the persistence
+ * deserializer — and {@link withReferenceName}). No length bound: like kindLabel, it
+ * is a short free label and the schema declares no maximum either (WRITE⊆READ holds
+ * trivially).
+ */
+export function normalizeReferenceName(referenceName: string | undefined): string | undefined {
+  if (referenceName === undefined || referenceName.length === 0) return undefined;
+  return referenceName;
+}
+
 function buildCommon(
   id: FeatureId,
   attributes: BasicAttributes,
@@ -215,18 +244,21 @@ function buildCommon(
     kindLabel?: string;
     parentId?: FeatureId;
     detailDocument?: string;
+    referenceName?: string;
     directDomain?: true;
   } = { id, attributes, color };
   if (optional.kindLabel !== undefined) common.kindLabel = optional.kindLabel;
   if (optional.parentId !== undefined) common.parentId = optional.parentId;
   const detailDocument = normalizeDetailDocument(optional.detailDocument);
   if (detailDocument !== undefined) common.detailDocument = detailDocument;
+  const referenceName = normalizeReferenceName(optional.referenceName);
+  if (referenceName !== undefined) common.referenceName = referenceName;
   if (optional.directDomain === true) common.directDomain = true;
   return common;
 }
 
 /**
- * The optional common fields (kindLabel / parentId / detailDocument) a feature
+ * The optional common fields (kindLabel / parentId / detailDocument / referenceName) a feature
  * currently carries, as an {@link OptionalCommonFields} bag ready to feed back into
  * a constructor. SINGLE source of the「identity を保存する feature 再構築は任意共有
  * フィールドを全て運ぶ」rule (教訓 5.29 / 5.30): every constructor-based rebuild that
@@ -241,11 +273,13 @@ export function commonOptionalOf(feature: Feature): OptionalCommonFields {
     kindLabel?: string;
     parentId?: FeatureId;
     detailDocument?: string;
+    referenceName?: string;
     directDomain?: true;
   } = {};
   if (feature.kindLabel !== undefined) out.kindLabel = feature.kindLabel;
   if (feature.parentId !== undefined) out.parentId = feature.parentId;
   if (feature.detailDocument !== undefined) out.detailDocument = feature.detailDocument;
+  if (feature.referenceName !== undefined) out.referenceName = feature.referenceName;
   if (feature.directDomain === true) out.directDomain = true;
   return out;
 }
@@ -313,6 +347,9 @@ export function createAggregateFeature(
           ...(optional.detailDocument !== undefined
             ? { detailDocument: optional.detailDocument }
             : {}),
+          ...(optional.referenceName !== undefined
+            ? { referenceName: optional.referenceName }
+            : {}),
         };
   return {
     kind: FEATURE_KIND.Aggregate,
@@ -354,9 +391,9 @@ export function hasNoChildren(feature: AggregateFeature): boolean {
 }
 
 // --- withXxx: shared fields (id, attributes, color, kindLabel, parentId,
-// detailDocument) ---------------------------------------------------------
+// detailDocument, referenceName) --------------------------------------------
 //
-// These preserve the concrete variant. parentId/kindLabel/detailDocument accept
+// These preserve the concrete variant. parentId/kindLabel/detailDocument/referenceName accept
 // `undefined` to clear the optional field (re-deriving top-level for parentId).
 
 export function withParentId<F extends Feature>(
@@ -385,7 +422,7 @@ export function withKindLabel<F extends Feature>(
 }
 
 /**
- * Replace the詳細文書 (FR-98), preserving the concrete variant and every other
+ * Replace the作業メモ (FR-98), preserving the concrete variant and every other
  * field. `undefined` OR `''` clears the field (key removed entirely —
  * {@link normalizeDetailDocument} is the single canonical-empty rule), so a
  * present-but-empty document is unrepresentable.
@@ -399,6 +436,24 @@ export function withDetailDocument<F extends Feature>(
   const normalized = normalizeDetailDocument(detailDocument);
   if (normalized !== undefined) {
     next['detailDocument'] = normalized;
+  }
+  return next as F;
+}
+
+/**
+ * Replace the参照名 (FR-98), preserving the concrete variant and every other field.
+ * `undefined` OR `''` clears the field (key removed entirely —
+ * {@link normalizeReferenceName} is the single canonical-empty rule).
+ */
+export function withReferenceName<F extends Feature>(
+  feature: F,
+  referenceName: string | undefined,
+): F {
+  const next: Record<string, unknown> = { ...feature };
+  delete next['referenceName'];
+  const normalized = normalizeReferenceName(referenceName);
+  if (normalized !== undefined) {
+    next['referenceName'] = normalized;
   }
   return next as F;
 }

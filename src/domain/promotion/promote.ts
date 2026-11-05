@@ -430,13 +430,13 @@ export function promoteLeafToAggregate(input: PromoteToAggregateInput): Promotio
 
 /**
  * 元末端地物を、その同一性 (同一 ID) を保ったまま集約地物へ遷移させる (FR-36)。名称・
- * 種別ラベル・詳細文書 (FR-98)・属性・色・親 (上位領域参照) を引き継ぎ、形状属性 (Shape)
+ * 種別ラベル・作業メモと参照名 (FR-98)・属性・色・親 (上位領域参照) を引き継ぎ、形状属性 (Shape)
  * は破棄する。
  *
  * 形状破棄は判別共用体で型レベル保証される: AggregateFeature に `shape` フィールドが
  * 存在しないため、引き継ぎ漏れや形状残留は表現不能 (技術方針 2.1 / FR-35)。
  *
- * 引き継ぐ任意共有フィールド (kindLabel / parentId / detailDocument) の組み立ては
+ * 引き継ぐ任意共有フィールド (kindLabel / parentId / detailDocument / referenceName) の組み立ては
  * `commonOptionalOf` (feature.ts, 単一真実源 教訓 5.29/5.30) へ委譲する。以前は
  * toShapelessAggregate と本関数が同じ分岐を重複実装しており、FR-98 detailDocument
  * 追加時に本経路だけ運搬漏れするサイレント損失 (昇格で文書が消える) を作り込めた —

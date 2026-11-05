@@ -13,7 +13,12 @@ import {
 // 基準8 / R8); the round-trip test reaches it from ./serialize directly, which is
 // exempt from the boundary lint rule as a persistence-module file.
 import { deserialize, type DomainProject, type UiSettings } from './serialize';
-import { FIXTURE_DETAIL_DOCUMENT, projectArb, richValidProject } from './fixtures';
+import {
+  FIXTURE_DETAIL_DOCUMENT,
+  FIXTURE_REFERENCE_NAME,
+  projectArb,
+  richValidProject,
+} from './fixtures';
 import { createAnchor, createAnchorSnapshot } from '../anchor';
 import { createAnchorEntry } from '../anchor-series';
 import { createBasicAttributes, createColorInfo } from '../attributes';
@@ -141,7 +146,7 @@ describe('round-trip serialize→deserialize (受け入れ基準7)', () => {
     }
   });
 
-  it('persists 詳細文書 (FR-98) verbatim through the JSON boundary', () => {
+  it('persists 作業メモ (FR-98, 欄名 detailDocument) verbatim through the JSON boundary', () => {
     const manifest = serialize(richValidProject());
     const json = JSON.parse(JSON.stringify(manifest));
     const parsed = parseManifest(json);
@@ -232,6 +237,49 @@ describe('round-trip serialize→deserialize (受け入れ基準7)', () => {
           for (const f of e.anchor.snapshot.features) {
             expect('detailDocument' in f).toBe(false);
           }
+    }
+  });
+
+  it('persists 参照名 (FR-98) verbatim, and projectsEqual sees a dropped one', () => {
+    const project = richValidProject();
+    const manifest = serialize(project);
+    const json = JSON.parse(JSON.stringify(manifest)) as {
+      histories: {
+        entries: { anchor: { snapshot: { features: Record<string, unknown>[] } } }[];
+      }[];
+    };
+    const parsed = parseManifest(json);
+    expect(parsed.outcome).toBe(PARSE_OUTCOME.Ok);
+    if (parsed.outcome !== PARSE_OUTCOME.Ok) return;
+    const pt = allFeatures(deserialize(parsed.manifest)).find((f) => f.id === 'pt-1');
+    expect(pt!.referenceName).toBe(FIXTURE_REFERENCE_NAME);
+
+    for (const h of json.histories)
+      for (const e of h.entries)
+        for (const f of e.anchor.snapshot.features) delete f['referenceName'];
+    const stripped = parseManifest(json);
+    expect(stripped.outcome).toBe(PARSE_OUTCOME.Ok);
+    if (stripped.outcome !== PARSE_OUTCOME.Ok) return;
+    const restored = deserialize(stripped.manifest);
+    // 鍵の無い（参照名の無い）マニフェストも読め、欄は absent になる。
+    for (const f of allFeatures(restored)) expect('referenceName' in f).toBe(false);
+    expect(projectsEqual(project, restored)).toBe(false);
+  });
+
+  it("collapses referenceName:'' in a manifest to absent (canonical empty form, FR-98)", () => {
+    const json = JSON.parse(JSON.stringify(serialize(richValidProject()))) as {
+      histories: {
+        entries: { anchor: { snapshot: { features: Record<string, unknown>[] } } }[];
+      }[];
+    };
+    for (const h of json.histories)
+      for (const e of h.entries)
+        for (const f of e.anchor.snapshot.features) f['referenceName'] = '';
+    const parsed = parseManifest(json);
+    expect(parsed.outcome).toBe(PARSE_OUTCOME.Ok);
+    if (parsed.outcome !== PARSE_OUTCOME.Ok) return;
+    for (const f of allFeatures(deserialize(parsed.manifest))) {
+      expect('referenceName' in f).toBe(false);
     }
   });
 

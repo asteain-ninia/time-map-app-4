@@ -206,7 +206,7 @@ function serializeShape(shape: Shape): PersistedShape {
   return { rings: shape.rings.map(serializeRing) };
 }
 
-/** Serialize the common (kindLabel / parentId / detailDocument) optionals onto a plain object. */
+/** Serialize the common (kindLabel / parentId / detailDocument / referenceName) optionals onto a plain object. */
 function serializeCommon(feature: Feature): {
   id: string;
   attributes: PersistedBasicAttributes;
@@ -214,6 +214,7 @@ function serializeCommon(feature: Feature): {
   kindLabel?: string;
   parentId?: string;
   detailDocument?: string;
+  referenceName?: string;
   directDomain?: true;
 } {
   // exactOptionalPropertyTypes: attach each optional key only when present — an
@@ -225,6 +226,7 @@ function serializeCommon(feature: Feature): {
     kindLabel?: string;
     parentId?: string;
     detailDocument?: string;
+    referenceName?: string;
     directDomain?: true;
   } = {
     id: idToString(feature.id),
@@ -233,10 +235,12 @@ function serializeCommon(feature: Feature): {
   };
   if (feature.kindLabel !== undefined) out.kindLabel = feature.kindLabel;
   if (feature.parentId !== undefined) out.parentId = idToString(feature.parentId);
-  // 詳細文書 (FR-98): written verbatim when present. The domain never carries ''
+  // 作業メモ (FR-98): written verbatim when present. The domain never carries ''
   // (constructors / withDetailDocument normalize it to absent), so serialize has
   // no normalization of its own — one canonical empty form everywhere.
   if (feature.detailDocument !== undefined) out.detailDocument = feature.detailDocument;
+  // 参照名 (FR-98): 同じ規律（ドメインが '' を持たないので、あれば書くだけ）。
+  if (feature.referenceName !== undefined) out.referenceName = feature.referenceName;
   // 分け残し（直轄領）の印: 立っているときだけ書く（印なしは鍵ごと書かない）。
   if (feature.directDomain === true) out.directDomain = true;
   return out;
@@ -446,26 +450,30 @@ function deserializeShape(shape: PersistedShape): Shape {
   return createShape(shape.rings.map(deserializeRing));
 }
 
-/** Rebuild the optional (kindLabel / parentId / detailDocument) common fields for a feature. */
+/** Rebuild the optional (kindLabel / parentId / detailDocument / referenceName) common fields for a feature. */
 function deserializeOptional(feature: PersistedFeature): {
   kindLabel?: string;
   parentId?: FeatureId;
   detailDocument?: string;
+  referenceName?: string;
   directDomain?: true;
 } {
   const out: {
     kindLabel?: string;
     parentId?: FeatureId;
     detailDocument?: string;
+    referenceName?: string;
     directDomain?: true;
   } = {};
   if (feature.kindLabel !== undefined) out.kindLabel = feature.kindLabel;
   if (feature.parentId !== undefined) out.parentId = asFeatureId(feature.parentId);
-  // 詳細文書 (FR-98): passed through to the domain constructors, whose shared
+  // 作業メモ (FR-98): passed through to the domain constructors, whose shared
   // buildCommon normalizes a legacy/hand-crafted '' to ABSENT (canonical empty
   // form) — so a manifest carrying `detailDocument: ''` loads identically to one
   // without the key, and present-'' vs absent can never diverge in featuresEqual.
   if (feature.detailDocument !== undefined) out.detailDocument = feature.detailDocument;
+  // 参照名 (FR-98): 同じく buildCommon が '' を absent へ揃える。
+  if (feature.referenceName !== undefined) out.referenceName = feature.referenceName;
   // 分け残し（直轄領）の印。集約に書かれていても createAggregateFeature が落とす。
   if (feature.directDomain === true) out.directDomain = true;
   return out;
@@ -656,10 +664,11 @@ function featuresEqual(a: Feature, b: Feature): boolean {
   if (!colorInfoEqual(a.color, b.color)) return false;
   if (a.kindLabel !== b.kindLabel) return false;
   if (a.parentId !== b.parentId) return false;
-  // 詳細文書 (FR-98): without this the round-trip identity criterion (受け入れ
-  // 基準7) would be blind to a dropped/altered document. '' never occurs (the
+  // 作業メモ・参照名 (FR-98): without these the round-trip identity criterion (受け入れ
+  // 基準7) would be blind to a dropped/altered memo or name. '' never occurs (the
   // domain normalizes it to absent), so strict === is the whole rule.
   if (a.detailDocument !== b.detailDocument) return false;
+  if (a.referenceName !== b.referenceName) return false;
   // 分け残しの印も往復の同一性に入れる（落としても気づけない形にしない）。
   if (a.directDomain !== b.directDomain) return false;
   switch (a.kind) {

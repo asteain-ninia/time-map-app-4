@@ -71,6 +71,9 @@ export function squareLeaf(id: string, name: string, ox: number, oy: number, siz
  */
 export const FIXTURE_DETAIL_DOCUMENT = '# 首都\n\n**古都**の詳細文書。\n\n- 建都 0 年';
 
+/** The 参照名 (FR-98) carried by the rich fixture's point, for the same round-trip evidence. */
+export const FIXTURE_REFERENCE_NAME = '出界百科: 首都';
+
 /** A point feature referencing one vertex. */
 export function pointFeature(id: string, name: string, lon: number, lat: number) {
   const v = createVertex(asVertexId(`${id}-v`), createCoordinate(lon, lat));
@@ -79,7 +82,11 @@ export function pointFeature(id: string, name: string, lon: number, lat: number)
     createBasicAttributes(name, 0, 50),
     COLOR,
     v.id,
-    { kindLabel: '都市', detailDocument: FIXTURE_DETAIL_DOCUMENT },
+    {
+      kindLabel: '都市',
+      detailDocument: FIXTURE_DETAIL_DOCUMENT,
+      referenceName: FIXTURE_REFERENCE_NAME,
+    },
   );
   return { feature, vertex: v };
 }
